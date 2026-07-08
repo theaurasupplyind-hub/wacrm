@@ -288,6 +288,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       const decryptedAccessToken = decrypt(config.access_token)
 
+      const bgTasks: Promise<void>[] = []
+
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = value.contacts[i] || value.contacts[0]
@@ -302,9 +304,12 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          bgTasks
         )
       }
+
+      await Promise.allSettled(bgTasks)
     }
   }
 }
@@ -570,7 +575,8 @@ async function processMessage(
   // (contacts, conversations). Always the admin who saved the
   // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
+  accessToken: string,
+  bgTasks: Promise<void>[]
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -719,22 +725,24 @@ async function processMessage(
   // webhook response or subsequent messages in the same batch.
   // ============================================================
   if (message.type === 'image' || message.type === 'document') {
-    processVoucherMessage({
-      message: {
-        id: message.id,
-        from: message.from,
-        type: message.type,
-        image: message.image ? { id: message.image.id, mime_type: message.image.mime_type } : undefined,
-        document: message.document ? { id: message.document.id, mime_type: message.document.mime_type } : undefined,
-      },
-      accessToken,
-      accountId,
-      userId: configOwnerUserId,
-      contactId: contactRecord.id,
-      conversationId: conversation.id,
-    }).catch((err) => {
-      console.error('[webhook] Voucher processing error:', err)
-    })
+    bgTasks.push(
+      processVoucherMessage({
+        message: {
+          id: message.id,
+          from: message.from,
+          type: message.type,
+          image: message.image ? { id: message.image.id, mime_type: message.image.mime_type } : undefined,
+          document: message.document ? { id: message.document.id, mime_type: message.document.mime_type } : undefined,
+        },
+        accessToken,
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+      }).catch((err) => {
+        console.error('[webhook] Voucher processing error:', err)
+      })
+    )
   }
 
   // ============================================================
@@ -833,14 +841,16 @@ async function processMessage(
   // Runs for plain-text inbound messages. Dispatches fire-and-forget
   // so it does not block the webhook response.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    processChatMessage({
-      text: inboundText,
-      phone: message.from,
-      accountId,
-      userId: configOwnerUserId,
-      contactId: contactRecord.id,
-      conversationId: conversation.id,
-    }).catch((err) => console.error('[webhook] Chatbot error:', err))
+    bgTasks.push(
+      processChatMessage({
+        text: inboundText,
+        phone: message.from,
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+      }).catch((err) => console.error('[webhook] Chatbot error:', err))
+    )
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget
