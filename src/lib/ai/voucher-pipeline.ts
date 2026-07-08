@@ -1,4 +1,5 @@
-import { getMediaUrl, downloadMedia, sendTextMessage } from '@/lib/whatsapp/meta-api'
+import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
 import { matchVoucher, type MatchStatus } from './voucher-matching'
@@ -7,6 +8,8 @@ import {
   registrarPago,
 } from '../facbal/client'
 import type { FacturaPendiente } from '../facbal/client'
+
+const MEDIA_TIMEOUT_MS = 15_000
 
 interface PipelineArgs {
   message: {
@@ -17,8 +20,16 @@ interface PipelineArgs {
     document?: { id: string; mime_type: string }
   }
   accessToken: string
-  phoneNumberId: string
+  accountId: string
+  userId: string
   contactId: string
+  conversationId: string
+}
+
+function mediaTimeout(): Promise<never> {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Media download timed out after 15s')), MEDIA_TIMEOUT_MS),
+  )
 }
 
 /**
@@ -31,17 +42,17 @@ interface PipelineArgs {
  * so it does not block the 200 response to Meta.
  */
 export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
-  const { message, accessToken, phoneNumberId, contactId } = args
+  const { message, accessToken, accountId, userId, contactId, conversationId } = args
   const normalizedPhone = message.from
 
   console.log('[voucher] START msg_id=%s phone=%s type=%s', message.id, normalizedPhone.slice(-6), message.type)
 
-  // Send instant acknowledgment so the customer knows we received it
   try {
-    await sendTextMessage({
-      phoneNumberId,
-      accessToken,
-      to: normalizedPhone,
+    await engineSendText({
+      accountId,
+      userId,
+      conversationId,
+      contactId,
       text: 'Gracias por tu comprobante, lo estoy procesando. En un momento te confirmo.',
     })
     console.log('[voucher] ACK sent')
@@ -76,8 +87,14 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
 
     console.log('[voucher] Downloading media id=%s mime=%s', mediaId, mimeType)
-    const { url: downloadUrl } = await getMediaUrl({ mediaId, accessToken })
-    const { buffer } = await downloadMedia({ downloadUrl, accessToken })
+    const { url: downloadUrl } = await Promise.race([
+      getMediaUrl({ mediaId, accessToken }),
+      mediaTimeout(),
+    ])
+    const { buffer } = await Promise.race([
+      downloadMedia({ downloadUrl, accessToken }),
+      mediaTimeout(),
+    ])
     mediaBase64 = Buffer.from(buffer).toString('base64')
     console.log('[voucher] Media downloaded size=%d bytes', buffer.length)
   } catch (err) {
@@ -180,10 +197,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
   try {
     console.log('[voucher] Sending reply to WhatsApp')
-    await sendTextMessage({
-      phoneNumberId,
-      accessToken,
-      to: normalizedPhone,
+    await engineSendText({
+      accountId,
+      userId,
+      conversationId,
+      contactId,
       text: mensajeRespuesta!,
     })
     console.log('[voucher] Reply sent OK')
