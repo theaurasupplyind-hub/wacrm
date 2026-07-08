@@ -8,6 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -300,7 +301,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          config.phone_number_id
         )
       }
     }
@@ -568,7 +570,8 @@ async function processMessage(
   // (contacts, conversations). Always the admin who saved the
   // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
+  accessToken: string,
+  phoneNumberId: string
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -706,6 +709,32 @@ async function processMessage(
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+
+  // ============================================================
+  // Voucher processing (comprobante de pago).
+  //
+  // When a customer sends an image or PDF, fire the full pipeline
+  // in the background: download media → extract via OpenRouter →
+  // query FacBal pending invoices → match → register payment or
+  // ask for clarification. Fire-and-forget so it never blocks the
+  // webhook response or subsequent messages in the same batch.
+  // ============================================================
+  if (message.type === 'image' || message.type === 'document') {
+    processVoucherMessage({
+      message: {
+        id: message.id,
+        from: message.from,
+        type: message.type,
+        image: message.image ? { id: message.image.id, mime_type: message.image.mime_type } : undefined,
+        document: message.document ? { id: message.document.id, mime_type: message.document.mime_type } : undefined,
+      },
+      accessToken,
+      phoneNumberId,
+      contactId: contactRecord.id,
+    }).catch((err) => {
+      console.error('[webhook] Voucher processing error:', err)
+    })
+  }
 
   // ============================================================
   // Flow runner dispatch.
