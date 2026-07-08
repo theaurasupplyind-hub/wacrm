@@ -32,34 +32,30 @@ function mediaTimeout(): Promise<never> {
   )
 }
 
-/**
- * Full voucher processing pipeline. Download media from Meta,
- * extract data via OpenRouter, match against FacBal pending
- * invoices, register payment or ask for clarification, and
- * persist the result to Supabase.
- *
- * Called fire-and-forget from the webhook handler — never awaited
- * so it does not block the 200 response to Meta.
- */
+async function notify(args: {
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+  text: string
+}): Promise<void> {
+  try {
+    await engineSendText(args)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[voucher] notify failed:', msg)
+  }
+}
+
 export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   const { message, accessToken, accountId, userId, contactId, conversationId } = args
   const normalizedPhone = message.from
+  const sendCtx = { accountId, userId, conversationId, contactId }
 
   console.log('[voucher] START msg_id=%s phone=%s type=%s', message.id, normalizedPhone.slice(-6), message.type)
 
-  try {
-    await engineSendText({
-      accountId,
-      userId,
-      conversationId,
-      contactId,
-      text: 'Gracias por tu comprobante, lo estoy procesando. En un momento te confirmo.',
-    })
-    console.log('[voucher] ACK sent')
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[voucher] ACK failed:', msg)
-  }
+  // STEP 1 — ACK
+  await notify({ ...sendCtx, text: 'Recibimos tu comprobante. Lo estamos procesando...' })
 
   let mediaBase64: string
   let mimeType: string
@@ -106,8 +102,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       matchStatus: 'no_match',
       errorMessage: `Media download: ${msg}`,
     })
+    await notify({ ...sendCtx, text: 'No pudimos descargar la imagen. Un agente lo revisará.' })
     return
   }
+
+  // STEP 2 — Downloaded, now analyzing
+  await notify({ ...sendCtx, text: 'Analizando el comprobante con IA...' })
 
   let extractedAmount: number | null = null
   let extractedDate: string | null = null
@@ -131,6 +131,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     extractedBank = voucher.banco
     console.log('[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s', voucher.monto, voucher.fecha, voucher.referencia, voucher.banco)
 
+    // STEP 3 — Extracted, now searching invoices
+    const montoStr = voucher.monto ? `$${voucher.monto.toLocaleString('es-AR')}` : '?'
+    await notify({ ...sendCtx, text: `Comprobante leído: monto ${montoStr}. Buscando tus facturas pendientes...` })
+
     console.log('[voucher] Querying FacBal for phone=%s', normalizedPhone.slice(-6))
     let facturasPendientes: FacturaPendiente[]
     try {
@@ -149,7 +153,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         extractedBank,
         errorMessage: `FacBal API: ${msg}`,
       })
+      await notify({ ...sendCtx, text: 'Error al consultar tus facturas. Un agente te contactará.' })
       return
+    }
+
+    // STEP 4 — Invoices found
+    if (facturasPendientes.length === 0) {
+      await notify({ ...sendCtx, text: 'No encontramos facturas pendientes a tu nombre.' })
+    } else {
+      await notify({ ...sendCtx, text: `Encontramos ${facturasPendientes.length} factura(s) pendiente(s). Verificando...` })
     }
 
     const match = matchVoucher({ voucher, facturasPendientes })
@@ -195,15 +207,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     errorMessage,
   })
 
+  // STEP 5 — Final response
   try {
     console.log('[voucher] Sending reply to WhatsApp')
-    await engineSendText({
-      accountId,
-      userId,
-      conversationId,
-      contactId,
-      text: mensajeRespuesta!,
-    })
+    await engineSendText({ ...sendCtx, text: mensajeRespuesta! })
     console.log('[voucher] Reply sent OK')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -9,6 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
+import { processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -826,6 +827,20 @@ async function processMessage(
       contactId: contactRecord.id,
       configOwnerUserId,
     })
+  }
+
+  // Conversational AI bot (products, pricing, account questions).
+  // Runs for plain-text inbound messages. Dispatches fire-and-forget
+  // so it does not block the webhook response.
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    processChatMessage({
+      text: inboundText,
+      phone: message.from,
+      accountId,
+      userId: configOwnerUserId,
+      contactId: contactRecord.id,
+      conversationId: conversation.id,
+    }).catch((err) => console.error('[webhook] Chatbot error:', err))
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

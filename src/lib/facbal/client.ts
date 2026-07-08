@@ -13,6 +13,16 @@ export interface PagoRegistrado {
   id: number
 }
 
+export interface Producto {
+  id: string
+  descripcion: string
+  precio_unitario: number
+  categoria: string
+  medida: string
+  variante: string
+  stock: number
+}
+
 function apiUrl(): string {
   const url = process.env.FACBAL_API_URL
   if (!url) {
@@ -88,4 +98,30 @@ export async function registrarPago(args: {
   }
 
   return res.json() as Promise<PagoRegistrado>
+}
+
+export async function buscarProductos(
+  query: string,
+): Promise<Producto[]> {
+  const base = `${apiUrl()}/products/search`
+  const url = query ? `${base}?q=${encodeURIComponent(query)}` : `${base}?limit=30`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al buscar productos${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  const data = await res.json()
+  if (!Array.isArray(data)) {
+    throw new Error('FacBal API devolvió una respuesta inesperada.')
+  }
+
+  return data as Producto[]
 }
