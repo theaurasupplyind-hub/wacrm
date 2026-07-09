@@ -133,12 +133,22 @@ export interface SugerenciaPrecio {
   precio: number
 }
 
+export interface OrderItem {
+  cantidad: number
+  categoria: string
+  medida: string
+  variante: string
+  precio: number | null
+  faltante: boolean
+}
+
 export interface SuggestPriceResult {
   query: string
   medida_encontrada: string | null
   sugerencias: SugerenciaPrecio[]
   regla_aplicada: string | null
   mensaje: string | null
+  items: OrderItem[]
 }
 
 export async function suggestPrice(

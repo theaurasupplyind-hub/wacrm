@@ -8,6 +8,9 @@ import {
   type SuggestPriceResult,
   type Producto,
 } from '../facbal/client'
+import { createCart, formatCartForLLM, formatCartBudget, type CartState } from './cart-state'
+import { determineFlow } from './conversation-flow'
+import { shouldHardHandoff, shouldHandoff } from './handoff-rules'
 import { logChatbotStep } from './chatbot-logger'
 import { supabaseAdmin } from './admin-client'
 
@@ -122,7 +125,7 @@ Reglas:
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
-- IMPORTANTE: cuando hay precios de referencia mostralos directo, sin explicar redondeos ni cálculos. Ejemplo malo: "no tengo exactamente 41x34, pero tengo 30x40 que sale X". Ejemplo bueno: "Un bastidor 41x34 (equivalente a 30x40) te sale $12.000. También hay estas variantes: ...".
+- IMPORTANTE: cuando hay precios de referencia mostralos directo, sin explicar redondeos ni cálculos. Si un producto aparece como FALTANTE, decile al cliente que ese producto no tiene precio en la tabla y un agente se lo cotiza aparte.
 - DIFERENCIACIÓN: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
 
 DATOS DEL SISTEMA:`
@@ -237,37 +240,9 @@ function formatSugerencias(sugerencias: SugerenciaPrecio[]): string {
 
 function formatOrderContext(ctx: Record<string, unknown> | null): string {
   if (!ctx) return ''
-  const consulta = ctx.ultima_consulta as Record<string, unknown> | undefined
-  const presupuesto = ctx.presupuesto_activo as Record<string, unknown> | undefined
-  const pedido = ctx.pedido_confirmado as Record<string, unknown> | undefined
-  if (!consulta && !presupuesto && !pedido) return ''
-
-  const lines: string[] = []
-  if (consulta) {
-    const items = consulta.items as Array<Record<string, unknown>> | undefined
-    if (items && items.length > 1) {
-      lines.push('- Productos consultados:')
-      for (const item of items) {
-        const desc = item.descripcion || `${item.categoria} ${item.medida}${item.variante ? ` (${item.variante})` : ''}`
-        const precio = item.precio != null ? `$${Number(item.precio).toLocaleString('es-AR')}` : ''
-        lines.push(`  • ${desc}${precio ? ` — ${precio}` : ''}`)
-      }
-    } else {
-      if (consulta.descripcion) lines.push(`- Producto: ${consulta.descripcion}`)
-      if (consulta.precio != null) lines.push(`- Precio unitario: $${Number(consulta.precio).toLocaleString('es-AR')}`)
-    }
-  }
-  if (presupuesto) {
-    if (presupuesto.total != null) lines.push(`- Presupuesto: $${Number(presupuesto.total).toLocaleString('es-AR')}`)
-    if (presupuesto.fecha) lines.push(`- Fecha: ${presupuesto.fecha}`)
-  }
-  if (pedido) {
-    lines.push('- Estado: PEDIDO CONFIRMADO')
-    if (pedido.total != null) lines.push(`- Total: $${Number(pedido.total).toLocaleString('es-AR')}`)
-  }
-  if (ctx.esperando_cantidad) lines.push('- Acción: esperando cantidad del cliente')
-  if (ctx.presupuesto_activo && !ctx.pedido_confirmado) lines.push('- Acción: esperando confirmación del cliente')
-  return lines.length > 0 ? 'ESTADO DEL PEDIDO:\n' + lines.join('\n') : ''
+  const cart = (ctx.cart ?? ctx.presupuesto_activo ?? ctx.pedido_confirmado) as CartState | undefined
+  if (cart?.items?.length) return formatCartForLLM(cart)
+  return ''
 }
 
 async function loadLastMessages(conversationId: string, limit: number = 4): Promise<string> {
@@ -290,38 +265,6 @@ async function loadLastMessages(conversationId: string, limit: number = 4): Prom
   } catch {
     return ''
   }
-}
-
-function formatBudgetText(params: {
-  clienteNombre: string
-  clienteTelefono: string
-  fecha: string
-  items: { cantidad: number; descripcion: string; precioUnitario: number }[]
-  envio: number
-}): string {
-  const { clienteNombre, clienteTelefono, fecha, items, envio } = params
-  const envVal = envio || 0
-  const totalSinEnvio = items.reduce((sum, i) => sum + i.cantidad * i.precioUnitario, 0)
-  const total = totalSinEnvio + envVal
-
-  const itemLines = items.map(i => {
-    const subtotal = i.cantidad * i.precioUnitario
-    return `  ${i.cantidad}x ${i.descripcion}  -  $${subtotal.toLocaleString('es-AR')}`
-  }).join('\n')
-
-  return `*PRESUPUESTO*
-${fecha}
-
-*Cliente:* ${clienteNombre}
-*Tel:* ${clienteTelefono}
-
-*Productos:*
-${itemLines}
-${envVal > 0 ? `\nEnv\u00EDo: $${envVal.toLocaleString('es-AR')}` : ''}
-─────────────────────────
-*TOTAL: $${total.toLocaleString('es-AR')}*
-
-Escrib\u00ED *"confirmar pedido"* para aceptar.`
 }
 
 async function getClientInfo(contactId: string, accountId: string): Promise<{ name: string; phone: string } | null> {
@@ -398,6 +341,23 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
+  // Step 1.5 — Hard handoff for non-catalog topics
+  const handoffPattern = shouldHardHandoff(text)
+  if (handoffPattern) {
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'handoff',
+      data: { intent, reason: `hard-handoff: ${handoffPattern}` },
+      account_id: accountId,
+    }).catch(() => {})
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+    console.log('[chatbot] END (hard handoff)')
+    return
+  }
+
   console.log('[chatbot] Intent detected: intent=%s category=%s', intent, priceListCategory || '-')
 
   // Step 2 — Check for pending greeting (user said hi but was ignored)
@@ -419,118 +379,40 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     // non-critical, continue without context
   }
 
-  // ── ORDER FLOW: esperando_cantidad / order_request / confirm_order ──
-  if (orderContext?.esperando_cantidad) {
-    const cantidad = parseInt(text, 10)
-    if (Number.isFinite(cantidad) && cantidad > 0 && cantidad <= 100) {
-      const consulta = orderContext.ultima_consulta as Record<string, unknown> | undefined
-      const producto = consulta?.descripcion || `${consulta?.categoria || 'Producto'} ${consulta?.medida || ''}${consulta?.variante ? ` (${consulta.variante})` : ''}`
-      const precio = Number(consulta?.precio || 0)
+  // ── ORDER FLOW: state-machine via conversation-flow ──
+  const cart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+  const flow = determineFlow(cart as { status: string; items?: unknown[] } | undefined, intent, text)
 
-      const client = await getClientInfo(contactId, accountId)
-      const fecha = new Date().toLocaleDateString('es-AR')
+  if (flow.action === 'show_cart' && cart && cart.items?.length) {
+    const client = await getClientInfo(contactId, accountId)
+    const confirmMsg = formatCartBudget(cart, client?.name || 'Cliente', client?.phone || phone)
 
-      const items = [{ cantidad, descripcion: String(producto), precioUnitario: precio }]
-      const budgetText = formatBudgetText({
-        clienteNombre: client?.name || 'Cliente',
-        clienteTelefono: client?.phone || phone,
-        fecha,
-        items,
-        envio: 0,
-      })
-
-      const presupuesto = {
-        items,
-        fecha,
-        total: cantidad * precio,
-        cliente_nombre: client?.name || 'Cliente',
-        cliente_telefono: client?.phone || phone,
-      }
-
-      try {
-        const db = supabaseAdmin()
-        await db.from('conversations').update({
-          order_context: {
-            ...orderContext,
-            esperando_cantidad: false,
-            ultima_consulta: orderContext.ultima_consulta ?? null,
-            presupuesto_activo: presupuesto,
-            pedido_confirmado: null,
-          },
-        }).eq('id', conversationId)
-      } catch { /* non-critical */ }
-
-      await reply(sendCtx, budgetText)
-      logChatbotStep({
-        phone, message_text: text,
-        step: 'response_sent',
-        data: { intent: 'order_request', response_preview: budgetText.slice(0, 200), budget_sent: true },
-        account_id: accountId,
-      }).catch(() => {})
-      console.log('[chatbot] END (budget sent, esperando confirmacion)')
-      return
-    }
-
-    // Not a valid quantity → handoff
-    logChatbotStep({
-      phone, message_text: text,
-      step: 'handoff',
-      data: { intent: 'order_request', reason: 'Invalid quantity for budget' },
-      account_id: accountId,
-    }).catch(() => {})
-    try {
-      const db = supabaseAdmin()
-      await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
-    } catch { /* non-critical */ }
-    console.log('[chatbot] END (handoff - invalid quantity)')
-    return
-  }
-
-  if (intent === 'order_request' && orderContext?.ultima_consulta) {
+    cart.status = (flow.cartStatus || 'productos_confirmados') as CartState['status']
     try {
       const db = supabaseAdmin()
       await db.from('conversations').update({
-        order_context: {
-          ...orderContext,
-          esperando_cantidad: true,
-          ultima_consulta: orderContext.ultima_consulta ?? null,
-        },
+        order_context: { ...orderContext, cart },
       }).eq('id', conversationId)
     } catch { /* non-critical */ }
 
-    await reply(sendCtx, '¿Cuántos querés?')
+    await reply(sendCtx, confirmMsg)
     logChatbotStep({
       phone, message_text: text,
       step: 'response_sent',
-      data: { intent: 'order_request', asking_quantity: true },
+      data: { intent, flow_action: flow.action, cart_status: cart.status },
       account_id: accountId,
     }).catch(() => {})
-    console.log('[chatbot] END (asking quantity)')
+    console.log('[chatbot] END (cart shown)')
     return
   }
 
-  if (intent === 'confirm_order') {
-    const presupuesto = orderContext?.presupuesto_activo as Record<string, unknown> | undefined
-    if (!presupuesto?.items) {
-      logChatbotStep({
-        phone, message_text: text,
-        step: 'handoff',
-        data: { intent: 'confirm_order', reason: 'No active budget' },
-        account_id: accountId,
-      }).catch(() => {})
-      try {
-        const db = supabaseAdmin()
-        await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
-      } catch { /* non-critical */ }
-      console.log('[chatbot] END (handoff - no active budget)')
-      return
-    }
-
-    // Mark as confirmed → handoff to Jorge
+  if (flow.action === 'confirm') {
+    if (!cart) return
+    cart.status = (flow.cartStatus || 'confirmado') as CartState['status']
     logChatbotStep({
       phone, message_text: text,
       step: 'handoff',
-      data: { intent: 'confirm_order', reason: 'User confirmed order', order: presupuesto },
+      data: { intent, reason: flow.reason, cart },
       account_id: accountId,
     }).catch(() => {})
     try {
@@ -538,17 +420,26 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       await db.from('conversations').update({
         status: 'pending',
         ai_autoreply_disabled: true,
-        order_context: {
-          ...(orderContext || {}),
-          esperando_cantidad: false,
-          ultima_consulta: orderContext?.ultima_consulta ?? null,
-          pedido_confirmado: presupuesto,
-          presupuesto_activo: null,
-        },
+        order_context: { ...(orderContext || {}), cart },
       }).eq('id', conversationId)
     } catch { /* non-critical */ }
     await reply(sendCtx, '¡Gracias! Tu pedido fue registrado. Un agente se va a comunicar para coordinar la entrega.')
     console.log('[chatbot] END (order confirmed, handoff)')
+    return
+  }
+
+  if (flow.action === 'handoff') {
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'handoff',
+      data: { intent, reason: flow.reason },
+      account_id: accountId,
+    }).catch(() => {})
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+    console.log('[chatbot] END (handoff)')
     return
   }
   // ── END ORDER FLOW ──
@@ -599,34 +490,19 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           account_id: accountId,
         }).catch(() => {})
 
-        if (result.sugerencias.length > 0 && !orderContext?.ultima_consulta) {
+        if (result.items && result.items.length > 0) {
           try {
-            const items = result.sugerencias.map(s => ({
-              categoria: s.categoria,
-              medida: s.medida,
-              variante: s.variante || '',
-              precio: s.precio,
-              descripcion: `${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}`,
-            }))
-            const first = items[0]
-            const consulta = {
-              categoria: first.categoria,
-              medida: first.medida,
-              variante: first.variante,
-              precio: first.precio,
-              descripcion: first.descripcion,
-              items: items.length > 1 ? items : undefined,
-            }
+            const newCart = createCart(result.items)
             const db = supabaseAdmin()
             await db.from('conversations').update({
               order_context: {
                 ...orderContext,
-                ultima_consulta: consulta,
+                cart: newCart,
               },
             }).eq('id', conversationId)
             orderContext = {
               ...orderContext,
-              ultima_consulta: consulta,
+              cart: newCart,
             }
           } catch {
             // non-critical
