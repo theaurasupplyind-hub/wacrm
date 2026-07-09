@@ -36,6 +36,8 @@ const INTENT_LABELS: Record<string, string> = {
   product_search: 'Product Search',
   price_list: 'Price List',
   pending_invoices: 'Invoices',
+  order_request: 'Order Request',
+  confirm_order: 'Confirm Order',
   general: 'General',
 }
 

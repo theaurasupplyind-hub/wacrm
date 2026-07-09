@@ -25,7 +25,7 @@ interface ChatArgs {
   conversationId: string
 }
 
-type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'general' | 'ignore'
+type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'order_request' | 'confirm_order' | 'general' | 'ignore'
 
 interface DetectedIntent {
   intent: IntentType
@@ -130,8 +130,17 @@ DATOS DEL SISTEMA:`
 function detectIntent(text: string): DetectedIntent {
   const t = text.toLowerCase()
 
+  if (/\bconfirmar pedido|confirmo pedido|confirmado|confirmar compra\b/.test(t)) {
+    return { intent: 'confirm_order' }
+  }
+
   if (/\b(factura|deuda|saldo|debo|debe|pendiente|pago|pagar|cuenta|vencimiento)\b/.test(t)) {
     return { intent: 'pending_invoices' }
+  }
+
+  // Order request: user wants to buy (after getting a price)
+  if (/\b(quiero pedir|d[aá]melo|lo quiero|lo compro|encargar|pedir este|comprar|encargame|haceme uno)\b/.test(t)) {
+    return { intent: 'order_request' }
   }
 
   const hasDim = /(\d+)\s*(?:[xX×]|por)\s*(\d+)/.test(t) || /\d+\s*(?:cm|cc)\b/.test(t)
@@ -221,20 +230,27 @@ function formatSugerencias(sugerencias: SugerenciaPrecio[]): string {
 }
 
 function formatOrderContext(ctx: Record<string, unknown> | null): string {
-  if (!ctx || !ctx.productos || !Array.isArray(ctx.productos) || ctx.productos.length === 0) return ''
+  if (!ctx) return ''
+  const consulta = ctx.ultima_consulta as Record<string, unknown> | undefined
+  const presupuesto = ctx.presupuesto_activo as Record<string, unknown> | undefined
+  const pedido = ctx.pedido_confirmado as Record<string, unknown> | undefined
+  if (!consulta && !presupuesto && !pedido) return ''
+
   const lines: string[] = []
-  const productos = ctx.productos as Record<string, unknown>[]
-  const first = productos[0]
-  if (first.categoria) lines.push(`- Producto: ${first.categoria}`)
-  if (first.medida) lines.push(`- Medida: ${first.medida}`)
-  if (first.variante) lines.push(`- Variante: ${first.variante}`)
-  if (first.precio != null) lines.push(`- Precio unitario: $${Number(first.precio).toLocaleString('es-AR')}`)
-  if (ctx.presupuesto_total != null) lines.push(`- Presupuesto total: $${Number(ctx.presupuesto_total).toLocaleString('es-AR')}`)
-  if (ctx.estado_pago) lines.push(`- Estado del pago: ${ctx.estado_pago}`)
-  if (ctx.estado_pedido) lines.push(`- Estado del pedido: ${ctx.estado_pedido}`)
-  if (ctx.fecha_entrega) lines.push(`- Fecha de entrega: ${ctx.fecha_entrega}`)
-  if (ctx.direccion_entrega) lines.push(`- Dirección: ${ctx.direccion_entrega}`)
-  if (ctx.notas) lines.push(`- Notas: ${ctx.notas}`)
+  if (consulta) {
+    if (consulta.descripcion) lines.push(`- Producto: ${consulta.descripcion}`)
+    if (consulta.precio != null) lines.push(`- Precio unitario: $${Number(consulta.precio).toLocaleString('es-AR')}`)
+  }
+  if (presupuesto) {
+    if (presupuesto.total != null) lines.push(`- Presupuesto: $${Number(presupuesto.total).toLocaleString('es-AR')}`)
+    if (presupuesto.fecha) lines.push(`- Fecha: ${presupuesto.fecha}`)
+  }
+  if (pedido) {
+    lines.push('- Estado: PEDIDO CONFIRMADO')
+    if (pedido.total != null) lines.push(`- Total: $${Number(pedido.total).toLocaleString('es-AR')}`)
+  }
+  if (ctx.esperando_cantidad) lines.push('- Acción: esperando cantidad del cliente')
+  if (ctx.presupuesto_activo && !ctx.pedido_confirmado) lines.push('- Acción: esperando confirmación del cliente')
   return lines.length > 0 ? 'ESTADO DEL PEDIDO:\n' + lines.join('\n') : ''
 }
 
@@ -257,6 +273,54 @@ async function loadLastMessages(conversationId: string, limit: number = 4): Prom
       .join('\n')
   } catch {
     return ''
+  }
+}
+
+function formatBudgetText(params: {
+  clienteNombre: string
+  clienteTelefono: string
+  fecha: string
+  items: { cantidad: number; descripcion: string; precioUnitario: number }[]
+  envio: number
+}): string {
+  const { clienteNombre, clienteTelefono, fecha, items, envio } = params
+  const envVal = envio || 0
+  const totalSinEnvio = items.reduce((sum, i) => sum + i.cantidad * i.precioUnitario, 0)
+  const total = totalSinEnvio + envVal
+
+  const itemLines = items.map(i => {
+    const subtotal = i.cantidad * i.precioUnitario
+    return `  ${i.cantidad}x ${i.descripcion}  -  $${subtotal.toLocaleString('es-AR')}`
+  }).join('\n')
+
+  return `*PRESUPUESTO*
+${fecha}
+
+*Cliente:* ${clienteNombre}
+*Tel:* ${clienteTelefono}
+
+*Productos:*
+${itemLines}
+${envVal > 0 ? `\nEnv\u00EDo: $${envVal.toLocaleString('es-AR')}` : ''}
+─────────────────────────
+*TOTAL: $${total.toLocaleString('es-AR')}*
+
+Escrib\u00ED *"confirmar pedido"* para aceptar.`
+}
+
+async function getClientInfo(contactId: string, accountId: string): Promise<{ name: string; phone: string } | null> {
+  try {
+    const db = supabaseAdmin()
+    const { data } = await db
+      .from('contacts')
+      .select('name, phone')
+      .eq('id', contactId)
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (!data) return null
+    return { name: data.name || 'Cliente', phone: data.phone || '' }
+  } catch {
+    return null
   }
 }
 
@@ -339,6 +403,155 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     // non-critical, continue without context
   }
 
+  // ── ORDER FLOW: esperando_cantidad / order_request / confirm_order ──
+  if (orderContext?.esperando_cantidad) {
+    const cantidad = parseInt(text, 10)
+    if (Number.isFinite(cantidad) && cantidad > 0 && cantidad <= 100) {
+      const consulta = orderContext.ultima_consulta as Record<string, unknown> | undefined
+      const producto = consulta?.descripcion || `${consulta?.categoria || 'Producto'} ${consulta?.medida || ''}${consulta?.variante ? ` (${consulta.variante})` : ''}`
+      const precio = Number(consulta?.precio || 0)
+
+      const client = await getClientInfo(contactId, accountId)
+      const fecha = new Date().toLocaleDateString('es-AR')
+
+      const items = [{ cantidad, descripcion: String(producto), precioUnitario: precio }]
+      const budgetText = formatBudgetText({
+        clienteNombre: client?.name || 'Cliente',
+        clienteTelefono: client?.phone || phone,
+        fecha,
+        items,
+        envio: 0,
+      })
+
+      const presupuesto = {
+        items,
+        fecha,
+        total: cantidad * precio,
+        cliente_nombre: client?.name || 'Cliente',
+        cliente_telefono: client?.phone || phone,
+      }
+
+      try {
+        const db = supabaseAdmin()
+        await db.from('conversations').update({
+          order_context: {
+            ...orderContext,
+            esperando_cantidad: false,
+            ultima_consulta: orderContext.ultima_consulta ?? null,
+            presupuesto_activo: presupuesto,
+            pedido_confirmado: null,
+          },
+        }).eq('id', conversationId)
+      } catch { /* non-critical */ }
+
+      await reply(sendCtx, budgetText)
+      logChatbotStep({
+        phone, message_text: text,
+        step: 'response_sent',
+        data: { intent: 'order_request', response_preview: budgetText.slice(0, 200), budget_sent: true },
+        account_id: accountId,
+      }).catch(() => {})
+      console.log('[chatbot] END (budget sent, esperando confirmacion)')
+      return
+    }
+
+    // Not a valid quantity → handoff
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'handoff',
+      data: { intent: 'order_request', reason: 'Invalid quantity for budget' },
+      account_id: accountId,
+    }).catch(() => {})
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+    console.log('[chatbot] END (handoff - invalid quantity)')
+    return
+  }
+
+  if (intent === 'order_request') {
+    if (!orderContext?.ultima_consulta) {
+      logChatbotStep({
+        phone, message_text: text,
+        step: 'handoff',
+        data: { intent: 'order_request', reason: 'No ultima_consulta' },
+        account_id: accountId,
+      }).catch(() => {})
+      try {
+        const db = supabaseAdmin()
+        await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+      } catch { /* non-critical */ }
+      console.log('[chatbot] END (handoff - no ultima consulta)')
+      return
+    }
+
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({
+        order_context: {
+          ...orderContext,
+          esperando_cantidad: true,
+          ultima_consulta: orderContext.ultima_consulta ?? null,
+        },
+      }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+
+    await reply(sendCtx, '¿Cuántos querés?')
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'response_sent',
+      data: { intent: 'order_request', asking_quantity: true },
+      account_id: accountId,
+    }).catch(() => {})
+    console.log('[chatbot] END (asking quantity)')
+    return
+  }
+
+  if (intent === 'confirm_order') {
+    const presupuesto = orderContext?.presupuesto_activo as Record<string, unknown> | undefined
+    if (!presupuesto?.items) {
+      logChatbotStep({
+        phone, message_text: text,
+        step: 'handoff',
+        data: { intent: 'confirm_order', reason: 'No active budget' },
+        account_id: accountId,
+      }).catch(() => {})
+      try {
+        const db = supabaseAdmin()
+        await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+      } catch { /* non-critical */ }
+      console.log('[chatbot] END (handoff - no active budget)')
+      return
+    }
+
+    // Mark as confirmed → handoff to Jorge
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'handoff',
+      data: { intent: 'confirm_order', reason: 'User confirmed order', order: presupuesto },
+      account_id: accountId,
+    }).catch(() => {})
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({
+        status: 'pending',
+        ai_autoreply_disabled: true,
+        order_context: {
+          ...(orderContext || {}),
+          esperando_cantidad: false,
+          ultima_consulta: orderContext?.ultima_consulta ?? null,
+          pedido_confirmado: presupuesto,
+          presupuesto_activo: null,
+        },
+      }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+    await reply(sendCtx, '¡Gracias! Tu pedido fue registrado. Un agente se va a comunicar para coordinar la entrega.')
+    console.log('[chatbot] END (order confirmed, handoff)')
+    return
+  }
+  // ── END ORDER FLOW ──
+
   // Step 3 — Fetch data from FacBal
   let dataContext = ''
   let imageUrl: string | null = null
@@ -385,31 +598,27 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           account_id: accountId,
         }).catch(() => {})
 
-        if (result.sugerencias.length > 0 && !orderContext?.productos) {
+        if (result.sugerencias.length > 0 && !orderContext?.ultima_consulta) {
           try {
+            const first = result.sugerencias[0]
+            const descripcion = `${first.categoria} ${first.medida}${first.variante ? ` (${first.variante})` : ''}`
+            const consulta = {
+              categoria: first.categoria,
+              medida: first.medida,
+              variante: first.variante || '',
+              precio: first.precio,
+              descripcion,
+            }
             const db = supabaseAdmin()
             await db.from('conversations').update({
               order_context: {
-                productos: result.sugerencias.map(s => ({
-                  categoria: s.categoria,
-                  medida: s.medida,
-                  variante: s.variante,
-                  precio: s.precio,
-                })),
-                estado_pedido: 'cotizado',
-                estado_pago: 'sin_pagar',
-                updated_at: new Date().toISOString(),
+                ...orderContext,
+                ultima_consulta: consulta,
               },
             }).eq('id', conversationId)
             orderContext = {
-              productos: result.sugerencias.map(s => ({
-                categoria: s.categoria,
-                medida: s.medida,
-                variante: s.variante,
-                precio: s.precio,
-              })),
-              estado_pedido: 'cotizado',
-              estado_pago: 'sin_pagar',
+              ...orderContext,
+              ultima_consulta: consulta,
             }
           } catch {
             // non-critical
