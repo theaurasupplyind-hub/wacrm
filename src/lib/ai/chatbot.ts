@@ -1,13 +1,16 @@
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   getFacturasPendientes,
   buscarProductos,
   suggestPrice,
+  getPriceListImages,
+  getPriceListImageUrl,
   type SugerenciaPrecio,
   type SuggestPriceResult,
   type Producto,
 } from '../facbal/client'
 import { logChatbotStep } from './chatbot-logger'
+import { supabaseAdmin } from './admin-client'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
@@ -22,11 +25,13 @@ interface ChatArgs {
   conversationId: string
 }
 
-type IntentType = 'pending_invoices' | 'product_search' | 'general' | 'ignore'
+type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'general' | 'ignore'
 
-/**
- * Send a WhatsApp reply that persists in the CRM inbox.
- */
+interface DetectedIntent {
+  intent: IntentType
+  priceListCategory?: string
+}
+
 async function reply(
   ctx: { accountId: string; userId: string; contactId: string; conversationId: string },
   text: string,
@@ -46,9 +51,6 @@ async function reply(
   }
 }
 
-/**
- * Call OpenRouter with a simple text prompt.
- */
 async function callOpenRouter(args: {
   systemPrompt: string
   userMessage: string
@@ -100,40 +102,6 @@ async function callOpenRouter(args: {
   return text.trim()
 }
 
-const INTENT_SYSTEM_PROMPT = `Sos un clasificador de intenciones para un negocio de marcos y molduras (Bastidores GAL).
-
-Analizá el mensaje del cliente y respondé EXCLUSIVAMENTE con una sola palabra:
-
-- "pending_invoices" si pregunta por facturas pendientes, deuda, saldo, cuánto debe, pagos
-- "product_search" si pregunta por productos, precios, medidas, stock, varillas, telas, molduras, rollos
-- "ignore" si es un saludo simple ("hola", "gracias"), una respuesta corta, o algo que no requiere consulta a la base de datos
-
-Solo respondé con la palabra, sin comillas ni texto adicional.`
-
-/**
- * Detect intent from a customer text message using OpenRouter.
- */
-async function detectIntent(text: string): Promise<IntentType> {
-  try {
-    const result = await callOpenRouter({
-      systemPrompt: INTENT_SYSTEM_PROMPT,
-      userMessage: text,
-    })
-    const cleaned = result.trim().toLowerCase()
-    if (cleaned.includes('pending_invoices')) return 'pending_invoices'
-    if (cleaned.includes('product_search')) return 'product_search'
-    if (cleaned.includes('ignore')) return 'ignore'
-    if (cleaned.includes('general')) return 'general'
-    if (text.length > 30) return 'general' // longer messages are questions
-    return 'ignore'
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[chatbot] Intent detection failed:', msg)
-    // Fallback: short messages = ignore, longer = try to answer
-    return text.length > 25 ? 'general' : 'ignore'
-  }
-}
-
 const CHAT_SYSTEM_PROMPT = `Sos un asistente virtual de Bastidores GAL, un taller de marcos y molduras.
 
 Reglas:
@@ -142,8 +110,77 @@ Reglas:
 - Si la información que te doy no alcanza para responder, decilo honestamente: "No tengo ese dato, un agente te lo confirma."
 - Sé breve, estás en WhatsApp. Máximo 3-4 oraciones.
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
+- Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
+- Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
 
 DATOS DEL SISTEMA:`
+
+function detectIntent(text: string): DetectedIntent {
+  const t = text.toLowerCase()
+
+  if (/\b(factura|deuda|saldo|debo|debe|pendiente|pago|pagar|cuenta|vencimiento)\b/.test(t)) {
+    return { intent: 'pending_invoices' }
+  }
+
+  const hasDim = /(\d+)\s*(?:[xX×]|por)\s*(\d+)/.test(t) || /\d+\s*(?:cm|cc)\b/.test(t)
+
+  const hasLista = /\b(lista|cat[áa]logo)\b/.test(t)
+  let priceListCategory: string | undefined
+  if (/acr[ií]lico/.test(t)) priceListCategory = 'acrilicos'
+  if (/circular/.test(t)) priceListCategory = 'circulares'
+  if (/bastidor/.test(t)) priceListCategory = 'bastidores'
+
+  if (hasLista) return { intent: 'price_list', priceListCategory }
+
+  const productMatch = /\b(bastidor|acr[ií]lico|circular|tapacanto|pintura|lienzo|tela|lona|varilla|moldura|rollo|embastar|marcos?|molduras?)\b/.test(t)
+  const priceWords = /\b(precios?|cuest[ao]|sale|cu[aá]nto|valor)\b/.test(t)
+
+  if (priceWords && priceListCategory && !hasDim) {
+    return { intent: 'price_list', priceListCategory }
+  }
+
+  if (priceWords && !hasDim && !productMatch) {
+    return { intent: 'price_list' }
+  }
+
+  if (productMatch) return { intent: 'product_search' }
+  if (priceWords && hasDim) return { intent: 'product_search' }
+
+  const words = t.replace(/[^\w\s]/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const greetingPattern = /^(hola|gracias|ok|si|s[ií]|dale|bueno|bien|genial|perfecto|chau|adios|buen|buenas|buenos|okey|listo|excelente|buend[ií]a)$/
+  if (words.length <= 2 && words.every(w => greetingPattern.test(w))) {
+    return { intent: 'ignore' }
+  }
+
+  return { intent: 'general' }
+}
+
+async function getPendingGreeting(phone: string, accountId: string): Promise<string | null> {
+  try {
+    const db = supabaseAdmin()
+    const { data } = await db
+      .from('chatbot_logs')
+      .select('created_at, data')
+      .eq('phone', phone)
+      .eq('account_id', accountId)
+      .eq('step', 'intent_detected')
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (!data || data.length === 0) return null
+
+    const log = data[0]
+    const logData = log.data as Record<string, unknown> | null
+    if (logData?.intent !== 'ignore') return null
+
+    const ts = new Date(log.created_at as string).getTime()
+    if (Date.now() - ts > 30 * 60 * 1000) return null
+
+    return 'SALUDO PENDIENTE: El usuario te saludó antes y no le respondiste. Arrancá preguntándole si tenía una consulta.'
+  } catch {
+    return null
+  }
+}
 
 function formatProductos(products: Producto[]): string {
   if (products.length === 0) return 'No se encontraron productos.'
@@ -165,37 +202,72 @@ function formatInvoices(facturas: { numero_factura: string; saldo_pendiente: num
     .join('\n')
 }
 
+function formatSugerencias(sugerencias: SugerenciaPrecio[]): string {
+  return sugerencias
+    .map(s => `- ${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}: $${s.precio.toLocaleString('es-AR')}`)
+    .join('\n')
+}
+
+async function sendImage(
+  ctx: { accountId: string; userId: string; contactId: string; conversationId: string },
+  imageUrl: string,
+  caption: string,
+): Promise<void> {
+  try {
+    await engineSendMedia({
+      accountId: ctx.accountId,
+      userId: ctx.userId,
+      conversationId: ctx.conversationId,
+      contactId: ctx.contactId,
+      kind: 'image',
+      link: imageUrl,
+      caption,
+    })
+    console.log('[chatbot] Image sent OK')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[chatbot] Image send failed:', msg)
+  }
+}
+
 export async function processChatMessage(args: ChatArgs): Promise<void> {
   const { text, phone, accountId, userId, contactId, conversationId } = args
   const sendCtx = { accountId, userId, contactId, conversationId }
 
   console.log('[chatbot] Processing: "%s" from phone=%s', text.slice(0, 60), phone.slice(-6))
 
-  // Step 1 — Detect intent
-  let intent: IntentType
-  try {
-    intent = await detectIntent(text)
-  } catch (err) {
-    console.error('[chatbot] detectIntent error:', err)
-    return
-  }
+  // Step 1 — Keyword-based intent detection (0 OR calls)
+  const detected = detectIntent(text)
+  const { intent, priceListCategory } = detected
+
+  logChatbotStep({
+    phone,
+    message_text: text,
+    step: 'intent_detected',
+    data: {
+      intent,
+      priceListCategory: priceListCategory ?? null,
+      conversation_id: conversationId,
+      raw_text: text.slice(0, 100),
+    },
+    account_id: accountId,
+  }).catch(() => {})
 
   if (intent === 'ignore') {
     console.log('[chatbot] Ignoring message (intent=ignore)')
     return
   }
 
-  console.log('[chatbot] Intent detected: %s', intent)
-  logChatbotStep({
-    phone,
-    message_text: text,
-    step: 'intent_detected',
-    data: { intent, raw_text: text.slice(0, 100) },
-    account_id: accountId,
-  }).catch(() => {})
+  console.log('[chatbot] Intent detected: intent=%s category=%s', intent, priceListCategory || '-')
 
-  // Step 2 — Fetch data from FacBal
+  // Step 2 — Check for pending greeting (user said hi but was ignored)
+  const greeting = await getPendingGreeting(phone, accountId)
+
+  // Step 3 — Fetch data from FacBal
   let dataContext = ''
+  let imageUrl: string | null = null
+  let imageLabel: string | null = null
+
   try {
     if (intent === 'pending_invoices' || intent === 'general') {
       try {
@@ -237,51 +309,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           account_id: accountId,
         }).catch(() => {})
 
-        if (result.sugerencias.length > 0 && intent === 'product_search') {
-          const lines = result.sugerencias.map(
-            (s) => `- ${s.variante ? s.variante + ' ' : ''}${s.medida}: $${s.precio.toLocaleString('es-AR')}`
-          )
-          const medida = result.medida_encontrada || ''
-          const header = medida
-            ? `Hola! Para *${medida}*:\n\n${lines.join('\n')}`
-            : `Estas son las opciones:\n\n${lines.join('\n')}`
-          const msg = result.regla_aplicada
-            ? `${header}\n\n(${result.regla_aplicada})`
-            : header
-
-          await reply(sendCtx, msg)
-          logChatbotStep({
-            phone,
-            message_text: text,
-            step: 'direct_response',
-            data: {
-              sugerencias_count: result.sugerencias.length,
-              medida_encontrada: result.medida_encontrada,
-              regla_aplicada: result.regla_aplicada,
-              response_preview: msg.slice(0, 200),
-            },
-            account_id: accountId,
-          }).catch(() => {})
-          console.log('[chatbot] END (direct pricing response)')
-          return
-        }
-
         if (result.sugerencias.length > 0) {
-          const lines = result.sugerencias.map(
-            (s) => `- ${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}: $${s.precio.toFixed(2)}`
-          )
-          const header = result.medida_encontrada
-            ? `Para ${result.medida_encontrada}:`
-            : 'Sugerencias:'
-          dataContext += `\nPRECIOS SUGERIDOS:\n${header}\n${lines.join('\n')}\n`
+          dataContext += `\nPRECIOS DE REFERENCIA:\n${formatSugerencias(result.sugerencias)}\n`
           if (result.regla_aplicada) {
-            dataContext += `\n(Regla: ${result.regla_aplicada})\n`
+            dataContext += `(Regla aplicada: ${result.regla_aplicada})\n`
           }
         } else if (result.mensaje) {
           dataContext += `\n${result.mensaje}\n`
-        }
-
-        if (result.sugerencias.length === 0) {
           const productos = await buscarProductos(text)
           if (productos.length > 0) {
             dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
@@ -299,15 +333,40 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
         }).catch(() => {})
         try {
           const productos = await buscarProductos(text)
-          dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
-        } catch (err2) {
+          if (productos.length > 0) {
+            dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
+          }
+        } catch {
           dataContext += '\nPRODUCTOS: Error al consultar\n'
         }
+      }
+    }
+
+    if (intent === 'price_list') {
+      try {
+        const images = await getPriceListImages()
+        if (images.length > 0) {
+          const targetCategory = (priceListCategory || 'bastidores').toLowerCase()
+          const match = images.find(img =>
+            img.name.toLowerCase().includes(targetCategory) || targetCategory.includes(img.name.toLowerCase()),
+          ) || images[0]
+
+          imageUrl = getPriceListImageUrl(match.id)
+          imageLabel = match.name
+          dataContext += `\nLISTA DE PRECIOS: El usuario pidió la lista de precios${priceListCategory ? ` de ${priceListCategory}` : ''}. Vas a enviarle una imagen (${match.name}). Decile algo como "Ahí te mando la lista!" sin repetir precios (ya estan en la imagen). Agregá solo info breve util.\n`
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[chatbot] Price list images failed:', msg)
       }
     }
   } catch (err) {
     console.error('[chatbot] data fetch error:', err)
     return
+  }
+
+  if (greeting) {
+    dataContext = greeting + '\n\n' + dataContext
   }
 
   if (!dataContext.trim()) {
@@ -322,14 +381,14 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
-  // Step 3 — Generate response
+  // Step 4 — OpenRouter generates natural response (1 call, all context)
   try {
-    console.log('[chatbot] Generating response with context size=%d', dataContext.length)
+    console.log('[chatbot] Generating response with context size=%d hasImage=%s', dataContext.length, !!imageUrl)
     logChatbotStep({
       phone,
       message_text: text,
       step: 'openrouter_response',
-      data: { intent, context_size: dataContext.length, context_preview: dataContext.slice(0, 300) },
+      data: { intent, context_size: dataContext.length, context_preview: dataContext.slice(0, 300), has_image: !!imageUrl },
       account_id: accountId,
     }).catch(() => {})
 
@@ -344,9 +403,14 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       phone,
       message_text: text,
       step: 'response_sent',
-      data: { intent, response_preview: respuesta.slice(0, 200) },
+      data: { intent, response_preview: respuesta.slice(0, 200), image_sent: !!imageUrl },
       account_id: accountId,
     }).catch(() => {})
+
+    if (imageUrl) {
+      const caption = imageLabel ? `Lista de precios: ${imageLabel}` : 'Lista de precios'
+      await sendImage(sendCtx, imageUrl, caption)
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[chatbot] Generate response failed:', msg)

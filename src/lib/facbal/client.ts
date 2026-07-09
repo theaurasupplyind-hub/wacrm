@@ -160,3 +160,34 @@ export async function suggestPrice(
 
   return res.json() as Promise<SuggestPriceResult>
 }
+
+export interface PriceListImageMeta {
+  id: number
+  name: string
+  position: number
+  created_at: string
+}
+
+export async function getPriceListImages(): Promise<PriceListImageMeta[]> {
+  const url = `${apiUrl()}/price-list-images`
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar imagenes${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  const data = await res.json()
+  if (!Array.isArray(data)) {
+    throw new Error('FacBal API devolvió una respuesta inesperada.')
+  }
+
+  return data as PriceListImageMeta[]
+}
+
+export function getPriceListImageUrl(imageId: number): string {
+  return `${apiUrl()}/price-list-images/${imageId}/view`
+}

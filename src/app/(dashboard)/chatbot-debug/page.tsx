@@ -21,11 +21,19 @@ interface LogEntry {
 const STEP_LABELS: Record<string, { label: string; color: string }> = {
   intent_detected: { label: 'Intent', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
   suggest_price: { label: 'Suggest Price', color: 'bg-purple-500/10 text-purple-400 border-purple-500/30' },
-  direct_response: { label: 'Direct Response', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
+  direct_response: { label: 'Direct', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
   response_sent: { label: 'Response Sent', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
   openrouter_response: { label: 'OpenRouter', color: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
   no_data: { label: 'No Data', color: 'bg-gray-500/10 text-gray-400 border-gray-500/30' },
   error: { label: 'Error', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
+}
+
+const INTENT_LABELS: Record<string, string> = {
+  ignore: 'Ignored',
+  product_search: 'Product Search',
+  price_list: 'Price List',
+  pending_invoices: 'Invoices',
+  general: 'General',
 }
 
 export default function ChatbotDebugPage() {
@@ -173,6 +181,16 @@ export default function ChatbotDebugPage() {
           const meta = stepMeta(log.step)
           const isExpanded = expandedIds.has(log.id)
           const isError = log.step === 'error'
+          const stepIntent = log.data && typeof log.data === 'object' && 'intent' in log.data
+            ? String((log.data as Record<string, unknown>).intent)
+            : null
+          const isIgnore = stepIntent === 'ignore'
+          const isPriceList = stepIntent === 'price_list'
+          const priceListCategory = log.data && typeof log.data === 'object'
+            ? (log.data as Record<string, unknown>).priceListCategory as string | undefined
+            : undefined
+          const hasImage = log.data && typeof log.data === 'object' && 'has_image' in log.data
+          const imageSent = log.data && typeof log.data === 'object' && 'image_sent' in log.data
 
           return (
             <Card
@@ -180,11 +198,15 @@ export default function ChatbotDebugPage() {
               className={`border transition-colors ${
                 isError
                   ? 'border-red-500/20 bg-red-500/5'
-                  : log.step === 'direct_response'
-                    ? 'border-green-500/20 bg-card'
-                    : log.step === 'openrouter_response'
-                      ? 'border-amber-500/20 bg-card'
-                      : 'border-border bg-card'
+                  : isIgnore
+                    ? 'border-gray-500/15 bg-gray-500/3'
+                    : isPriceList
+                      ? 'border-pink-500/20 bg-card'
+                      : log.step === 'direct_response'
+                        ? 'border-green-500/20 bg-card'
+                        : log.step === 'openrouter_response'
+                          ? 'border-amber-500/20 bg-card'
+                          : 'border-border bg-card'
               }`}
             >
               <div
@@ -199,6 +221,31 @@ export default function ChatbotDebugPage() {
                     <Badge variant="outline" className={`text-[10px] ${meta.color}`}>
                       {meta.label}
                     </Badge>
+                    {stepIntent && log.step === 'intent_detected' && (
+                      <Badge
+                        variant="outline"
+                        className={`text-[10px] ${
+                          isIgnore
+                            ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
+                            : isPriceList
+                              ? 'bg-pink-500/10 text-pink-400 border-pink-500/30'
+                              : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                        }`}
+                      >
+                        {INTENT_LABELS[stepIntent] ?? stepIntent}
+                        {priceListCategory ? ` → ${priceListCategory}` : ''}
+                      </Badge>
+                    )}
+                    {hasImage && (
+                      <Badge variant="outline" className="text-[10px] bg-pink-500/10 text-pink-400 border-pink-500/30">
+                        Image
+                      </Badge>
+                    )}
+                    {imageSent && (
+                      <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/30">
+                        Image Sent
+                      </Badge>
+                    )}
                     {log.phone && (
                       <span className="text-xs text-muted-foreground font-mono">
                         +{log.phone}
