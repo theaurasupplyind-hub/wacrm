@@ -148,7 +148,7 @@ export async function suggestPrice(
 
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(25_000),
   })
 
   if (!res.ok) {

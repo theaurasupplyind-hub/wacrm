@@ -4,6 +4,7 @@ import {
   buscarProductos,
   suggestPrice,
   type SugerenciaPrecio,
+  type SuggestPriceResult,
   type Producto,
 } from '../facbal/client'
 import { logChatbotStep } from './chatbot-logger'
@@ -209,7 +210,18 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
     if (intent === 'product_search' || intent === 'general') {
       try {
-        const result = await suggestPrice(text)
+        let result!: SuggestPriceResult
+        let attempt = 0
+        while (attempt < 2) {
+          try {
+            result = await suggestPrice(text)
+            break
+          } catch (err) {
+            attempt++
+            if (attempt >= 2) throw err
+            await new Promise(r => setTimeout(r, 3000))
+          }
+        }
 
         logChatbotStep({
           phone,
