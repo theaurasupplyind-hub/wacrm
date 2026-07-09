@@ -125,3 +125,38 @@ export async function buscarProductos(
 
   return data as Producto[]
 }
+
+export interface SugerenciaPrecio {
+  categoria: string
+  medida: string
+  variante: string
+  precio: number
+}
+
+export interface SuggestPriceResult {
+  query: string
+  medida_encontrada: string | null
+  sugerencias: SugerenciaPrecio[]
+  regla_aplicada: string | null
+  mensaje: string | null
+}
+
+export async function suggestPrice(
+  query: string,
+): Promise<SuggestPriceResult> {
+  const url = `${apiUrl()}/products/suggest-price?q=${encodeURIComponent(query)}`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al sugerir precio${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  return res.json() as Promise<SuggestPriceResult>
+}

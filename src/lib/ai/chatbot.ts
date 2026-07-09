@@ -2,12 +2,14 @@ import { engineSendText } from '@/lib/flows/meta-send'
 import {
   getFacturasPendientes,
   buscarProductos,
+  suggestPrice,
+  type SugerenciaPrecio,
   type Producto,
 } from '../facbal/client'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
-const DEFAULT_MODEL = 'google/gemini-2.5-flash'
+const DEFAULT_CHAT_MODEL = 'google/gemini-2.5-flash-lite'
 
 interface ChatArgs {
   text: string
@@ -52,7 +54,7 @@ async function callOpenRouter(args: {
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) throw new Error('OPENROUTER_API_KEY not set')
 
-  const model = process.env.VOUCHER_AI_MODEL || DEFAULT_MODEL
+  const model = process.env.CHATBOT_AI_MODEL || DEFAULT_CHAT_MODEL
 
   let res: Response
   try {
@@ -199,12 +201,39 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
     if (intent === 'product_search' || intent === 'general') {
       try {
-        const productos = await buscarProductos(text)
-        dataContext += '\nPRODUCTOS ENCONTRADOS:\n' + formatProductos(productos) + '\n'
+        const result = await suggestPrice(text)
+        if (result.sugerencias.length > 0) {
+          const lines = result.sugerencias.map(
+            (s) => `- ${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}: $${s.precio.toFixed(2)}`
+          )
+          const header = result.medida_encontrada
+            ? `Para ${result.medida_encontrada}:`
+            : 'Sugerencias:'
+          dataContext += `\nPRECIOS SUGERIDOS:\n${header}\n${lines.join('\n')}\n`
+          if (result.regla_aplicada) {
+            dataContext += `\n(Regla: ${result.regla_aplicada})\n`
+          }
+        } else if (result.mensaje) {
+          dataContext += `\n${result.mensaje}\n`
+        }
+
+        // Fallback: also search products if suggest-price found nothing
+        if (result.sugerencias.length === 0) {
+          const productos = await buscarProductos(text)
+          if (productos.length > 0) {
+            dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        console.error('[chatbot] FacBal products failed:', msg)
-        dataContext += '\nPRODUCTOS: Error al consultar\n'
+        console.error('[chatbot] suggestPrice failed:', msg)
+        // Fallback to product search
+        try {
+          const productos = await buscarProductos(text)
+          dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
+        } catch (err2) {
+          dataContext += '\nPRODUCTOS: Error al consultar\n'
+        }
       }
     }
   } catch (err) {
