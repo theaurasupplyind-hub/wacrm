@@ -26,6 +26,8 @@ const STEP_LABELS: Record<string, { label: string; color: string }> = {
   openrouter_response: { label: 'OpenRouter', color: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
   no_data: { label: 'No Data', color: 'bg-gray-500/10 text-gray-400 border-gray-500/30' },
   error: { label: 'Error', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
+  image_sent: { label: 'Image Sent', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
+  image_failed: { label: 'Image Failed', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
 }
 
 const INTENT_LABELS: Record<string, string> = {
@@ -190,7 +192,15 @@ export default function ChatbotDebugPage() {
             ? (log.data as Record<string, unknown>).priceListCategory as string | undefined
             : undefined
           const hasImage = log.data && typeof log.data === 'object' && 'has_image' in log.data
-          const imageSent = log.data && typeof log.data === 'object' && 'image_sent' in log.data
+          const logTokensIn = log.data && typeof log.data === 'object' && 'tokens_in' in log.data
+            ? Number((log.data as Record<string, unknown>).tokens_in)
+            : null
+          const logTokensOut = log.data && typeof log.data === 'object' && 'tokens_out' in log.data
+            ? Number((log.data as Record<string, unknown>).tokens_out)
+            : null
+          const logCostUsd = log.data && typeof log.data === 'object' && 'cost_usd' in log.data
+            ? Number((log.data as Record<string, unknown>).cost_usd)
+            : null
 
           return (
             <Card
@@ -198,15 +208,17 @@ export default function ChatbotDebugPage() {
               className={`border transition-colors ${
                 isError
                   ? 'border-red-500/20 bg-red-500/5'
-                  : isIgnore
-                    ? 'border-gray-500/15 bg-gray-500/3'
-                    : isPriceList
-                      ? 'border-pink-500/20 bg-card'
-                      : log.step === 'direct_response'
-                        ? 'border-green-500/20 bg-card'
-                        : log.step === 'openrouter_response'
-                          ? 'border-amber-500/20 bg-card'
-                          : 'border-border bg-card'
+                  : log.step === 'image_failed'
+                    ? 'border-red-500/20 bg-red-500/5'
+                    : isIgnore
+                      ? 'border-gray-500/15 bg-gray-500/3'
+                      : isPriceList
+                        ? 'border-pink-500/20 bg-card'
+                        : log.step === 'direct_response'
+                          ? 'border-green-500/20 bg-card'
+                          : log.step === 'openrouter_response'
+                            ? 'border-amber-500/20 bg-card'
+                            : 'border-border bg-card'
               }`}
             >
               <div
@@ -236,14 +248,15 @@ export default function ChatbotDebugPage() {
                         {priceListCategory ? ` → ${priceListCategory}` : ''}
                       </Badge>
                     )}
-                    {hasImage && (
+                    {hasImage && log.step !== 'response_sent' && (
                       <Badge variant="outline" className="text-[10px] bg-pink-500/10 text-pink-400 border-pink-500/30">
                         Image
                       </Badge>
                     )}
-                    {imageSent && (
-                      <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/30">
-                        Image Sent
+                    {logTokensIn != null && logTokensOut != null && (
+                      <Badge variant="outline" className="text-[10px] bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                        {logTokensIn + logTokensOut} tok
+                        {logCostUsd != null && <span className="ml-1 opacity-70">${logCostUsd.toFixed(5)}</span>}
                       </Badge>
                     )}
                     {log.phone && (

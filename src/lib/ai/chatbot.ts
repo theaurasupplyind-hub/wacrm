@@ -54,7 +54,7 @@ async function reply(
 async function callOpenRouter(args: {
   systemPrompt: string
   userMessage: string
-}): Promise<string> {
+}): Promise<{ text: string; usage: { prompt_tokens: number; completion_tokens: number } }> {
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) throw new Error('OPENROUTER_API_KEY not set')
 
@@ -96,10 +96,20 @@ async function callOpenRouter(args: {
     throw new Error(`OpenRouter error ${res.status}${detail ? `: ${detail}` : ''}`)
   }
 
-  const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+  const data = await res.json() as {
+    choices?: { message?: { content?: string } }[]
+    usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  }
   const text = data?.choices?.[0]?.message?.content
   if (!text || !text.trim()) throw new Error('OpenRouter devolvió respuesta vacía.')
-  return text.trim()
+
+  return {
+    text: text.trim(),
+    usage: {
+      prompt_tokens: data.usage?.prompt_tokens ?? 0,
+      completion_tokens: data.usage?.completion_tokens ?? 0,
+    },
+  }
 }
 
 const CHAT_SYSTEM_PROMPT = `Sos un asistente virtual de Bastidores GAL, un taller de marcos y molduras.
@@ -112,6 +122,7 @@ Reglas:
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
+- IMPORTANTE: cuando hay precios de referencia mostralos directo, sin explicar redondeos ni cálculos. Ejemplo malo: "no tengo exactamente 41x34, pero tengo 30x40 que sale X". Ejemplo bueno: "Un bastidor 41x34 (equivalente a 30x40) te sale $12.000. También hay estas variantes: ...".
 
 DATOS DEL SISTEMA:`
 
@@ -212,22 +223,30 @@ async function sendImage(
   ctx: { accountId: string; userId: string; contactId: string; conversationId: string },
   imageUrl: string,
   caption: string,
-): Promise<void> {
-  try {
-    await engineSendMedia({
-      accountId: ctx.accountId,
-      userId: ctx.userId,
-      conversationId: ctx.conversationId,
-      contactId: ctx.contactId,
-      kind: 'image',
-      link: imageUrl,
-      caption,
-    })
-    console.log('[chatbot] Image sent OK')
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[chatbot] Image send failed:', msg)
+): Promise<boolean> {
+  let attempt = 0
+  while (attempt < 2) {
+    try {
+      await engineSendMedia({
+        accountId: ctx.accountId,
+        userId: ctx.userId,
+        conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
+        kind: 'image',
+        link: imageUrl,
+        caption,
+      })
+      console.log('[chatbot] Image sent OK')
+      return true
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[chatbot] Image send failed (attempt %d):', attempt + 1, msg)
+      attempt++
+      if (attempt >= 2) return false
+      await new Promise(r => setTimeout(r, 3000))
+    }
   }
+  return false
 }
 
 export async function processChatMessage(args: ChatArgs): Promise<void> {
@@ -392,10 +411,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       account_id: accountId,
     }).catch(() => {})
 
-    const respuesta = await callOpenRouter({
+    const { text: respuesta, usage } = await callOpenRouter({
       systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
       userMessage: text,
     })
+
+    // gemini-2.5-flash-lite: $0.075/1M input, $0.30/1M output
+    const costUsd = (usage.prompt_tokens / 1_000_000) * 0.075 + (usage.completion_tokens / 1_000_000) * 0.30
 
     await reply(sendCtx, respuesta)
 
@@ -403,13 +425,28 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       phone,
       message_text: text,
       step: 'response_sent',
-      data: { intent, response_preview: respuesta.slice(0, 200), image_sent: !!imageUrl },
+      data: {
+        intent,
+        response_preview: respuesta.slice(0, 200),
+        tokens_in: usage.prompt_tokens,
+        tokens_out: usage.completion_tokens,
+        cost_usd: Math.round(costUsd * 1_000_000) / 1_000_000,
+        has_image: !!imageUrl,
+      },
       account_id: accountId,
     }).catch(() => {})
 
     if (imageUrl) {
       const caption = imageLabel ? `Lista de precios: ${imageLabel}` : 'Lista de precios'
-      await sendImage(sendCtx, imageUrl, caption)
+      const imageSent = await sendImage(sendCtx, imageUrl, caption)
+
+      logChatbotStep({
+        phone,
+        message_text: text,
+        step: imageSent ? 'image_sent' : 'image_failed',
+        data: { intent, image_url: imageUrl, image_label: imageLabel },
+        account_id: accountId,
+      }).catch(() => {})
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
