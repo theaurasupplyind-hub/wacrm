@@ -369,8 +369,8 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
             img.name.toLowerCase().includes(targetCategory) || targetCategory.includes(img.name.toLowerCase()),
           ) || images[0]
 
-          const crmBase = process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
+          const crmBase = process.env.VERCEL_PROJECT_PRODUCTION_URL
+            ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
             : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
           imageUrl = `${crmBase}/api/price-list-image/${match.id}`
           imageLabel = match.name
