@@ -28,6 +28,7 @@ const STEP_LABELS: Record<string, { label: string; color: string }> = {
   error: { label: 'Error', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
   image_sent: { label: 'Image Sent', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
   image_failed: { label: 'Image Failed', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
+  handoff: { label: 'Handoff', color: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
 }
 
 const INTENT_LABELS: Record<string, string> = {
@@ -210,10 +211,12 @@ export default function ChatbotDebugPage() {
                   ? 'border-red-500/20 bg-red-500/5'
                   : log.step === 'image_failed'
                     ? 'border-red-500/20 bg-red-500/5'
-                    : isIgnore
-                      ? 'border-gray-500/15 bg-gray-500/3'
-                      : isPriceList
-                        ? 'border-pink-500/20 bg-card'
+                    : log.step === 'handoff'
+                      ? 'border-orange-500/20 bg-orange-500/5'
+                      : isIgnore
+                        ? 'border-gray-500/15 bg-gray-500/3'
+                        : isPriceList
+                          ? 'border-pink-500/20 bg-card'
                         : log.step === 'direct_response'
                           ? 'border-green-500/20 bg-card'
                           : log.step === 'openrouter_response'

@@ -159,6 +159,9 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   contact?: Contact;
+  order_context?: Record<string, unknown>;
+  ai_autoreply_disabled?: boolean;
+  ai_reply_count?: number;
 }
 
 // ============================================================

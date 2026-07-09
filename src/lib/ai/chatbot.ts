@@ -14,6 +14,7 @@ import { supabaseAdmin } from './admin-client'
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const DEFAULT_CHAT_MODEL = 'google/gemini-2.5-flash-lite'
+const HANDOFF_SENTINEL = '[[HANDOFF]]'
 
 interface ChatArgs {
   text: string
@@ -122,6 +123,7 @@ Reglas:
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
 - IMPORTANTE: cuando hay precios de referencia mostralos directo, sin explicar redondeos ni cálculos. Ejemplo malo: "no tengo exactamente 41x34, pero tengo 30x40 que sale X". Ejemplo bueno: "Un bastidor 41x34 (equivalente a 30x40) te sale $12.000. También hay estas variantes: ...".
+- DIFERENCIACIÓN: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
 
 DATOS DEL SISTEMA:`
 
@@ -218,6 +220,46 @@ function formatSugerencias(sugerencias: SugerenciaPrecio[]): string {
     .join('\n')
 }
 
+function formatOrderContext(ctx: Record<string, unknown> | null): string {
+  if (!ctx || !ctx.productos || !Array.isArray(ctx.productos) || ctx.productos.length === 0) return ''
+  const lines: string[] = []
+  const productos = ctx.productos as Record<string, unknown>[]
+  const first = productos[0]
+  if (first.categoria) lines.push(`- Producto: ${first.categoria}`)
+  if (first.medida) lines.push(`- Medida: ${first.medida}`)
+  if (first.variante) lines.push(`- Variante: ${first.variante}`)
+  if (first.precio != null) lines.push(`- Precio unitario: $${Number(first.precio).toLocaleString('es-AR')}`)
+  if (ctx.presupuesto_total != null) lines.push(`- Presupuesto total: $${Number(ctx.presupuesto_total).toLocaleString('es-AR')}`)
+  if (ctx.estado_pago) lines.push(`- Estado del pago: ${ctx.estado_pago}`)
+  if (ctx.estado_pedido) lines.push(`- Estado del pedido: ${ctx.estado_pedido}`)
+  if (ctx.fecha_entrega) lines.push(`- Fecha de entrega: ${ctx.fecha_entrega}`)
+  if (ctx.direccion_entrega) lines.push(`- Dirección: ${ctx.direccion_entrega}`)
+  if (ctx.notas) lines.push(`- Notas: ${ctx.notas}`)
+  return lines.length > 0 ? 'ESTADO DEL PEDIDO:\n' + lines.join('\n') : ''
+}
+
+async function loadLastMessages(conversationId: string, limit: number = 4): Promise<string> {
+  try {
+    const db = supabaseAdmin()
+    const { data } = await db
+      .from('messages')
+      .select('content_text, sender_type')
+      .eq('conversation_id', conversationId)
+      .eq('content_type', 'text')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    if (!data || data.length === 0) return ''
+
+    const reversed = [...data].reverse()
+    return reversed
+      .map(m => `${m.sender_type === 'customer' ? 'Usuario' : 'Bot'}: ${m.content_text?.slice(0, 200)}`)
+      .join('\n')
+  } catch {
+    return ''
+  }
+}
+
 async function sendImage(
   ctx: { accountId: string; userId: string; contactId: string; conversationId: string },
   imageUrl: string,
@@ -281,6 +323,22 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   // Step 2 — Check for pending greeting (user said hi but was ignored)
   const greeting = await getPendingGreeting(phone, accountId)
 
+  // Load conversation context: order state + last messages
+  let orderContext: Record<string, unknown> | null = null
+  let historyText = ''
+  try {
+    const db = supabaseAdmin()
+    const { data: conv } = await db
+      .from('conversations')
+      .select('order_context')
+      .eq('id', conversationId)
+      .maybeSingle()
+    orderContext = (conv?.order_context as Record<string, unknown>) ?? null
+    historyText = await loadLastMessages(conversationId, 4)
+  } catch {
+    // non-critical, continue without context
+  }
+
   // Step 3 — Fetch data from FacBal
   let dataContext = ''
   let imageUrl: string | null = null
@@ -326,6 +384,37 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           },
           account_id: accountId,
         }).catch(() => {})
+
+        if (result.sugerencias.length > 0 && !orderContext?.productos) {
+          try {
+            const db = supabaseAdmin()
+            await db.from('conversations').update({
+              order_context: {
+                productos: result.sugerencias.map(s => ({
+                  categoria: s.categoria,
+                  medida: s.medida,
+                  variante: s.variante,
+                  precio: s.precio,
+                })),
+                estado_pedido: 'cotizado',
+                estado_pago: 'sin_pagar',
+                updated_at: new Date().toISOString(),
+              },
+            }).eq('id', conversationId)
+            orderContext = {
+              productos: result.sugerencias.map(s => ({
+                categoria: s.categoria,
+                medida: s.medida,
+                variante: s.variante,
+                precio: s.precio,
+              })),
+              estado_pedido: 'cotizado',
+              estado_pago: 'sin_pagar',
+            }
+          } catch {
+            // non-critical
+          }
+        }
 
         if (result.sugerencias.length > 0) {
           dataContext += `\nPRECIOS DE REFERENCIA:\n${formatSugerencias(result.sugerencias)}\n`
@@ -386,6 +475,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
+  const contextOrder = formatOrderContext(orderContext)
+  if (contextOrder) {
+    dataContext = contextOrder + '\n\n' + dataContext
+  }
+  if (historyText) {
+    dataContext = 'ÚLTIMOS MENSAJES:\n' + historyText + '\n\n' + dataContext
+  }
   if (greeting) {
     dataContext = greeting + '\n\n' + dataContext
   }
@@ -417,6 +513,27 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
       userMessage: text,
     })
+
+    if (respuesta.includes(HANDOFF_SENTINEL)) {
+      logChatbotStep({
+        phone,
+        message_text: text,
+        step: 'handoff',
+        data: { intent, reason: 'LLM requested handoff' },
+        account_id: accountId,
+      }).catch(() => {})
+      try {
+        const db = supabaseAdmin()
+        await db.from('conversations').update({
+          status: 'pending',
+          ai_autoreply_disabled: true,
+        }).eq('id', conversationId)
+      } catch {
+        // non-critical
+      }
+      console.log('[chatbot] END (handoff)')
+      return
+    }
 
     // gemini-2.5-flash-lite: $0.075/1M input, $0.30/1M output
     const costUsd = (usage.prompt_tokens / 1_000_000) * 0.075 + (usage.completion_tokens / 1_000_000) * 0.30
