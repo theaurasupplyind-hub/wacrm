@@ -6,6 +6,7 @@ import {
   type SugerenciaPrecio,
   type Producto,
 } from '../facbal/client'
+import { logChatbotStep } from './chatbot-logger'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
@@ -184,6 +185,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   }
 
   console.log('[chatbot] Intent detected: %s', intent)
+  logChatbotStep({
+    phone,
+    message_text: text,
+    step: 'intent_detected',
+    data: { intent, raw_text: text.slice(0, 100) },
+    account_id: accountId,
+  }).catch(() => {})
 
   // Step 2 — Fetch data from FacBal
   let dataContext = ''
@@ -203,6 +211,20 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       try {
         const result = await suggestPrice(text)
 
+        logChatbotStep({
+          phone,
+          message_text: text,
+          step: 'suggest_price',
+          data: {
+            sugerencias_count: result.sugerencias.length,
+            medida_encontrada: result.medida_encontrada,
+            regla_aplicada: result.regla_aplicada,
+            mensaje: result.mensaje,
+            intent,
+          },
+          account_id: accountId,
+        }).catch(() => {})
+
         if (result.sugerencias.length > 0 && intent === 'product_search') {
           const lines = result.sugerencias.map(
             (s) => `- ${s.variante ? s.variante + ' ' : ''}${s.medida}: $${s.precio.toLocaleString('es-AR')}`
@@ -216,6 +238,18 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
             : header
 
           await reply(sendCtx, msg)
+          logChatbotStep({
+            phone,
+            message_text: text,
+            step: 'direct_response',
+            data: {
+              sugerencias_count: result.sugerencias.length,
+              medida_encontrada: result.medida_encontrada,
+              regla_aplicada: result.regla_aplicada,
+              response_preview: msg.slice(0, 200),
+            },
+            account_id: accountId,
+          }).catch(() => {})
           console.log('[chatbot] END (direct pricing response)')
           return
         }
@@ -244,6 +278,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[chatbot] suggestPrice failed:', msg)
+        logChatbotStep({
+          phone,
+          message_text: text,
+          step: 'error',
+          data: { stage: 'suggestPrice', error: msg },
+          account_id: accountId,
+        }).catch(() => {})
         try {
           const productos = await buscarProductos(text)
           dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
@@ -258,6 +299,13 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   }
 
   if (!dataContext.trim()) {
+    logChatbotStep({
+      phone,
+      message_text: text,
+      step: 'no_data',
+      data: { intent },
+      account_id: accountId,
+    }).catch(() => {})
     console.log('[chatbot] END (no data)')
     return
   }
@@ -265,15 +313,38 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   // Step 3 — Generate response
   try {
     console.log('[chatbot] Generating response with context size=%d', dataContext.length)
+    logChatbotStep({
+      phone,
+      message_text: text,
+      step: 'openrouter_response',
+      data: { intent, context_size: dataContext.length, context_preview: dataContext.slice(0, 300) },
+      account_id: accountId,
+    }).catch(() => {})
+
     const respuesta = await callOpenRouter({
       systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
       userMessage: text,
     })
 
     await reply(sendCtx, respuesta)
+
+    logChatbotStep({
+      phone,
+      message_text: text,
+      step: 'response_sent',
+      data: { intent, response_preview: respuesta.slice(0, 200) },
+      account_id: accountId,
+    }).catch(() => {})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[chatbot] Generate response failed:', msg)
+    logChatbotStep({
+      phone,
+      message_text: text,
+      step: 'error',
+      data: { stage: 'openrouter_generate', error: msg },
+      account_id: accountId,
+    }).catch(() => {})
   }
 
   console.log('[chatbot] END intent=%s', intent)
