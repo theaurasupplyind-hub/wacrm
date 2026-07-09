@@ -156,6 +156,12 @@ function detectIntent(text: string): DetectedIntent {
   const productMatch = /\b(bastidor|acr[ií]lico|circular|tapacanto|pintura|lienzo|tela|lona|varilla|moldura|rollo|embastar|marcos?|molduras?)\b/.test(t)
   const priceWords = /\b(precios?|cuest[ao]|sale|cu[aá]nto|valor)\b/.test(t)
 
+  // "quiero/queria/quisiera/necesito" + producto + dimensiones (sin palabras de precio) → order_request
+  const buyIntent = /\b(quiero|quer[ií]a|quisiera|necesito)\b/.test(t) && !priceWords
+  if (buyIntent && productMatch && hasDim) {
+    return { intent: 'order_request' }
+  }
+
   if (priceWords && priceListCategory && !hasDim) {
     return { intent: 'price_list', priceListCategory }
   }
@@ -238,8 +244,18 @@ function formatOrderContext(ctx: Record<string, unknown> | null): string {
 
   const lines: string[] = []
   if (consulta) {
-    if (consulta.descripcion) lines.push(`- Producto: ${consulta.descripcion}`)
-    if (consulta.precio != null) lines.push(`- Precio unitario: $${Number(consulta.precio).toLocaleString('es-AR')}`)
+    const items = consulta.items as Array<Record<string, unknown>> | undefined
+    if (items && items.length > 1) {
+      lines.push('- Productos consultados:')
+      for (const item of items) {
+        const desc = item.descripcion || `${item.categoria} ${item.medida}${item.variante ? ` (${item.variante})` : ''}`
+        const precio = item.precio != null ? `$${Number(item.precio).toLocaleString('es-AR')}` : ''
+        lines.push(`  • ${desc}${precio ? ` — ${precio}` : ''}`)
+      }
+    } else {
+      if (consulta.descripcion) lines.push(`- Producto: ${consulta.descripcion}`)
+      if (consulta.precio != null) lines.push(`- Precio unitario: $${Number(consulta.precio).toLocaleString('es-AR')}`)
+    }
   }
   if (presupuesto) {
     if (presupuesto.total != null) lines.push(`- Presupuesto: $${Number(presupuesto.total).toLocaleString('es-AR')}`)
@@ -470,22 +486,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
-  if (intent === 'order_request') {
-    if (!orderContext?.ultima_consulta) {
-      logChatbotStep({
-        phone, message_text: text,
-        step: 'handoff',
-        data: { intent: 'order_request', reason: 'No ultima_consulta' },
-        account_id: accountId,
-      }).catch(() => {})
-      try {
-        const db = supabaseAdmin()
-        await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
-      } catch { /* non-critical */ }
-      console.log('[chatbot] END (handoff - no ultima consulta)')
-      return
-    }
-
+  if (intent === 'order_request' && orderContext?.ultima_consulta) {
     try {
       const db = supabaseAdmin()
       await db.from('conversations').update({
@@ -569,7 +570,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       }
     }
 
-    if (intent === 'product_search' || intent === 'general') {
+    if (intent === 'product_search' || intent === 'order_request' || intent === 'general') {
       try {
         let result!: SuggestPriceResult
         let attempt = 0
@@ -600,14 +601,21 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
         if (result.sugerencias.length > 0 && !orderContext?.ultima_consulta) {
           try {
-            const first = result.sugerencias[0]
-            const descripcion = `${first.categoria} ${first.medida}${first.variante ? ` (${first.variante})` : ''}`
+            const items = result.sugerencias.map(s => ({
+              categoria: s.categoria,
+              medida: s.medida,
+              variante: s.variante || '',
+              precio: s.precio,
+              descripcion: `${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}`,
+            }))
+            const first = items[0]
             const consulta = {
               categoria: first.categoria,
               medida: first.medida,
-              variante: first.variante || '',
+              variante: first.variante,
               precio: first.precio,
-              descripcion,
+              descripcion: first.descripcion,
+              items: items.length > 1 ? items : undefined,
             }
             const db = supabaseAdmin()
             await db.from('conversations').update({
