@@ -4,7 +4,6 @@ import {
   buscarProductos,
   suggestPrice,
   getPriceListImages,
-  getPriceListImageUrl,
   type SugerenciaPrecio,
   type SuggestPriceResult,
   type Producto,
@@ -370,7 +369,10 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
             img.name.toLowerCase().includes(targetCategory) || targetCategory.includes(img.name.toLowerCase()),
           ) || images[0]
 
-          imageUrl = getPriceListImageUrl(match.id)
+          const crmBase = process.env.VERCEL_URL
+            ? `https://${process.env.VERCEL_URL}`
+            : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+          imageUrl = `${crmBase}/api/price-list-image/${match.id}`
           imageLabel = match.name
           dataContext += `\nLISTA DE PRECIOS: El usuario pidió la lista de precios${priceListCategory ? ` de ${priceListCategory}` : ''}. Vas a enviarle una imagen (${match.name}). Decile algo como "Ahí te mando la lista!" sin repetir precios (ya estan en la imagen). Agregá solo info breve util.\n`
         }
