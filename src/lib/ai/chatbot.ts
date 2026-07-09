@@ -202,6 +202,24 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     if (intent === 'product_search' || intent === 'general') {
       try {
         const result = await suggestPrice(text)
+
+        if (result.sugerencias.length > 0 && intent === 'product_search') {
+          const lines = result.sugerencias.map(
+            (s) => `- ${s.variante ? s.variante + ' ' : ''}${s.medida}: $${s.precio.toLocaleString('es-AR')}`
+          )
+          const medida = result.medida_encontrada || ''
+          const header = medida
+            ? `Hola! Para *${medida}*:\n\n${lines.join('\n')}`
+            : `Estas son las opciones:\n\n${lines.join('\n')}`
+          const msg = result.regla_aplicada
+            ? `${header}\n\n(${result.regla_aplicada})`
+            : header
+
+          await reply(sendCtx, msg)
+          console.log('[chatbot] END (direct pricing response)')
+          return
+        }
+
         if (result.sugerencias.length > 0) {
           const lines = result.sugerencias.map(
             (s) => `- ${s.categoria} ${s.medida}${s.variante ? ` (${s.variante})` : ''}: $${s.precio.toFixed(2)}`
@@ -217,7 +235,6 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           dataContext += `\n${result.mensaje}\n`
         }
 
-        // Fallback: also search products if suggest-price found nothing
         if (result.sugerencias.length === 0) {
           const productos = await buscarProductos(text)
           if (productos.length > 0) {
@@ -227,7 +244,6 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[chatbot] suggestPrice failed:', msg)
-        // Fallback to product search
         try {
           const productos = await buscarProductos(text)
           dataContext += '\nPRODUCTOS:\n' + formatProductos(productos) + '\n'
@@ -238,6 +254,11 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     }
   } catch (err) {
     console.error('[chatbot] data fetch error:', err)
+    return
+  }
+
+  if (!dataContext.trim()) {
+    console.log('[chatbot] END (no data)')
     return
   }
 
