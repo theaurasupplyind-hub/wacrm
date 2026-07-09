@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const start = Date.now()
   const { id } = await params
   const imageId = parseInt(id, 10)
   if (isNaN(imageId)) {
@@ -15,12 +16,15 @@ export async function GET(
     return NextResponse.json({ error: 'FACBAL_API_URL not set' }, { status: 500 })
   }
 
-  const url = `${facbalUrl.replace(/\/$/, '')}/price-list-images/${imageId}/view`
+  const url = `${facbalUrl.replace(/\/$/, '')}/price-list-images/${imageId}/download`
+  const ua = request.headers.get('user-agent') || 'unknown'
 
   try {
     const res = await fetch(url)
 
     if (!res.ok) {
+      const elapsed = Date.now() - start
+      console.log('[proxy] GET /%s | ua=%s | status=%d | time=%dms | ERROR', id, ua, res.status, elapsed)
       return NextResponse.json(
         { error: `FacBal returned ${res.status}` },
         { status: 502 },
@@ -28,7 +32,9 @@ export async function GET(
     }
 
     const buffer = await res.arrayBuffer()
-    const contentType = res.headers.get('content-type') || 'image/webp'
+    const contentType = res.headers.get('content-type') || 'image/png'
+    const elapsed = Date.now() - start
+    console.log('[proxy] GET /%s | ua=%s | status=200 | size=%d bytes | time=%dms | type=%s', id, ua, buffer.byteLength, elapsed, contentType)
 
     return new NextResponse(buffer, {
       headers: {
@@ -38,7 +44,8 @@ export async function GET(
       },
     })
   } catch (err) {
-    console.error('[proxy] FacBal image fetch failed:', err)
+    const elapsed = Date.now() - start
+    console.error('[proxy] GET /%s | ua=%s | time=%dms | ERROR:', id, ua, elapsed, err)
     return NextResponse.json(
       { error: 'Failed to fetch image from FacBal' },
       { status: 502 },
