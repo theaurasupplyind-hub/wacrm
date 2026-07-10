@@ -142,6 +142,16 @@ export interface OrderItem {
   faltante: boolean
 }
 
+export interface DetallePrecio {
+  cantidad: number
+  categoria: string
+  variante: string
+  medida_solicitada: string
+  medida_referencia: string
+  precio: number | null
+  faltante: boolean
+}
+
 export interface SuggestPriceResult {
   query: string
   medida_encontrada: string | null
@@ -149,6 +159,7 @@ export interface SuggestPriceResult {
   regla_aplicada: string | null
   mensaje: string | null
   items: OrderItem[]
+  detalles: DetallePrecio[]
 }
 
 export async function suggestPrice(

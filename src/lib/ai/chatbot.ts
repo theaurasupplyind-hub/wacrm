@@ -126,7 +126,7 @@ Reglas:
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
-- IMPORTANTE — PRECIOS Y VARIANTES: cuando hay precios de referencia, mostralos directo sin explicar redondeos ni cálculos. Si un producto aparece en PRECIOS DE REFERENCIA, SÍ hay precio disponible. No digas "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen listados. Si hay varias variantes para la misma medida (ej: Sin Tela, Lienzo Profesional, Lona Preparada), mostrá todas con sus precios y preguntale al usuario cuál prefiere. Incluso si la variante disponible no es exactamente la que pidió, mostrá la más cercana y aclará la diferencia. Si un producto aparece como FALTANTE en el carrito, decí que no tiene precio en tabla y un agente lo cotiza.
+- PRECIOS_SUGERIDOS es la única fuente válida de precios. Usá los precios listados tal cual, nunca recalcules ni inventes. Si precio_unitario tiene un valor numérico, ese producto SI tiene precio y debes informarlo. Si precio_unitario=FALTANTE, entonces si deci que un agente lo cotiza. Si la medida_referencia es diferente a la medida_solicitada, informa el precio y aclara el ajuste. Si hay varias variantes listadas para la misma medida_solicitada, mostralas todas y pregunta cual quiere.
 - Si el usuario te pide el presupuesto, quiere ver el total de su pedido, o confirma que quiere comprar, podés incluir [[SHOW_BUDGET]] en tu respuesta. El sistema lo reemplazará automáticamente con el presupuesto formateado. Todo lo que escribas además del sentinel también se enviará.
 - Si el usuario quiere cancelar o abandonar su pedido, decile que use las palabras "cancelar pedido" o "abandonar carrito" para borrarlo y empezar de nuevo.
 - DIFERENCIACIÓN — HANDOFF: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
@@ -562,12 +562,18 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           }
         }
 
-        if (result.sugerencias.length > 0) {
-          dataContext += `\nPRECIOS DE REFERENCIA:\n${formatSugerencias(result.sugerencias)}\n`
-          if (result.regla_aplicada) {
-            dataContext += `(Regla aplicada: ${result.regla_aplicada})\n`
-          }
-          dataContext += `(IMPORTANTE: estos precios YA ESTÁN CALCULADOS. Si ves productos listados aquí, SÍ hay precio disponible. No le digas al cliente "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen aquí.)\n`
+        if (result.detalles && result.detalles.length > 0) {
+          dataContext += '\nPRECIOS_SUGERIDOS\n'
+          result.detalles.forEach((d, i) => {
+            dataContext += `ITEM ${i + 1}\n`
+            dataContext += `  cantidad=${d.cantidad}\n`
+            dataContext += `  categoria=${d.categoria}\n`
+            dataContext += `  variante=${d.variante || '-'}\n`
+            dataContext += `  medida_solicitada=${d.medida_solicitada}\n`
+            dataContext += `  medida_referencia=${d.medida_referencia}\n`
+            dataContext += `  precio_unitario=${d.precio ?? 'FALTANTE'}\n`
+          })
+          dataContext += '\n'
           if (result.mensaje) {
             dataContext += `${result.mensaje}\n`
           }
@@ -742,8 +748,8 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     }).catch(() => {})
   }
 
-  const nSuggestions = dataContext.includes('PRECIOS DE REFERENCIA')
-    ? (dataContext.match(/^- /gm)?.length ?? 0)
+  const nSuggestions = dataContext.includes('PRECIOS_SUGERIDOS')
+    ? (dataContext.match(/^ITEM \d+$/gm)?.length ?? 0)
     : 0
   console.log(pfmt(`intent=${intent} action=done suggest=${nSuggestions} cart=${cart?.items?.length ?? 0}items${cart?.total ? ` $${cart.total}` : ''}`))
 }
