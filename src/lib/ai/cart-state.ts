@@ -61,24 +61,38 @@ export function addToCart(
     faltante: boolean
   }[],
 ): CartState {
-  const added: CartItem[] = newItems.map((item) => ({
-    cantidad: item.cantidad,
-    categoria: item.categoria,
-    medida: item.medida,
-    variante: item.variante || '',
-    precio_unitario: item.precio,
-    subtotal: item.precio != null ? item.cantidad * item.precio : null,
-  }))
+  const items = [...existing.items]
 
-  const allItems = [...existing.items, ...added]
-  const total = allItems.reduce((sum, i) => sum + (i.subtotal || 0), 0)
-  const itemsFaltantes = allItems
+  for (const item of newItems) {
+    const key = `${item.categoria}|${item.medida}|${item.variante || ''}`
+    const existingIdx = items.findIndex(
+      (i) => `${i.categoria}|${i.medida}|${i.variante}` === key,
+    )
+
+    const newEntry: CartItem = {
+      cantidad: item.cantidad,
+      categoria: item.categoria,
+      medida: item.medida,
+      variante: item.variante || '',
+      precio_unitario: item.precio,
+      subtotal: item.precio != null ? item.cantidad * item.precio : null,
+    }
+
+    if (existingIdx >= 0) {
+      items[existingIdx] = newEntry
+    } else {
+      items.push(newEntry)
+    }
+  }
+
+  const total = items.reduce((sum, i) => sum + (i.subtotal || 0), 0)
+  const itemsFaltantes = items
     .filter((i) => i.precio_unitario == null)
     .map((i) => `${i.categoria} ${i.medida}${i.variante ? ` (${i.variante})` : ''}`)
 
   return {
     ...existing,
-    items: allItems,
+    items,
     total,
     items_faltantes: itemsFaltantes,
   }

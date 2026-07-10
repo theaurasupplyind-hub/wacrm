@@ -29,7 +29,7 @@ interface ChatArgs {
   conversationId: string
 }
 
-type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'order_request' | 'confirm_order' | 'view_budget' | 'general' | 'ignore'
+type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'order_request' | 'confirm_order' | 'view_budget' | 'cancel_order' | 'general' | 'ignore'
 
 interface DetectedIntent {
   intent: IntentType
@@ -126,8 +126,9 @@ Reglas:
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
-- IMPORTANTE — PRECIOS: cuando hay precios de referencia, mostralos directo sin explicar redondeos ni cálculos. Si un producto aparece en PRECIOS DE REFERENCIA, SÍ hay precio disponible. No digas "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen listados. Si un producto aparece como FALTANTE en el carrito, decí que no tiene precio en tabla y un agente lo cotiza.
+- IMPORTANTE — PRECIOS Y VARIANTES: cuando hay precios de referencia, mostralos directo sin explicar redondeos ni cálculos. Si un producto aparece en PRECIOS DE REFERENCIA, SÍ hay precio disponible. No digas "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen listados. Si hay varias variantes para la misma medida (ej: Sin Tela, Lienzo Profesional, Lona Preparada), mostrá todas con sus precios y preguntale al usuario cuál prefiere. Incluso si la variante disponible no es exactamente la que pidió, mostrá la más cercana y aclará la diferencia. Si un producto aparece como FALTANTE en el carrito, decí que no tiene precio en tabla y un agente lo cotiza.
 - Si el usuario te pide el presupuesto, quiere ver el total de su pedido, o confirma que quiere comprar, podés incluir [[SHOW_BUDGET]] en tu respuesta. El sistema lo reemplazará automáticamente con el presupuesto formateado. Todo lo que escribas además del sentinel también se enviará.
+- Si el usuario quiere cancelar o abandonar su pedido, decile que use las palabras "cancelar pedido" o "abandonar carrito" para borrarlo y empezar de nuevo.
 - DIFERENCIACIÓN — HANDOFF: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
 
 DATOS DEL SISTEMA:`
@@ -135,7 +136,7 @@ DATOS DEL SISTEMA:`
 function detectIntent(text: string): DetectedIntent {
   const t = text.toLowerCase()
 
-  if (/\bconfirmar pedido|confirmo pedido|confirmado|confirmar compra\b/.test(t)) {
+  if (/\bconfirmar pedido|confirmar peido|confirmo pedido|confirmo peido|confirma pedido|confirmado|confirmar compra|ya confirma|ya confirmo\b/.test(t)) {
     return { intent: 'confirm_order' }
   }
 
@@ -177,6 +178,14 @@ function detectIntent(text: string): DetectedIntent {
 
   if (productMatch) return { intent: 'product_search' }
   if (priceWords && hasDim) return { intent: 'product_search' }
+
+  // Cancel order: user wants to abandon/clear the cart
+  if (/\b(cancelar|abandonar|anular|borrar|eliminar|vaciar|me equivoqu[eé])\b/.test(t) && /\b(pedido|carrito|compra|presupuesto)\b/.test(t)) {
+    return { intent: 'cancel_order' }
+  }
+  if (/\b(empezar de nuevo|nuevo pedido|olvid[aá] lo|olvid[aá]lo)\b/.test(t)) {
+    return { intent: 'cancel_order' }
+  }
 
   // View budget: user wants to see current cart/budget
   if (/\bpresupuesto\b/.test(t)) {
@@ -465,6 +474,27 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
+  // ── CANCEL ORDER: clear the cart ──
+  if (intent === 'cancel_order') {
+    const hadCart = !!(orderContext?.cart ?? orderContext?.presupuesto_activo)
+    try {
+      const db = supabaseAdmin()
+      await db.from('conversations').update({ order_context: null }).eq('id', conversationId)
+    } catch { /* non-critical */ }
+    const msg = hadCart
+      ? '✅ Pedido cancelado. Si querés empezar de nuevo, decime qué necesitás.'
+      : 'No tenés un pedido activo para cancelar. Decime si querés consultar precios o productos.'
+    await reply(sendCtx, msg)
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'response_sent',
+      data: { intent, cart_cleared: hadCart },
+      account_id: accountId,
+    }).catch(() => {})
+    console.log(pfmt(`intent=cancel_order cleared=${hadCart}`))
+    return
+  }
+
   // Step 3 — Fetch data from FacBal
   let dataContext = ''
   let imageUrl: string | null = null
@@ -538,6 +568,9 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
             dataContext += `(Regla aplicada: ${result.regla_aplicada})\n`
           }
           dataContext += `(IMPORTANTE: estos precios YA ESTÁN CALCULADOS. Si ves productos listados aquí, SÍ hay precio disponible. No le digas al cliente "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen aquí.)\n`
+          if (result.mensaje) {
+            dataContext += `${result.mensaje}\n`
+          }
         } else if (result.mensaje) {
           dataContext += `\n${result.mensaje}\n`
           const productos = await buscarProductos(text)
