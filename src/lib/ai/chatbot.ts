@@ -18,6 +18,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const DEFAULT_CHAT_MODEL = 'google/gemini-2.5-flash-lite'
 const HANDOFF_SENTINEL = '[[HANDOFF]]'
+const SHOW_BUDGET_SENTINEL = '[[SHOW_BUDGET]]'
 
 interface ChatArgs {
   text: string
@@ -28,7 +29,7 @@ interface ChatArgs {
   conversationId: string
 }
 
-type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'order_request' | 'confirm_order' | 'general' | 'ignore'
+type IntentType = 'pending_invoices' | 'product_search' | 'price_list' | 'order_request' | 'confirm_order' | 'view_budget' | 'general' | 'ignore'
 
 interface DetectedIntent {
   intent: IntentType
@@ -125,8 +126,9 @@ Reglas:
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
-- IMPORTANTE: cuando hay precios de referencia mostralos directo, sin explicar redondeos ni cálculos. Si un producto aparece como FALTANTE, decile al cliente que ese producto no tiene precio en la tabla y un agente se lo cotiza aparte.
-- DIFERENCIACIÓN: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
+- IMPORTANTE — PRECIOS: cuando hay precios de referencia, mostralos directo sin explicar redondeos ni cálculos. Si un producto aparece en PRECIOS DE REFERENCIA, SÍ hay precio disponible. No digas "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen listados. Si un producto aparece como FALTANTE en el carrito, decí que no tiene precio en tabla y un agente lo cotiza.
+- Si el usuario te pide el presupuesto, quiere ver el total de su pedido, o confirma que quiere comprar, podés incluir [[SHOW_BUDGET]] en tu respuesta. El sistema lo reemplazará automáticamente con el presupuesto formateado. Todo lo que escribas además del sentinel también se enviará.
+- DIFERENCIACIÓN — HANDOFF: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
 
 DATOS DEL SISTEMA:`
 
@@ -176,8 +178,13 @@ function detectIntent(text: string): DetectedIntent {
   if (productMatch) return { intent: 'product_search' }
   if (priceWords && hasDim) return { intent: 'product_search' }
 
+  // View budget: user wants to see current cart/budget
+  if (/\bpresupuesto\b/.test(t)) {
+    return { intent: 'view_budget' }
+  }
+
   const words = t.replace(/[^\w\s]/g, ' ').trim().split(/\s+/).filter(Boolean)
-  const greetingPattern = /^(hola|gracias|ok|si|s[ií]|dale|bueno|bien|genial|perfecto|chau|adios|buen|buenas|buenos|okey|listo|excelente|buend[ií]a)$/
+  const greetingPattern = /^(hola|gracias|ok|dale|bueno|bien|genial|perfecto|chau|adios|buen|buenas|buenos|okey|listo|excelente|buend[ií]a)$/
   if (words.length <= 2 && words.every(w => greetingPattern.test(w))) {
     return { intent: 'ignore' }
   }
@@ -423,6 +430,41 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   }
   // ── END ORDER FLOW ──
 
+  // ── VIEW BUDGET: user asks to see their budget ──
+  if (intent === 'view_budget') {
+    const budgetCart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+    if (budgetCart?.items?.length) {
+      const client = await getClientInfo(contactId, accountId)
+      budgetCart.status = 'productos_confirmados'
+      const budgetMsg = formatCartBudget(budgetCart, client?.name || 'Cliente', client?.phone || phone)
+      try {
+        const db = supabaseAdmin()
+        await db.from('conversations').update({
+          order_context: { ...orderContext, cart: budgetCart },
+        }).eq('id', conversationId)
+      } catch { /* non-critical */ }
+      await reply(sendCtx, budgetMsg)
+      logChatbotStep({
+        phone, message_text: text,
+        step: 'response_sent',
+        data: { intent, budget_sent: true, cart_status: budgetCart.status },
+        account_id: accountId,
+      }).catch(() => {})
+      console.log('[chatbot] END (view budget)')
+      return
+    }
+    // Empty cart
+    await reply(sendCtx, 'Todavía no tenés productos en tu pedido. Decime qué querés y te paso los precios.')
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'response_sent',
+      data: { intent, budget_sent: false, reason: 'empty_cart' },
+      account_id: accountId,
+    }).catch(() => {})
+    console.log('[chatbot] END (view budget - empty)')
+    return
+  }
+
   // Step 3 — Fetch data from FacBal
   let dataContext = ''
   let imageUrl: string | null = null
@@ -495,6 +537,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
           if (result.regla_aplicada) {
             dataContext += `(Regla aplicada: ${result.regla_aplicada})\n`
           }
+          dataContext += `(IMPORTANTE: estos precios YA ESTÁN CALCULADOS. Si ves productos listados aquí, SÍ hay precio disponible. No le digas al cliente "no tengo precio" ni "un agente te lo cotiza" para productos que aparecen aquí.)\n`
         } else if (result.mensaje) {
           dataContext += `\n${result.mensaje}\n`
           const productos = await buscarProductos(text)
@@ -583,7 +626,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       account_id: accountId,
     }).catch(() => {})
 
-    const { text: respuesta, usage } = await callOpenRouter({
+    let { text: respuesta, usage } = await callOpenRouter({
       systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
       userMessage: text,
     })
@@ -607,6 +650,18 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       }
       console.log('[chatbot] END (handoff)')
       return
+    }
+
+    // Replace [[SHOW_BUDGET]] with actual budget text
+    if (respuesta.includes(SHOW_BUDGET_SENTINEL)) {
+      const budgetCart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+      if (budgetCart?.items?.length) {
+        const client = await getClientInfo(contactId, accountId)
+        const budgetText = formatCartBudget(budgetCart, client?.name || 'Cliente', client?.phone || phone)
+        respuesta = respuesta.replace(SHOW_BUDGET_SENTINEL, '\n\n' + budgetText)
+      } else {
+        respuesta = respuesta.replace(SHOW_BUDGET_SENTINEL, '\n\nTodavía no tenés productos en tu pedido. Decime qué querés y te paso los precios.')
+      }
     }
 
     // gemini-2.5-flash-lite: $0.075/1M input, $0.30/1M output
