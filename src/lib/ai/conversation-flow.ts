@@ -1,5 +1,5 @@
 export interface FlowResult {
-  action: 'show_cart' | 'confirm' | 'handoff' | 'continue'
+  action: 'confirm' | 'handoff' | 'continue'
   reason?: string
   cartStatus?: string
 }
@@ -10,13 +10,6 @@ export function determineFlow(
   text: string,
 ): FlowResult {
   if (intent === 'order_request') {
-    if (cart?.items?.length) {
-      return {
-        action: 'show_cart',
-        cartStatus: 'productos_confirmados',
-        reason: 'user wants to order, cart has items',
-      }
-    }
     return { action: 'continue' }
   }
 

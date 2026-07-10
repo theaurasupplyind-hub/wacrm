@@ -8,7 +8,7 @@ import {
   type SuggestPriceResult,
   type Producto,
 } from '../facbal/client'
-import { createCart, formatCartForLLM, formatCartBudget, type CartState } from './cart-state'
+import { createCart, addToCart, formatCartForLLM, formatCartBudget, type CartState } from './cart-state'
 import { determineFlow } from './conversation-flow'
 import { shouldHardHandoff, shouldHandoff } from './handoff-rules'
 import { logChatbotStep } from './chatbot-logger'
@@ -383,28 +383,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   const cart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
   const flow = determineFlow(cart as { status: string; items?: unknown[] } | undefined, intent, text)
 
-  if (flow.action === 'show_cart' && cart && cart.items?.length) {
-    const client = await getClientInfo(contactId, accountId)
-    const confirmMsg = formatCartBudget(cart, client?.name || 'Cliente', client?.phone || phone)
-
-    cart.status = (flow.cartStatus || 'productos_confirmados') as CartState['status']
-    try {
-      const db = supabaseAdmin()
-      await db.from('conversations').update({
-        order_context: { ...orderContext, cart },
-      }).eq('id', conversationId)
-    } catch { /* non-critical */ }
-
-    await reply(sendCtx, confirmMsg)
-    logChatbotStep({
-      phone, message_text: text,
-      step: 'response_sent',
-      data: { intent, flow_action: flow.action, cart_status: cart.status },
-      account_id: accountId,
-    }).catch(() => {})
-    console.log('[chatbot] END (cart shown)')
-    return
-  }
+  // show_cart falls through → pricing flow below handles it and appends to cart
 
   if (flow.action === 'confirm') {
     if (!cart) return
@@ -492,7 +471,9 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
         if (result.items && result.items.length > 0) {
           try {
-            const newCart = createCart(result.items)
+            const newCart = cart?.items?.length
+              ? addToCart(cart, result.items)
+              : createCart(result.items)
             const db = supabaseAdmin()
             await db.from('conversations').update({
               order_context: {

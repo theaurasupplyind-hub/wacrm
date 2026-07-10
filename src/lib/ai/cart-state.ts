@@ -50,6 +50,40 @@ export function createCart(
   }
 }
 
+export function addToCart(
+  existing: CartState,
+  newItems: {
+    cantidad: number
+    categoria: string
+    medida: string
+    variante: string
+    precio: number | null
+    faltante: boolean
+  }[],
+): CartState {
+  const added: CartItem[] = newItems.map((item) => ({
+    cantidad: item.cantidad,
+    categoria: item.categoria,
+    medida: item.medida,
+    variante: item.variante || '',
+    precio_unitario: item.precio,
+    subtotal: item.precio != null ? item.cantidad * item.precio : null,
+  }))
+
+  const allItems = [...existing.items, ...added]
+  const total = allItems.reduce((sum, i) => sum + (i.subtotal || 0), 0)
+  const itemsFaltantes = allItems
+    .filter((i) => i.precio_unitario == null)
+    .map((i) => `${i.categoria} ${i.medida}${i.variante ? ` (${i.variante})` : ''}`)
+
+  return {
+    ...existing,
+    items: allItems,
+    total,
+    items_faltantes: itemsFaltantes,
+  }
+}
+
 export function formatCartForLLM(cart: CartState): string {
   const lines: string[] = [`ESTADO: ${cart.status}`]
 
