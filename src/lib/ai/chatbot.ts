@@ -323,8 +323,10 @@ async function sendImage(
 export async function processChatMessage(args: ChatArgs): Promise<void> {
   const { text, phone, accountId, userId, contactId, conversationId } = args
   const sendCtx = { accountId, userId, contactId, conversationId }
+  const t0 = Date.now()
+  const pfmt = (extra: string) => `[chatbot] phone=${phone.slice(-6)} | msg=${JSON.stringify(text.slice(0, 50))} | ${extra} | t=${Date.now() - t0}ms`
 
-  console.log('[chatbot] Processing: "%s" from phone=%s', text.slice(0, 60), phone.slice(-6))
+  console.log(pfmt(`intent=?`))
 
   // Step 1 — Keyword-based intent detection (0 OR calls)
   const detected = detectIntent(text)
@@ -344,7 +346,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   }).catch(() => {})
 
   if (intent === 'ignore') {
-    console.log('[chatbot] Ignoring message (intent=ignore)')
+    console.log(pfmt(`intent=ignore`))
     return
   }
 
@@ -361,11 +363,9 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       const db = supabaseAdmin()
       await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
     } catch { /* non-critical */ }
-    console.log('[chatbot] END (hard handoff)')
+    console.log(pfmt(`intent=${intent} action=handoff hard=${handoffPattern}`))
     return
   }
-
-  console.log('[chatbot] Intent detected: intent=%s category=%s', intent, priceListCategory || '-')
 
   // Step 2 — Check for pending greeting (user said hi but was ignored)
   const greeting = await getPendingGreeting(phone, accountId)
@@ -410,7 +410,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       }).eq('id', conversationId)
     } catch { /* non-critical */ }
     await reply(sendCtx, '¡Gracias! Tu pedido fue registrado. Un agente se va a comunicar para coordinar la entrega.')
-    console.log('[chatbot] END (order confirmed, handoff)')
+    console.log(pfmt(`intent=${intent} action=confirm cart=${cart.items.length}items $${cart.total}`))
     return
   }
 
@@ -425,7 +425,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       const db = supabaseAdmin()
       await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
     } catch { /* non-critical */ }
-    console.log('[chatbot] END (handoff)')
+    console.log(pfmt(`intent=${intent} action=handoff reason=${flow.reason}`))
     return
   }
   // ── END ORDER FLOW ──
@@ -450,7 +450,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
         data: { intent, budget_sent: true, cart_status: budgetCart.status },
         account_id: accountId,
       }).catch(() => {})
-      console.log('[chatbot] END (view budget)')
+      console.log(pfmt(`intent=view_budget items=${budgetCart.items.length} total=$${budgetCart.total}`))
       return
     }
     // Empty cart
@@ -461,7 +461,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       data: { intent, budget_sent: false, reason: 'empty_cart' },
       account_id: accountId,
     }).catch(() => {})
-    console.log('[chatbot] END (view budget - empty)')
+    console.log(pfmt(`intent=view_budget empty`))
     return
   }
 
@@ -611,13 +611,14 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       data: { intent },
       account_id: accountId,
     }).catch(() => {})
-    console.log('[chatbot] END (no data)')
+    console.log(pfmt(`intent=${intent} action=no_data`))
     return
   }
 
   // Step 4 — OpenRouter generates natural response (1 call, all context)
   try {
-    console.log('[chatbot] Generating response with context size=%d hasImage=%s', dataContext.length, !!imageUrl)
+    const cartSummary = cart?.items?.length ? `${cart.items.length}items $${cart.total}` : 'empty'
+    console.log(pfmt(`intent=${intent} action=llm ctx=${dataContext.length}B img=${!!imageUrl} cart=${cartSummary}`))
     logChatbotStep({
       phone,
       message_text: text,
@@ -648,7 +649,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       } catch {
         // non-critical
       }
-      console.log('[chatbot] END (handoff)')
+      console.log(pfmt(`intent=${intent} action=handoff llm_sentinel`))
       return
     }
 
@@ -698,7 +699,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[chatbot] Generate response failed:', msg)
+    console.error(pfmt(`intent=${intent} action=error error=${msg}`))
     logChatbotStep({
       phone,
       message_text: text,
@@ -708,5 +709,8 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     }).catch(() => {})
   }
 
-  console.log('[chatbot] END intent=%s', intent)
+  const nSuggestions = dataContext.includes('PRECIOS DE REFERENCIA')
+    ? (dataContext.match(/^- /gm)?.length ?? 0)
+    : 0
+  console.log(pfmt(`intent=${intent} action=done suggest=${nSuggestions} cart=${cart?.items?.length ?? 0}items${cart?.total ? ` $${cart.total}` : ''}`))
 }
