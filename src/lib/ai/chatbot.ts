@@ -4,8 +4,11 @@ import {
   buscarProductos,
   suggestPrice,
   getPriceListImages,
+  bulkPrice,
   type SugerenciaPrecio,
   type SuggestPriceResult,
+  type BulkPriceItem,
+  type BulkPriceResult,
   type Producto,
 } from '../facbal/client'
 import { createCart, addToCart, formatCartForLLM, formatCartBudget, type CartState } from './cart-state'
@@ -331,6 +334,155 @@ async function sendImage(
   return false
 }
 
+// ─── LLM Extraction: interpreta el mensaje y decide acción ───
+
+interface ExtractionProduct {
+  categoria: string
+  medida: string
+  variante: string | null
+  cantidad: number
+  regla: string | null
+}
+
+interface ExtractionResult {
+  accion: 'add_to_cart' | 'view_budget' | 'confirm_order' | 'cancel_order' | 'price_query' | 'handoff' | 'general' | 'ignore'
+  productos: ExtractionProduct[]
+  confianza: 'alta' | 'baja'
+  mensaje_provisional: string | null
+}
+
+const EXTRACTION_PROMPT = `Sos un extractor de pedidos para Bastidores GAL, taller de marcos y molduras.
+Tu trabajo: analizar el mensaje del cliente y devolver UNICAMENTE un JSON con la accion y los productos que entendiste.
+
+ACCIONES posibles:
+- "add_to_cart": el cliente quiere agregar productos al carrito
+- "price_query": el cliente pregunta precios sin necesariamente querer comprar ya
+- "view_budget": el cliente quiere ver su presupuesto actual
+- "confirm_order": el cliente confirma el pedido (frases como "dale", "si", "joya", "mandalo", "confirmar pedido")
+- "cancel_order": el cliente quiere cancelar o abandonar el pedido
+- "handoff": el cliente pide descuento, coordinacion de entrega/retiro, reclamo, direccion, pago, horario
+- "general": saludo, pregunta generica, o no entendiste
+- "ignore": mensaje vacio o irrelevante
+
+PRODUCTOS: array de objetos con:
+- categoria: "bastidor" | "acrilicos" | "circulares" | "producto"
+- medida: string (ej: "100x120", "180cm x 1.30cm")
+- variante: "Sin Tela" | "Lienzo Profesional" | "Lona Preparada" | "Doble 4cm" | null
+- cantidad: numero (default 1)
+- regla: "pintura" | "tapacanto" | null (si menciona "pintura", "embastar", "reembastar" -> regla: "pintura"; si menciona "tapacanto", "marco" -> regla: "tapacanto")
+
+CONFIANZA: "alta" si estas seguro de todos los datos; "baja" si hay ambiguedad (ej: "creo que era sin tela").
+
+REGLAS IMPORTANTES:
+- Si el cliente dice "Dame Sin tela" sin dimensiones, busca en los mensajes anteriores que medida se estaba discutiendo.
+- Si el cliente dice "agregame 2 mas iguales", mira el carrito o los ultimos mensajes para deducir el producto.
+- Formatos de medida a normalizar: "100x0,60" -> "100x60", "180cm x 1.30cm" -> "130x180" (el numero mayor primero, ignorar unidades). Ordena siempre chico x grande.
+- Confirmaciones casuales ("dale", "joya, mandalo", "de una") SON confirm_order. Pero si no estas seguro, usa confianza: "baja".
+- "reembastar" es lo mismo que "pintura" -> categoria: "bastidor", regla: "pintura", variante: "Sin Tela".
+- Si el cliente pregunta por algo que claramente no es un bastidor/acrilico/circular (ej: "Papel Arches", "pinceles"), usa accion: "general" y el sistema le dira que no lo tiene.
+
+FEW-SHOT EXAMPLES:
+
+Mensaje: "Hola quiero un bastidor de 100 x 120 sin tela"
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"100x120","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "Dame Sin tela" (historial: el bot acaba de listar variantes de 100x120)
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"100x120","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "3 bastidores vacios de 100x0,60"
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"60x100","variante":null,"cantidad":3,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "reembastar 4 obras de 95x68 cm"
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"68x95","variante":"Sin Tela","cantidad":4,"regla":"pintura"}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "cuanto esta un rollo de tela de 2 x 5?"
+{"accion":"price_query","productos":[{"categoria":"producto","medida":"2x5","variante":null,"cantidad":1,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "Si quiero agregar el 120 x 123 Lienzo Profesional, despues quiero un tapacanto de 120 x 123 y una bastidor de 145 x 156 sin tela"
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"120x123","variante":"Lienzo Profesional","cantidad":1,"regla":null},{"categoria":"bastidor","medida":"120x123","variante":"Lienzo Profesional","cantidad":1,"regla":"tapacanto"},{"categoria":"bastidor","medida":"145x156","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "dale mandalo"
+{"accion":"confirm_order","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "joya, tráiganlo así"
+{"accion":"confirm_order","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "si dale"
+{"accion":"confirm_order","productos":[],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "cancelar pedido"
+{"accion":"cancel_order","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "cual es el total?"
+{"accion":"view_budget","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "hacen envios a Cordoba?"
+{"accion":"handoff","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "me haces un descuento?"
+{"accion":"handoff","productos":[],"confianza":"alta","mensaje_provisional":null}
+
+DEVOLVE SOLO EL JSON, NADA MAS.`
+
+async function extractAction(
+  historyText: string,
+  cart: CartState | undefined,
+  currentMessage: string,
+  accountId: string,
+): Promise<ExtractionResult | null> {
+  const userPrompt = [
+    cart ? `CARRITO: ${JSON.stringify({ items: cart.items.length, total: cart.total, status: cart.status })}` : 'CARRITO: vacio',
+    historyText ? `HISTORIAL:\n${historyText}` : '',
+    `MENSAJE ACTUAL: ${currentMessage}`,
+  ].filter(Boolean).join('\n\n')
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.VERCEL_PROJECT_PRODUCTION_URL || 'http://localhost:3000',
+        'X-Title': 'BastidoresGAL',
+      },
+      body: JSON.stringify({
+        model: DEFAULT_CHAT_MODEL,
+        messages: [
+          { role: 'system', content: EXTRACTION_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.1,
+        max_tokens: 600,
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      console.error('[extractAction] OpenRouter error:', response.status)
+      return null
+    }
+
+    const data = await response.json()
+    const raw = data.choices?.[0]?.message?.content?.trim() || ''
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      console.error('[extractAction] No JSON found in response:', raw.slice(0, 200))
+      return null
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+    return {
+      accion: parsed.accion || 'general',
+      productos: Array.isArray(parsed.productos) ? parsed.productos : [],
+      confianza: parsed.confianza === 'baja' ? 'baja' : 'alta',
+      mensaje_provisional: parsed.mensaje_provisional || null,
+    }
+  } catch (err) {
+    console.error('[extractAction] Failed:', err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
 export async function processChatMessage(args: ChatArgs): Promise<void> {
   const { text, phone, accountId, userId, contactId, conversationId } = args
   const sendCtx = { accountId, userId, contactId, conversationId }
@@ -339,42 +491,20 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
   console.log(pfmt(`intent=?`))
 
-  // Step 1 — Keyword-based intent detection (0 OR calls)
-  const detected = detectIntent(text)
-  const { intent, priceListCategory } = detected
-
-  logChatbotStep({
-    phone,
-    message_text: text,
-    step: 'intent_detected',
-    data: {
-      intent,
-      priceListCategory: priceListCategory ?? null,
-      conversation_id: conversationId,
-      raw_text: text.slice(0, 100),
-    },
-    account_id: accountId,
-  }).catch(() => {})
-
-  if (intent === 'ignore') {
-    console.log(pfmt(`intent=ignore`))
-    return
-  }
-
-  // Step 1.5 — Hard handoff for non-catalog topics
+  // Step 1 — Hard handoff for non-catalog topics (regex, always first)
   const handoffPattern = shouldHardHandoff(text)
   if (handoffPattern) {
     logChatbotStep({
       phone, message_text: text,
       step: 'handoff',
-      data: { intent, reason: `hard-handoff: ${handoffPattern}` },
+      data: { reason: `hard-handoff: ${handoffPattern}` },
       account_id: accountId,
     }).catch(() => {})
     try {
       const db = supabaseAdmin()
       await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
     } catch { /* non-critical */ }
-    console.log(pfmt(`intent=${intent} action=handoff hard=${handoffPattern}`))
+    console.log(pfmt(`action=handoff hard=${handoffPattern}`))
     return
   }
 
@@ -392,13 +522,282 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       .eq('id', conversationId)
       .maybeSingle()
     orderContext = (conv?.order_context as Record<string, unknown>) ?? null
-    historyText = await loadLastMessages(conversationId, 4)
+    historyText = await loadLastMessages(conversationId, 15)
   } catch {
     // non-critical, continue without context
   }
 
-  // ── ORDER FLOW: state-machine via conversation-flow ──
+  // ── LLM EXTRACTION: reemplaza detectIntent + suggestPrice ──
   const cart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+  let extractionUsed = false
+
+  try {
+    const extraction = await extractAction(historyText, cart, text, accountId)
+
+    if (extraction && extraction.accion !== 'general' && extraction.accion !== 'ignore') {
+      extractionUsed = true
+      logChatbotStep({
+        phone, message_text: text,
+        step: 'extraction',
+        data: { accion: extraction.accion, productos: extraction.productos.length, confianza: extraction.confianza },
+        account_id: accountId,
+      }).catch(() => {})
+
+      // ── EXECUTE EXTRACTED ACTION ──
+
+      if (extraction.accion === 'handoff') {
+        try {
+          const db = supabaseAdmin()
+          await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+        } catch { /* non-critical */ }
+        const handoffMsg = extraction.mensaje_provisional || 'Te derivo con un agente para ayudarte mejor.'
+        await reply(sendCtx, handoffMsg)
+        console.log(pfmt(`intent=extraction action=handoff`))
+        return
+      }
+
+      if (extraction.accion === 'cancel_order') {
+        try {
+          const db = supabaseAdmin()
+          await db.from('conversations').update({ order_context: null }).eq('id', conversationId)
+        } catch { /* non-critical */ }
+        await reply(sendCtx, 'Pedido cancelado. Si querés empezar de nuevo, decime qué necesitás.')
+        console.log(pfmt(`intent=extraction action=cancel_order`))
+        return
+      }
+
+      if (extraction.accion === 'view_budget') {
+        if (cart?.items?.length) {
+          const client = await getClientInfo(contactId, accountId)
+          const budgetMsg = formatCartBudget(cart, client?.name || 'Cliente', client?.phone || phone)
+          await reply(sendCtx, budgetMsg)
+          console.log(pfmt(`intent=extraction action=view_budget`))
+          return
+        }
+        await reply(sendCtx, 'Todavía no tenés productos en tu pedido. Decime qué querés y te paso los precios.')
+        console.log(pfmt(`intent=extraction action=view_budget empty`))
+        return
+      }
+
+      if (extraction.accion === 'confirm_order') {
+        if (!cart?.items?.length) {
+          await reply(sendCtx, 'No tenés un pedido activo para confirmar. Decime qué querés pedir.')
+          return
+        }
+        // If pending_confirm is already set, this IS the user's response to our repregunta — confirm regardless
+        if (cart.pending_confirm) {
+          cart.status = 'confirmado'
+          cart.pending_confirm = false
+          try {
+            const db = supabaseAdmin()
+            await db.from('conversations').update({
+              status: 'pending',
+              ai_autoreply_disabled: true,
+              order_context: { ...(orderContext || {}), cart },
+            }).eq('id', conversationId)
+          } catch { /* non-critical */ }
+          await reply(sendCtx, '¡Gracias! Tu pedido fue registrado. Un agente se va a comunicar para coordinar la entrega.')
+          logChatbotStep({ phone, message_text: text, step: 'handoff', data: { reason: 'order confirmed (pending response)', cart }, account_id: accountId }).catch(() => {})
+          console.log(pfmt(`intent=extraction action=confirm_order pending_resolved=true cart=${cart.items.length}items $${cart.total}`))
+          return
+        }
+        // Not pending yet — if confidence is low, ask before confirming
+        if (extraction.confianza === 'baja') {
+          cart.pending_confirm = true
+          try {
+            const db = supabaseAdmin()
+            await db.from('conversations').update({
+              order_context: { ...orderContext, cart },
+            }).eq('id', conversationId)
+          } catch { /* non-critical */ }
+          await reply(sendCtx, `¿Confirmás el pedido? Tenés ${cart.items.length} producto(s) por $${cart.total.toLocaleString('es-AR')}. Respondé "si" para confirmar.`)
+          console.log(pfmt(`intent=extraction action=confirm_order pending_set=true`))
+          return
+        }
+        // High confidence, not pending → confirm directly
+        cart.status = 'confirmado'
+        try {
+          const db = supabaseAdmin()
+          await db.from('conversations').update({
+            status: 'pending',
+            ai_autoreply_disabled: true,
+            order_context: { ...(orderContext || {}), cart },
+          }).eq('id', conversationId)
+        } catch { /* non-critical */ }
+        await reply(sendCtx, '¡Gracias! Tu pedido fue registrado. Un agente se va a comunicar para coordinar la entrega.')
+        logChatbotStep({ phone, message_text: text, step: 'handoff', data: { reason: 'order confirmed by extraction', cart }, account_id: accountId }).catch(() => {})
+        console.log(pfmt(`intent=extraction action=confirm_order cart=${cart.items.length}items $${cart.total}`))
+        return
+      }
+
+      // add_to_cart / price_query — necesita pricing del backend
+      if ((extraction.accion === 'add_to_cart' || extraction.accion === 'price_query') && extraction.productos.length > 0) {
+        const bulkItems: BulkPriceItem[] = extraction.productos.map(p => ({
+          categoria: p.categoria,
+          medida: p.medida,
+          variante: p.variante,
+          cantidad: p.cantidad || 1,
+          regla: p.regla,
+        }))
+
+        let pricingResult: BulkPriceResult
+        try {
+          pricingResult = await bulkPrice(bulkItems)
+        } catch (err) {
+          console.error('[chatbot] bulkPrice failed:', err)
+          // Fall through to old flow
+          extractionUsed = false
+        }
+
+        if (extractionUsed) {
+          logChatbotStep({
+            phone, message_text: text,
+            step: 'bulk_price',
+            data: { items: pricingResult!.items.length, sugerencias: pricingResult!.sugerencias.length },
+            account_id: accountId,
+          }).catch(() => {})
+
+          // Build cart from pricing result
+          const pricedItems = pricingResult!.items.map(d => ({
+            cantidad: d.cantidad,
+            categoria: d.categoria,
+            medida: d.medida_solicitada,
+            variante: d.variante,
+            precio: d.precio,
+            faltante: d.faltante,
+          }))
+
+          if (pricedItems.length > 0 && extraction.accion === 'add_to_cart') {
+            const newCart = cart?.items?.length
+              ? addToCart(cart, pricedItems)
+              : createCart(pricedItems)
+            if (extraction.confianza === 'baja') {
+              newCart.pending_confirm = true
+            }
+            try {
+              const db = supabaseAdmin()
+              await db.from('conversations').update({
+                order_context: { ...orderContext, cart: newCart },
+              }).eq('id', conversationId)
+              orderContext = { ...orderContext, cart: newCart }
+            } catch { /* non-critical */ }
+          }
+
+          // Build dataContext from pricing result
+          let dataContext = ''
+          if (pricingResult!.items.length > 0) {
+            dataContext += '\nPRECIOS_SUGERIDOS\n'
+            pricingResult!.items.forEach((d, i) => {
+              dataContext += `ITEM ${i + 1}\n`
+              dataContext += `  cantidad=${d.cantidad}\n`
+              dataContext += `  categoria=${d.categoria}\n`
+              dataContext += `  variante=${d.variante || '-'}\n`
+              dataContext += `  medida_solicitada=${d.medida_solicitada}\n`
+              dataContext += `  medida_referencia=${d.medida_referencia}\n`
+              dataContext += `  precio_unitario=${d.precio ?? 'FALTANTE'}\n`
+            })
+            dataContext += '\n'
+          }
+          if (pricingResult!.mensaje) {
+            dataContext += `${pricingResult!.mensaje}\n`
+          }
+          if (extraction.mensaje_provisional) {
+            dataContext += `MENSAJE PROVISIONAL: ${extraction.mensaje_provisional}\n`
+          }
+
+          // Cart context
+          const contextOrder = formatOrderContext(orderContext)
+          if (contextOrder) {
+            dataContext = contextOrder + '\n\n' + dataContext
+          }
+          if (historyText) {
+            dataContext = 'ÚLTIMOS MENSAJES:\n' + historyText + '\n\n' + dataContext
+          }
+          if (greeting) {
+            dataContext = greeting + '\n\n' + dataContext
+          }
+
+          if (!dataContext.trim()) {
+            console.log(pfmt(`intent=extraction action=no_data`))
+            return
+          }
+
+          // LLM response generation
+          try {
+            let { text: respuesta, usage } = await callOpenRouter({
+              systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
+              userMessage: text,
+            })
+
+            if (respuesta.includes(HANDOFF_SENTINEL)) {
+              try {
+                const db = supabaseAdmin()
+                await db.from('conversations').update({ status: 'pending', ai_autoreply_disabled: true }).eq('id', conversationId)
+              } catch { /* non-critical */ }
+              console.log(pfmt(`intent=extraction action=handoff llm_sentinel`))
+              return
+            }
+
+            if (respuesta.includes(SHOW_BUDGET_SENTINEL)) {
+              const budgetCart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+              if (budgetCart?.items?.length) {
+                const client = await getClientInfo(contactId, accountId)
+                const budgetText = formatCartBudget(budgetCart, client?.name || 'Cliente', client?.phone || phone)
+                respuesta = respuesta.replace(SHOW_BUDGET_SENTINEL, '\n\n' + budgetText)
+              } else {
+                respuesta = respuesta.replace(SHOW_BUDGET_SENTINEL, '\n\nTodavía no tenés productos en tu pedido.')
+              }
+            }
+
+            await reply(sendCtx, respuesta)
+            logChatbotStep({
+              phone, message_text: text,
+              step: 'response_sent',
+              data: { intent: 'extraction', accion: extraction.accion, response_preview: respuesta.slice(0, 200), tokens_in: usage.prompt_tokens, tokens_out: usage.completion_tokens },
+              account_id: accountId,
+            }).catch(() => {})
+
+            const nSuggestions = pricingResult!.items.length
+            console.log(pfmt(`intent=extraction action=${extraction.accion} suggest=${nSuggestions} cart=${(orderContext as Record<string, unknown>)?.cart ? 'has' : 'empty'}`))
+            return
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error(pfmt(`intent=extraction action=error error=${msg}`))
+            return
+          }
+        }
+      }
+    }
+  } catch {
+    // extraction failed, fall through to old flow
+    extractionUsed = false
+  }
+
+  // ── FALLBACK: existing regex-based flow ──
+  // Only reached if extraction failed or returned general/ignore
+  const detected = extractionUsed ? { intent: 'general', priceListCategory: undefined } : detectIntent(text)
+  const { intent, priceListCategory } = detected as { intent: IntentType; priceListCategory?: string }
+
+  if (!extractionUsed) {
+    logChatbotStep({
+      phone, message_text: text,
+      step: 'intent_detected',
+      data: { intent, priceListCategory: priceListCategory ?? null, conversation_id: conversationId, raw_text: text.slice(0, 100) },
+      account_id: accountId,
+    }).catch(() => {})
+  }
+
+  if (intent === 'ignore' && !extractionUsed) {
+    console.log(pfmt(`intent=ignore`))
+    return
+  }
+
+  if (intent === 'price_list') {
+    // Keep price_list flow as-is (list of prices as image)
+    // Falls through to Step 3 below
+  }
+
+  // ── ORDER FLOW: state-machine via conversation-flow ──
   const flow = determineFlow(cart as { status: string; items?: unknown[] } | undefined, intent, text)
 
   // show_cart falls through → pricing flow below handles it and appends to cart

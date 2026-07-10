@@ -564,6 +564,86 @@ async function handleReaction(
   }
 }
 
+/**
+ * Debounce: espera 8s para juntar mensajes fragmentados del mismo usuario.
+ * Si llega otro mensaje durante la espera, el nuevo mensaje se encarga del batch.
+ */
+async function debouncedChatMessage(
+  inboundText: string,
+  conversationId: string,
+  chatArgs: { text: string; phone: string; accountId: string; userId: string; contactId: string; conversationId: string },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAdmin: () => any,
+  accessToken: string,
+  senderPhone: string,
+) {
+  const admin = getAdmin()
+  const DEBOUNCE_MS = 8000
+  const now = new Date().toISOString()
+
+  try {
+    await admin
+      .from('chatbot_pending_batches')
+      .upsert({
+        conversation_id: conversationId,
+        accumulated_text: inboundText,
+        last_message_at: now,
+      }, { onConflict: 'conversation_id' })
+
+    // Send "dame un segundo" while we wait for fragmented messages
+    try {
+      await fetch(`https://graph.facebook.com/v21.0/me/messages`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: senderPhone,
+          type: 'text',
+          text: { body: 'Dame un segundo que reviso...' },
+        }),
+      })
+    } catch { /* non-critical, don't break the flow */ }
+  } catch {
+    // Table doesn't exist yet — proceed without debounce
+    processChatMessage(chatArgs).catch((err) => console.error('[debounce] Chatbot error (no debounce):', err))
+    return
+  }
+
+  await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS))
+
+  try {
+    const { data: pending } = await admin
+      .from('chatbot_pending_batches')
+      .select('last_message_at, accumulated_text')
+      .eq('conversation_id', conversationId)
+      .maybeSingle()
+
+    if (!pending) return // someone else processed it
+
+    const lastMsgTime = new Date(pending.last_message_at).getTime()
+    const ourTime = new Date(now).getTime()
+
+    if (lastMsgTime > ourTime) {
+      // A newer message arrived during our wait — it will handle the batch
+      return
+    }
+
+    const accumulatedText = pending.accumulated_text || inboundText
+
+    await admin.from('chatbot_pending_batches').delete().eq('conversation_id', conversationId)
+
+    processChatMessage({
+      ...chatArgs,
+      text: accumulatedText,
+    }).catch((err) => console.error('[debounce] Chatbot error:', err))
+  } catch (err) {
+    console.error('[debounce] Error processing:', err)
+    // Best-effort fallback: process the original message
+    processChatMessage(chatArgs).catch((e) => console.error('[debounce] Fallback error:', e))
+  }
+}
+
 async function processMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
@@ -838,18 +918,17 @@ async function processMessage(
   }
 
   // Conversational AI bot (products, pricing, account questions).
-  // Runs for plain-text inbound messages. Dispatches fire-and-forget
-  // so it does not block the webhook response.
+  // Uses debounce: collects fragmented messages for 8s before processing.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
     bgTasks.push(
-      processChatMessage({
-        text: inboundText,
-        phone: message.from,
-        accountId,
-        userId: configOwnerUserId,
-        contactId: contactRecord.id,
-        conversationId: conversation.id,
-      }).catch((err) => console.error('[webhook] Chatbot error:', err))
+      debouncedChatMessage(
+        inboundText,
+        conversation.id,
+        { text: inboundText, phone: message.from, accountId, userId: configOwnerUserId, contactId: contactRecord.id, conversationId: conversation.id },
+        supabaseAdmin,
+        accessToken,
+        message.from,
+      ).catch((err) => console.error('[webhook] Chatbot error:', err))
     )
   }
 

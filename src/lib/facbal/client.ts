@@ -182,6 +182,52 @@ export async function suggestPrice(
   return res.json() as Promise<SuggestPriceResult>
 }
 
+export interface BulkPriceItem {
+  categoria: string
+  medida: string
+  variante?: string | null
+  cantidad: number
+  regla?: string | null
+}
+
+export interface BulkPriceResultItem {
+  cantidad: number
+  categoria: string
+  variante: string
+  medida_solicitada: string
+  medida_referencia: string
+  precio: number | null
+  faltante: boolean
+}
+
+export interface BulkPriceResult {
+  items: BulkPriceResultItem[]
+  sugerencias: SugerenciaPrecio[]
+  mensaje: string | null
+}
+
+export async function bulkPrice(
+  items: BulkPriceItem[],
+): Promise<BulkPriceResult> {
+  const url = `${apiUrl()}/products/bulk-price`
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify({ items }),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} en bulk price${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  return res.json() as Promise<BulkPriceResult>
+}
+
 export interface PriceListImageMeta {
   id: number
   name: string

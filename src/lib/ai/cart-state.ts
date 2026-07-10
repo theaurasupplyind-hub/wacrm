@@ -15,6 +15,7 @@ export interface CartState {
   total: number
   fecha: string
   items_faltantes: string[]
+  pending_confirm: boolean
 }
 
 export function createCart(
@@ -47,6 +48,7 @@ export function createCart(
     total,
     fecha: new Date().toLocaleDateString('es-AR'),
     items_faltantes: itemsFaltantes,
+    pending_confirm: false,
   }
 }
 
