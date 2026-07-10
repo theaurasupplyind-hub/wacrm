@@ -602,6 +602,7 @@ async function debouncedChatMessage(
           type: 'text',
           text: { body: 'Dame un segundo que reviso...' },
         }),
+        signal: AbortSignal.timeout(5000),
       })
     } catch { /* non-critical, don't break the flow */ }
   } catch {
@@ -872,6 +873,8 @@ async function processMessage(
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
   const inboundText = contentText ?? message.text?.body ?? ''
+  console.log('[webhook] dispatch decision | flowConsumed=%s interactiveReply=%s text=%s',
+    flowConsumed, !!interactiveReplyId, inboundText.slice(0, 80))
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -920,6 +923,7 @@ async function processMessage(
   // Conversational AI bot (products, pricing, account questions).
   // Uses debounce: collects fragmented messages for 8s before processing.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    console.log('[webhook] chatbot dispatch start -> conversation=%s', conversation.id)
     bgTasks.push(
       debouncedChatMessage(
         inboundText,
