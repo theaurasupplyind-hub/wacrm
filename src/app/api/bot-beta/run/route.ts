@@ -10,8 +10,10 @@ import {
 } from '@/lib/ai/chatbot'
 import {
   bulkPrice,
+  createInvoice,
   type BulkPriceItem,
   type BulkPriceResult,
+  type InvoiceCreatedResult,
 } from '@/lib/facbal/client'
 import {
   createCart,
@@ -243,25 +245,8 @@ export async function POST(req: NextRequest) {
         } satisfies SandboxResponse)
       }
 
-      // Si ya estábamos esperando confirmación, este es el "sí"
-      if (existingCart.pending_confirm) {
-        const confirmedCart: CartState = {
-          ...existingCart,
-          status: 'confirmado',
-          pending_confirm: false,
-        }
-        const invoice = buildInvoicePayload(confirmedCart, phone)
-        logs.push({ step: 'confirm_order', data: { items: confirmedCart.items.length, total: confirmedCart.total, invoice_preview: true } })
-        return NextResponse.json({
-          reply: '✅ Pedido confirmado. Abajo tenés la vista previa del presupuesto que se crearía en FacBal.',
-          cart: confirmedCart,
-          invoice,
-          logs,
-        } satisfies SandboxResponse)
-      }
-
       // Si la confianza es baja, preguntar antes de confirmar
-      if (extraction.confianza === 'baja') {
+      if (!existingCart.pending_confirm && extraction.confianza === 'baja') {
         const pendingCart: CartState = {
           ...existingCart,
           pending_confirm: true,
@@ -275,16 +260,34 @@ export async function POST(req: NextRequest) {
         } satisfies SandboxResponse)
       }
 
-      // Confianza alta, confirmar directamente
+      // Confirmar y crear factura real en FacBal
       const confirmedCart: CartState = {
         ...existingCart,
         status: 'confirmado',
         pending_confirm: false,
       }
       const invoice = buildInvoicePayload(confirmedCart, phone)
-      logs.push({ step: 'confirm_order', data: { items: confirmedCart.items.length, total: confirmedCart.total, invoice_preview: true } })
+
+      logs.push({ step: 'confirm_order', data: { items: confirmedCart.items.length, total: confirmedCart.total } })
+
+      let createdInvoice: InvoiceCreatedResult | null = null
+      try {
+        createdInvoice = await createInvoice(invoice)
+        invoice.numero_factura = createdInvoice.numero_factura
+        logs.push({ step: 'invoice_created', data: { id: createdInvoice.id, numero: createdInvoice.numero_factura } })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        logs.push({ step: 'error', data: { stage: 'createInvoice', error: msg } })
+        return NextResponse.json({
+          reply: `✅ Pedido confirmado, pero hubo un error al crear la factura: ${msg}`,
+          cart: confirmedCart,
+          invoice,
+          logs,
+        } satisfies SandboxResponse)
+      }
+
       return NextResponse.json({
-        reply: '✅ Pedido confirmado. Abajo tenés la vista previa del presupuesto que se crearía en FacBal.',
+        reply: `✅ Pedido confirmado. Factura **${createdInvoice.numero_factura}** creada en FacBal — ya la ves en el kanban de galv2-tauri.`,
         cart: confirmedCart,
         invoice,
         logs,

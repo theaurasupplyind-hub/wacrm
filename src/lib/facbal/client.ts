@@ -259,3 +259,51 @@ export async function getPriceListImages(): Promise<PriceListImageMeta[]> {
 export function getPriceListImageUrl(imageId: number): string {
   return `${apiUrl()}/price-list-images/${imageId}/view`
 }
+
+// ─── Crear factura/presupuesto ───
+
+export interface InvoiceCreatedResult {
+  id: number
+  numero_factura: string
+  numero_presupuesto: string | null
+  fecha: string
+  cliente_nombre: string
+  total: number
+  tipo: string
+}
+
+export async function createInvoice(payload: {
+  numero_factura: string
+  numero_presupuesto?: string
+  fecha: string
+  cliente_id: number | null
+  cliente_nombre: string
+  cliente_domicilio?: string
+  cliente_telefono?: string
+  items: { cantidad: number; descripcion: string; precio_unitario: number; total: number }[]
+  total: number
+  envio: number
+  tipo: string
+  user_id: number
+  tipo_entrega?: string
+  fecha_entrega?: string
+  estado_kanban?: string
+}): Promise<InvoiceCreatedResult> {
+  const url = `${apiUrl()}/invoices`
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al crear factura${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  return res.json() as Promise<InvoiceCreatedResult>
+}

@@ -74,7 +74,7 @@ export function buildInvoicePayload(
     total: items.reduce((sum, i) => sum + i.total, 0),
     envio: 0,
     tipo: 'PRESUPUESTO',
-    user_id: 1,                  // user_id fijo para pruebas
+    user_id: 0,                  // usuario Bot (id=0) creado en backend_gal
     tipo_entrega: 'Retira',
     fecha_entrega: '',
     estado_kanban: 'PEDIDO',
