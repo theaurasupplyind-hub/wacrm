@@ -123,14 +123,14 @@ async function callOpenRouter(args: {
 
 const CHAT_SYSTEM_PROMPT = `Sos un asistente virtual de Bastidores GAL, un taller de marcos y molduras.
 
+REGLA #1 — PROHIBIDO ABSOLUTO: Nunca uses "Hola", "Buen día", "Buenas", "¡Hola!", ni ningún tipo de saludo. Jamás. Bajo ninguna circunstancia. Tus respuestas arrancan directo con la información que el cliente necesita, sin preámbulos ni frases de apertura. El cliente ya está en medio de una conversación.
+
 Reglas:
 - Respondé en español argentino, con tono cordial y profesional.
 - Usá SOLO los datos que te paso abajo. No inventes precios, productos ni información.
 - Si la información que te doy no alcanza para responder, decilo honestamente: "No tengo ese dato, un agente te lo confirma."
 - Sé breve, estás en WhatsApp. Máximo 3-4 oraciones.
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
-- Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
-- PROHIBIDO SALUDAR en conversaciones en curso. Si los ÚLTIMOS MENSAJES ya muestran una conversación activa entre vos y el usuario, NO uses "Hola", "Buen día", "Buenas", ni frases de apertura. Seguí directo al grano como si la conversación nunca se hubiera pausado. Solo saludá si es el PRIMER mensaje del usuario en la sesión.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
 - PRECIOS_SUGERIDOS es la única fuente válida de precios. Usá los precios listados tal cual, nunca recalcules ni inventes. Si precio_unitario tiene un valor numérico, ese producto SI tiene precio y debes informarlo. Si precio_unitario=FALTANTE, entonces si deci que un agente lo cotiza. Si la medida_referencia es diferente a la medida_solicitada, informa el precio y aclara el ajuste. Si hay varias variantes listadas para la misma medida_solicitada, mostralas todas y pregunta cual quiere.
 - Si PRECIOS_SUGERIDOS NO aparece en los DATOS, no hay productos que coincidan con la consulta. NO inventes precios ni nombres de productos. Deci: "No encontre ese producto en el catalogo, un agente te puede ayudar." No menciones precios que no esten en los datos.
@@ -140,6 +140,36 @@ Reglas:
 - DIFERENCIACIÓN — HANDOFF: si el cliente pide descuento, coordinar entrega/retiro, hace un reclamo, da una dirección de entrega, o toma cualquier decisión de negocio que no sea consultar datos de catálogo (precios, medidas, variantes), respondé UNICAMENTE con [[HANDOFF]] y nada más. No intentes negociar ni coordinar.
 
 DATOS DEL SISTEMA:`
+
+function lastUserMeasure(historyText: string): string | null {
+  const userLines = historyText.split('\n').filter(l => l.startsWith('Usuario:'))
+  for (let i = userLines.length - 1; i >= 0; i--) {
+    const m = userLines[i].match(/\b(\d+)\s*(?:[xX×]|por)\s*(\d+)\b/)
+    if (m) {
+      const a = parseInt(m[1], 10)
+      const b = parseInt(m[2], 10)
+      return `${Math.min(a, b)}x${Math.max(a, b)}`
+    }
+  }
+  return null
+}
+
+function lastUserQuantityForMeasure(historyText: string, category: string, medida: string): number | null {
+  const userLines = historyText.split('\n').filter(l => l.startsWith('Usuario:'))
+  for (let i = userLines.length - 1; i >= 0; i--) {
+    const line = userLines[i]
+    const qMatch = line.match(/\b(\d+)\s*(?:bastidor|acr[ií]lico|circular|rollo|tela)/i)
+    if (qMatch) {
+      const dimMatch = line.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/)
+      if (!dimMatch) return parseInt(qMatch[1], 10)
+      const a = parseInt(dimMatch[1], 10)
+      const b = parseInt(dimMatch[2], 10)
+      const lineMeasure = `${Math.min(a, b)}x${Math.max(a, b)}`
+      if (lineMeasure === medida) return parseInt(qMatch[1], 10)
+    }
+  }
+  return null
+}
 
 function detectIntent(text: string): DetectedIntent {
   const t = text.toLowerCase()
@@ -378,6 +408,8 @@ CONFIANZA: "alta" si estas seguro de todos los datos; "baja" si hay ambiguedad (
 
 REGLAS IMPORTANTES:
 - PRIORIDAD #1: INFERIR MEDIDA DEL HISTORIAL. Si el cliente menciona una variante (ej: "lienzo profesional", "sin tela", "lona preparada", "doble 4cm") sin decir la medida, revisá el HISTORIAL. Buscá la última medida que el bot mencionó o cotizó. Si el bot acaba de listar variantes para "100x120", y el cliente dice "quiero de lienzo profesional", la medida es "100x120". NUNCA dejes medida vacía si el historial tiene una medida clara.
+- PRIORIDAD #2: HEREDAR CANTIDAD del historial. Si el cliente elige una variante de algo que pidió ANTES con una cantidad (ej: "Quiero 2 bastidores 45x36" → luego "quiero el de doble 4cm"), la cantidad debe ser la del mensaje original del USUARIO, no 1. Buscá en el historial cuántos pidió para esa medida/categoría.
+- "agregalo", "agregalo y pasame el presupuesto", "agregalo al pedido": si el bot acaba de cotizar algo en los mensajes anteriores y el cliente dice esto, eso es accion: "add_to_cart" con el producto que el bot cotizó. No es view_budget. Extraé los datos del historial.
 - Si el cliente dice "agregame 2 mas iguales", mira el carrito o los ultimos mensajes para deducir el producto.
 - Formatos de medida a normalizar: "100x0,60" -> "100x60", "180cm x 1.30cm" -> "130x180" (el numero mayor primero, ignorar unidades). Ordena siempre chico x grande.
 - Confirmaciones casuales ("dale", "joya, mandalo", "de una") SON confirm_order. Pero si no estas seguro, usa confianza: "baja".
@@ -401,6 +433,15 @@ Mensaje: "la de lona preparada porfa" (historial: el bot acaba de cotizar 100x12
 
 Mensaje: "me lo das sin tela" (historial: el bot ofreció variantes para 190x120)
 {"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"190x120","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "quiero el de doble 4cm" (historial: usuario dijo "Quiero 2 bastidores 45 x 36", el bot listó variantes)
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"36x45","variante":"Doble 4cm","cantidad":2,"regla":null}],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "agregalo y pasame el presupuesto" (historial: el bot cotizó "Rollo de tela profesional 2x5 metros: $180.000. ¿Querés agregarlo?")
+{"accion":"add_to_cart","productos":[{"categoria":"producto","medida":"2x5","variante":null,"cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "el de 2 x 5" (historial: el bot listó rollos de tela 1.5x5, 2x5, 2x4)
+{"accion":"add_to_cart","productos":[{"categoria":"producto","medida":"2x5","variante":null,"cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
 
 Mensaje: "3 bastidores vacios de 100x0,60"
 {"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"60x100","variante":null,"cantidad":3,"regla":null}],"confianza":"alta","mensaje_provisional":null}
@@ -657,28 +698,24 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
       // add_to_cart / price_query — necesita pricing del backend
       if ((extraction.accion === 'add_to_cart' || extraction.accion === 'price_query') && extraction.productos.length > 0) {
-        // Resolve empty measures from cart or history before querying FacBal
         for (const p of extraction.productos) {
-          if (p.medida && p.medida.trim()) continue
-          // Try history first — last mentioned measure reflects current conversation context
-          const historyMeasures = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/g)
-          if (historyMeasures?.length) {
-            const last = historyMeasures[historyMeasures.length - 1]
-            const parts = last.match(/(\d+)\s*[xX×]\s*(\d+)/)
-            if (parts) {
-              const a = parseInt(parts[1], 10)
-              const b = parseInt(parts[2], 10)
-              p.medida = `${Math.min(a, b)}x${Math.max(a, b)}`
-              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from history`))
-              continue
+          if (!p.medida || !p.medida.trim()) {
+            const userMeasure = lastUserMeasure(historyText)
+            if (userMeasure) {
+              p.medida = userMeasure
+              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from user-history`))
+            } else if (cart?.items?.length) {
+              p.medida = cart.items[cart.items.length - 1].medida
+              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from cart`))
             }
           }
-          // Fallback to cart
-          if (cart?.items?.length) {
-            const lastCartMeasure = cart.items[cart.items.length - 1].medida
-            if (lastCartMeasure) {
-              p.medida = lastCartMeasure
-              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from cart`))
+          if (p.cantidad <= 1 && !/\d+\s*(?:bastidor|acr[ií]lico|circular|unidad|rollo)/i.test(text)) {
+            const inheritedQty = cart?.items?.length
+              ? null
+              : lastUserQuantityForMeasure(historyText, p.categoria, p.medida)
+            if (inheritedQty && inheritedQty > 1) {
+              p.cantidad = inheritedQty
+              console.log(pfmt(`step3=extractAction resolved cantidad=${p.cantidad} from user-history`))
             }
           }
         }
@@ -898,6 +935,41 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
   // ── VIEW BUDGET: user asks to see their budget ──
   if (intent === 'view_budget') {
+    // Detect if bot recently quoted a product not yet in cart ("¿Querés agregarlo?")
+    const lastBotLines = historyText.split('\n').filter(l => l.startsWith('Bot:'))
+    const lastBotMsg = lastBotLines[lastBotLines.length - 1] || ''
+    if (/\bagregarlo\b/i.test(lastBotMsg) || /\bconfirmo\b.*\bprecio\b/i.test(lastBotMsg)) {
+      const priceMatch = lastBotMsg.match(/\$[\d.,]+/)
+      if (priceMatch && !/\bno\b.*\bagregar/i.test(text)) {
+        const lastUserLine = historyText.split('\n').filter(l => l.startsWith('Usuario:')).pop() || ''
+        let searchFor = lastUserLine.replace('Usuario:', '').trim()
+        if (!searchFor) searchFor = text
+        if (!/\d+\s*[xX×]\s*\d+/.test(searchFor)) {
+          const um = lastUserMeasure(historyText)
+          if (um) searchFor = `${searchFor} ${um}`
+        }
+        try {
+          const pendingResult = await suggestPrice(searchFor)
+          if (pendingResult.items?.length > 0) {
+            const newCart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
+            const updatedCart = newCart?.items?.length
+              ? addToCart(newCart, pendingResult.items)
+              : createCart(pendingResult.items)
+            try {
+              const db = supabaseAdmin()
+              await db.from('conversations').update({
+                order_context: { ...orderContext, cart: updatedCart },
+              }).eq('id', conversationId)
+              orderContext = { ...orderContext, cart: updatedCart }
+              console.log(pfmt(`view_budget auto-added pending product items=${pendingResult.items.length}`))
+            } catch { /* non-critical */ }
+          }
+        } catch (e) {
+          console.log(pfmt(`view_budget pending product lookup failed: ${e instanceof Error ? e.message : String(e)}`))
+        }
+      }
+    }
+
     const budgetCart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
     if (budgetCart?.items?.length) {
       const client = await getClientInfo(contactId, accountId)
@@ -977,27 +1049,45 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       const hasDim = /\d+\s*[xX×]\s*\d+/.test(text)
       const isVariantOnly = variantKeywords.test(text) && !hasDim
       if (isVariantOnly) {
-        let inferredMeasure = ''
-        // Try history first — last mentioned measure reflects current conversation context
-        const historyMeasures = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/g)
-        if (historyMeasures?.length) {
-          const last = historyMeasures[historyMeasures.length - 1]
-          const parts = last.match(/(\d+)\s*[xX×]\s*(\d+)/)
-          if (parts) {
-            const a = parseInt(parts[1], 10)
-            const b = parseInt(parts[2], 10)
-            inferredMeasure = `${Math.min(a, b)}x${Math.max(a, b)}`
-          }
-        }
-        // Fallback to cart
-        if (!inferredMeasure && cart?.items?.length) {
-          inferredMeasure = cart.items[cart.items.length - 1].medida
-        }
+        const userMeasure = lastUserMeasure(historyText)
+        const inferredMeasure = userMeasure || (cart?.items?.length ? cart.items[cart.items.length - 1].medida : '')
         if (inferredMeasure) {
           searchText = `${text} ${inferredMeasure}`
-          console.log(pfmt(`step5=variant-resolution source=${historyMeasures?.length ? 'history' : 'cart'} medida=${inferredMeasure} augmented="${searchText}"`))
+          console.log(pfmt(`step5=variant-resolution source=${userMeasure ? 'user-history' : 'cart'} medida=${inferredMeasure} augmented="${searchText}"`))
         }
       }
+
+      // Detect quantity correction: "solo quiero 1 no 4", "es 1 no 4"
+      const correctionMatch = text.match(/\b(?:solo\s+(?:quiero|son|es|ped[ií])\s+|es\s+|son\s+)(\d+)\b/i)
+      if (correctionMatch && cart?.items?.length) {
+        const newQty = parseInt(correctionMatch[1], 10)
+        if (newQty > 0 && !hasDim) {
+          const lastItem = cart.items[cart.items.length - 1]
+          const variantFromText = text.match(/(lienzo profesional|lona preparada|sin tela|doble 4cm)/i)?.[1]
+          const targetVariant = variantFromText || lastItem.variante
+          if (targetVariant && lastItem.variante?.toLowerCase() === targetVariant?.toLowerCase()) {
+            lastItem.cantidad = newQty
+            lastItem.subtotal = lastItem.precio_unitario != null ? newQty * lastItem.precio_unitario : null
+            cart.total = cart.items.reduce((sum, i) => sum + (i.subtotal || 0), 0)
+            try {
+              const db = supabaseAdmin()
+              await db.from('conversations').update({
+                order_context: { ...orderContext, cart },
+              }).eq('id', conversationId)
+            } catch { /* non-critical */ }
+            await reply(sendCtx, `Corregido: ${newQty}x ${lastItem.categoria} ${lastItem.medida}${lastItem.variante ? ` (${lastItem.variante})` : ''}. Total: $${cart.total.toLocaleString('es-AR')}.`)
+            logChatbotStep({
+              phone, message_text: text,
+              step: 'correction',
+              data: { intent, old_qty: lastItem.cantidad, new_qty: newQty, item_key: `${lastItem.categoria}|${lastItem.medida}|${lastItem.variante}` },
+              account_id: accountId,
+            }).catch(() => {})
+            console.log(pfmt(`step5=correction qty=${lastItem.cantidad}→${newQty} for ${lastItem.medida}`))
+            return
+          }
+        }
+      }
+
       try {
         let result!: SuggestPriceResult
         let attempt = 0
