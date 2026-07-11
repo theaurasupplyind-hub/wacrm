@@ -208,6 +208,7 @@ export interface BulkPriceResult {
 
 export async function bulkPrice(
   items: BulkPriceItem[],
+  timeoutMs?: number,
 ): Promise<BulkPriceResult> {
   const url = `${apiUrl()}/products/bulk-price`
 
@@ -215,7 +216,7 @@ export async function bulkPrice(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
     body: JSON.stringify({ items }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs ?? 30_000),
   })
 
   if (!res.ok) {

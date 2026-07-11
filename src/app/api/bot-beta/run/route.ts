@@ -289,10 +289,29 @@ export async function POST(req: NextRequest) {
         regla: p.regla,
       }))
 
-      // Consultar precios a FacBal
+      // Consultar precios a FacBal con timeout largo y retry automático
+      // (Render free tier cold start puede tardar 40-60 segundos)
+      const bulkPriceWithRetry = async (): Promise<BulkPriceResult> => {
+        const MAX_ATTEMPTS = 3
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            return await bulkPrice(bulkItems, 90_000)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            const isTimeout = msg.includes('timeout') || msg.includes('aborted') || msg.includes('TimedOut')
+            if (attempt < MAX_ATTEMPTS && isTimeout) {
+              logs.push({ step: 'retry', data: { attempt, error: msg } })
+              continue
+            }
+            throw err
+          }
+        }
+        throw new Error('No se pudo consultar precios después de varios intentos')
+      }
+
       let pricingResult: BulkPriceResult
       try {
-        pricingResult = await bulkPrice(bulkItems)
+        pricingResult = await bulkPriceWithRetry()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         logs.push({ step: 'error', data: { stage: 'bulkPrice', error: msg } })
