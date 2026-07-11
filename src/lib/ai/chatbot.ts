@@ -130,6 +130,7 @@ Reglas:
 - Sé breve, estás en WhatsApp. Máximo 3-4 oraciones.
 - Si el cliente pregunta algo que no está en los datos, ofrecé derivarlo a un agente humano.
 - Si hay una nota de SALUDO PENDIENTE, arrancá saludando y preguntándole si tenía una consulta.
+- PROHIBIDO SALUDAR en conversaciones en curso. Si los ÚLTIMOS MENSAJES ya muestran una conversación activa entre vos y el usuario, NO uses "Hola", "Buen día", "Buenas", ni frases de apertura. Seguí directo al grano como si la conversación nunca se hubiera pausado. Solo saludá si es el PRIMER mensaje del usuario en la sesión.
 - Si en los DATOS dice que hay una LISTA DE PRECIOS para enviar, decí algo como "Ahí te mando la lista!" sin repetir los precios (van en la imagen). Solo agregá info breve útil.
 - PRECIOS_SUGERIDOS es la única fuente válida de precios. Usá los precios listados tal cual, nunca recalcules ni inventes. Si precio_unitario tiene un valor numérico, ese producto SI tiene precio y debes informarlo. Si precio_unitario=FALTANTE, entonces si deci que un agente lo cotiza. Si la medida_referencia es diferente a la medida_solicitada, informa el precio y aclara el ajuste. Si hay varias variantes listadas para la misma medida_solicitada, mostralas todas y pregunta cual quiere.
 - Si PRECIOS_SUGERIDOS NO aparece en los DATOS, no hay productos que coincidan con la consulta. NO inventes precios ni nombres de productos. Deci: "No encontre ese producto en el catalogo, un agente te puede ayudar." No menciones precios que no esten en los datos.
@@ -659,16 +660,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
         // Resolve empty measures from cart or history before querying FacBal
         for (const p of extraction.productos) {
           if (p.medida && p.medida.trim()) continue
-          // Try cart first
-          if (cart?.items?.length) {
-            const lastCartMeasure = cart.items[cart.items.length - 1].medida
-            if (lastCartMeasure) {
-              p.medida = lastCartMeasure
-              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from cart`))
-              continue
-            }
-          }
-          // Try history — find last mentioned measure
+          // Try history first — last mentioned measure reflects current conversation context
           const historyMeasures = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/g)
           if (historyMeasures?.length) {
             const last = historyMeasures[historyMeasures.length - 1]
@@ -678,6 +670,15 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
               const b = parseInt(parts[2], 10)
               p.medida = `${Math.min(a, b)}x${Math.max(a, b)}`
               console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from history`))
+              continue
+            }
+          }
+          // Fallback to cart
+          if (cart?.items?.length) {
+            const lastCartMeasure = cart.items[cart.items.length - 1].medida
+            if (lastCartMeasure) {
+              p.medida = lastCartMeasure
+              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from cart`))
             }
           }
         }
@@ -977,20 +978,24 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       const isVariantOnly = variantKeywords.test(text) && !hasDim
       if (isVariantOnly) {
         let inferredMeasure = ''
-        if (cart?.items?.length) {
-          inferredMeasure = cart.items[cart.items.length - 1].medida
-        }
-        if (!inferredMeasure) {
-          const m = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/)
-          if (m) {
-            const a = parseInt(m[1], 10)
-            const b = parseInt(m[2], 10)
+        // Try history first — last mentioned measure reflects current conversation context
+        const historyMeasures = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/g)
+        if (historyMeasures?.length) {
+          const last = historyMeasures[historyMeasures.length - 1]
+          const parts = last.match(/(\d+)\s*[xX×]\s*(\d+)/)
+          if (parts) {
+            const a = parseInt(parts[1], 10)
+            const b = parseInt(parts[2], 10)
             inferredMeasure = `${Math.min(a, b)}x${Math.max(a, b)}`
           }
         }
+        // Fallback to cart
+        if (!inferredMeasure && cart?.items?.length) {
+          inferredMeasure = cart.items[cart.items.length - 1].medida
+        }
         if (inferredMeasure) {
           searchText = `${text} ${inferredMeasure}`
-          console.log(pfmt(`step5=variant-resolution augmented="${searchText}"`))
+          console.log(pfmt(`step5=variant-resolution source=${historyMeasures?.length ? 'history' : 'cart'} medida=${inferredMeasure} augmented="${searchText}"`))
         }
       }
       try {
