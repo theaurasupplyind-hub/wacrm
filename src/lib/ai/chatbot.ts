@@ -376,12 +376,13 @@ PRODUCTOS: array de objetos con:
 CONFIANZA: "alta" si estas seguro de todos los datos; "baja" si hay ambiguedad (ej: "creo que era sin tela").
 
 REGLAS IMPORTANTES:
-- Si el cliente dice "Dame Sin tela" sin dimensiones, busca en los mensajes anteriores que medida se estaba discutiendo.
+- PRIORIDAD #1: INFERIR MEDIDA DEL HISTORIAL. Si el cliente menciona una variante (ej: "lienzo profesional", "sin tela", "lona preparada", "doble 4cm") sin decir la medida, revisá el HISTORIAL. Buscá la última medida que el bot mencionó o cotizó. Si el bot acaba de listar variantes para "100x120", y el cliente dice "quiero de lienzo profesional", la medida es "100x120". NUNCA dejes medida vacía si el historial tiene una medida clara.
 - Si el cliente dice "agregame 2 mas iguales", mira el carrito o los ultimos mensajes para deducir el producto.
 - Formatos de medida a normalizar: "100x0,60" -> "100x60", "180cm x 1.30cm" -> "130x180" (el numero mayor primero, ignorar unidades). Ordena siempre chico x grande.
 - Confirmaciones casuales ("dale", "joya, mandalo", "de una") SON confirm_order. Pero si no estas seguro, usa confianza: "baja".
 - "reembastar" es lo mismo que "pintura" -> categoria: "bastidor", regla: "pintura", variante: "Sin Tela".
 - Si el cliente pregunta por algo que claramente no es un bastidor/acrilico/circular (ej: "Papel Arches", "pinceles"), usa accion: "general" y el sistema le dira que no lo tiene.
+- confianza: "baja" si tuviste que inferir la medida del historial sin estar 100% seguro. confianza: "baja" si la medida no aparece ni en el mensaje ni en el historial (en ese caso usá medida: "").
 
 FEW-SHOT EXAMPLES:
 
@@ -390,6 +391,15 @@ Mensaje: "Hola quiero un bastidor de 100 x 120 sin tela"
 
 Mensaje: "Dame Sin tela" (historial: el bot acaba de listar variantes de 100x120)
 {"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"100x120","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"alta","mensaje_provisional":null}
+
+Mensaje: "quiero de lienzo profesional" (historial: el bot listó variantes Lienzo Profesional, Lona Preparada, Sin Tela para 100x120)
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"100x120","variante":"Lienzo Profesional","cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "la de lona preparada porfa" (historial: el bot acaba de cotizar 100x120 con variantes)
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"100x120","variante":"Lona Preparada","cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
+
+Mensaje: "me lo das sin tela" (historial: el bot ofreció variantes para 190x120)
+{"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"190x120","variante":"Sin Tela","cantidad":1,"regla":null}],"confianza":"baja","mensaje_provisional":null}
 
 Mensaje: "3 bastidores vacios de 100x0,60"
 {"accion":"add_to_cart","productos":[{"categoria":"bastidor","medida":"60x100","variante":null,"cantidad":3,"regla":null}],"confianza":"alta","mensaje_provisional":null}
@@ -646,6 +656,32 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
       // add_to_cart / price_query — necesita pricing del backend
       if ((extraction.accion === 'add_to_cart' || extraction.accion === 'price_query') && extraction.productos.length > 0) {
+        // Resolve empty measures from cart or history before querying FacBal
+        for (const p of extraction.productos) {
+          if (p.medida && p.medida.trim()) continue
+          // Try cart first
+          if (cart?.items?.length) {
+            const lastCartMeasure = cart.items[cart.items.length - 1].medida
+            if (lastCartMeasure) {
+              p.medida = lastCartMeasure
+              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from cart`))
+              continue
+            }
+          }
+          // Try history — find last mentioned measure
+          const historyMeasures = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/g)
+          if (historyMeasures?.length) {
+            const last = historyMeasures[historyMeasures.length - 1]
+            const parts = last.match(/(\d+)\s*[xX×]\s*(\d+)/)
+            if (parts) {
+              const a = parseInt(parts[1], 10)
+              const b = parseInt(parts[2], 10)
+              p.medida = `${Math.min(a, b)}x${Math.max(a, b)}`
+              console.log(pfmt(`step3=extractAction resolved medida=${p.medida} from history`))
+            }
+          }
+        }
+
         const bulkItems: BulkPriceItem[] = extraction.productos.map(p => ({
           categoria: p.categoria,
           medida: p.medida,
@@ -934,12 +970,35 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     }
 
     if (intent === 'product_search' || intent === 'order_request' || intent === 'general') {
+      // Augment variant-only queries with measure from cart or history
+      let searchText = text
+      const variantKeywords = /\b(lienzo profesional|lona preparada|sin tela|doble 4cm|lienzo|lona)\b/i
+      const hasDim = /\d+\s*[xX×]\s*\d+/.test(text)
+      const isVariantOnly = variantKeywords.test(text) && !hasDim
+      if (isVariantOnly) {
+        let inferredMeasure = ''
+        if (cart?.items?.length) {
+          inferredMeasure = cart.items[cart.items.length - 1].medida
+        }
+        if (!inferredMeasure) {
+          const m = historyText.match(/\b(\d+)\s*[xX×]\s*(\d+)\b/)
+          if (m) {
+            const a = parseInt(m[1], 10)
+            const b = parseInt(m[2], 10)
+            inferredMeasure = `${Math.min(a, b)}x${Math.max(a, b)}`
+          }
+        }
+        if (inferredMeasure) {
+          searchText = `${text} ${inferredMeasure}`
+          console.log(pfmt(`step5=variant-resolution augmented="${searchText}"`))
+        }
+      }
       try {
         let result!: SuggestPriceResult
         let attempt = 0
         while (attempt < 2) {
           try {
-            result = await suggestPrice(text)
+            result = await suggestPrice(searchText)
             break
           } catch (err) {
             attempt++
