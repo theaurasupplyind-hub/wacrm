@@ -21,7 +21,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const DEFAULT_CHAT_MODEL = 'google/gemini-2.5-flash-lite'
 const HANDOFF_SENTINEL = '[[HANDOFF]]'
-const SHOW_BUDGET_SENTINEL = '[[SHOW_BUDGET]]'
+export const SHOW_BUDGET_SENTINEL = '[[SHOW_BUDGET]]'
 
 interface ChatArgs {
   text: string
@@ -58,7 +58,7 @@ async function reply(
   }
 }
 
-async function callOpenRouter(args: {
+export async function callOpenRouter(args: {
   systemPrompt: string
   userMessage: string
 }): Promise<{ text: string; usage: { prompt_tokens: number; completion_tokens: number } }> {
@@ -121,7 +121,7 @@ async function callOpenRouter(args: {
   }
 }
 
-const CHAT_SYSTEM_PROMPT = `Sos un asistente virtual de Bastidores GAL, un taller de marcos y molduras.
+export const CHAT_SYSTEM_PROMPT = `Sos un asistente virtual de Bastidores GAL, un taller de marcos y molduras.
 
 REGLA #1 — PROHIBIDO ABSOLUTO: Nunca uses "Hola", "Buen día", "Buenas", "¡Hola!", ni ningún tipo de saludo. Jamás. Bajo ninguna circunstancia. Tus respuestas arrancan directo con la información que el cliente necesita, sin preámbulos ni frases de apertura. El cliente ya está en medio de una conversación.
 
@@ -369,7 +369,7 @@ async function sendImage(
 
 // ─── LLM Extraction: interpreta el mensaje y decide acción ───
 
-interface ExtractionProduct {
+export interface ExtractionProduct {
   categoria: string
   medida: string
   variante: string | null
@@ -377,14 +377,14 @@ interface ExtractionProduct {
   regla: string | null
 }
 
-interface ExtractionResult {
+export interface ExtractionResult {
   accion: 'add_to_cart' | 'view_budget' | 'confirm_order' | 'cancel_order' | 'price_query' | 'handoff' | 'general' | 'ignore'
   productos: ExtractionProduct[]
   confianza: 'alta' | 'baja'
   mensaje_provisional: string | null
 }
 
-const EXTRACTION_PROMPT = `Sos un extractor de pedidos para Bastidores GAL, taller de marcos y molduras.
+export const EXTRACTION_PROMPT = `Sos un extractor de pedidos para Bastidores GAL, taller de marcos y molduras.
 Tu trabajo: analizar el mensaje del cliente y devolver UNICAMENTE un JSON con la accion y los productos que entendiste.
 
 ACCIONES posibles:
@@ -478,7 +478,7 @@ Mensaje: "me haces un descuento?"
 
 DEVOLVE SOLO EL JSON, NADA MAS.`
 
-async function extractAction(
+export async function extractAction(
   historyText: string,
   cart: CartState | undefined,
   currentMessage: string,
