@@ -580,6 +580,9 @@ async function debouncedChatMessage(
   const admin = getAdmin()
   const DEBOUNCE_MS = 8000
   const now = new Date().toISOString()
+  const t0 = Date.now()
+
+  console.log(`[debounce] START conv=${conversationId.slice(0,8)} phone=${senderPhone.slice(-6)} text=${JSON.stringify(inboundText.slice(0,60))} t=0ms`)
 
   try {
     await admin
@@ -589,6 +592,7 @@ async function debouncedChatMessage(
         accumulated_text: inboundText,
         last_message_at: now,
       }, { onConflict: 'conversation_id' })
+    console.log(`[debounce] upsert OK t=${Date.now()-t0}ms`)
 
     // Send "dame un segundo" while we wait for fragmented messages
     try {
@@ -604,14 +608,23 @@ async function debouncedChatMessage(
         }),
         signal: AbortSignal.timeout(5000),
       })
-    } catch { /* non-critical, don't break the flow */ }
-  } catch {
+      console.log(`[debounce] "dame un segundo" sent t=${Date.now()-t0}ms`)
+    } catch (e) {
+      console.log(`[debounce] "dame un segundo" failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  } catch (e) {
+    console.log(`[debounce] upsert FAILED (table missing?), running without debounce: ${e instanceof Error ? e.message : String(e)}`)
     // Table doesn't exist yet — proceed without debounce
-    processChatMessage(chatArgs).catch((err) => console.error('[debounce] Chatbot error (no debounce):', err))
+    const t1 = Date.now()
+    console.log(`[debounce] dispatching processChatMessage (no-debounce) t=${t1-t0}ms`)
+    await processChatMessage(chatArgs)
+    console.log(`[debounce] processChatMessage DONE (no-debounce) total=${Date.now()-t0}ms`)
     return
   }
 
+  console.log(`[debounce] waiting ${DEBOUNCE_MS}ms... t=${Date.now()-t0}ms`)
   await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS))
+  console.log(`[debounce] wait done t=${Date.now()-t0}ms`)
 
   try {
     const { data: pending } = await admin
@@ -620,28 +633,37 @@ async function debouncedChatMessage(
       .eq('conversation_id', conversationId)
       .maybeSingle()
 
-    if (!pending) return // someone else processed it
+    if (!pending) {
+      console.log(`[debounce] batch already processed by another instance, exiting t=${Date.now()-t0}ms`)
+      return
+    }
 
     const lastMsgTime = new Date(pending.last_message_at).getTime()
     const ourTime = new Date(now).getTime()
 
     if (lastMsgTime > ourTime) {
-      // A newer message arrived during our wait — it will handle the batch
+      console.log(`[debounce] newer message arrived, deferring to it t=${Date.now()-t0}ms`)
       return
     }
 
     const accumulatedText = pending.accumulated_text || inboundText
+    console.log(`[debounce] processing batch text=${JSON.stringify(accumulatedText.slice(0,60))} t=${Date.now()-t0}ms`)
 
     await admin.from('chatbot_pending_batches').delete().eq('conversation_id', conversationId)
 
-    processChatMessage({
+    const tDispatch = Date.now()
+    console.log(`[debounce] dispatching processChatMessage t=${tDispatch-t0}ms`)
+    await processChatMessage({
       ...chatArgs,
       text: accumulatedText,
-    }).catch((err) => console.error('[debounce] Chatbot error:', err))
+    })
+    console.log(`[debounce] processChatMessage DONE total=${Date.now()-t0}ms`)
   } catch (err) {
-    console.error('[debounce] Error processing:', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[debounce] Error processing: ${msg} t=${Date.now()-t0}ms`)
     // Best-effort fallback: process the original message
-    processChatMessage(chatArgs).catch((e) => console.error('[debounce] Fallback error:', e))
+    await processChatMessage(chatArgs)
+    console.log(`[debounce] processChatMessage DONE (fallback) total=${Date.now()-t0}ms`)
   }
 }
 

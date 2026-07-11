@@ -67,6 +67,8 @@ async function callOpenRouter(args: {
 
   const model = process.env.CHATBOT_AI_MODEL || DEFAULT_CHAT_MODEL
 
+  console.log(`[callOpenRouter] model=${model} promptLen=${args.systemPrompt.length}B userLen=${args.userMessage.length}B`)
+
   let res: Response
   try {
     res = await fetch(OPENROUTER_URL, {
@@ -436,7 +438,10 @@ async function extractAction(
     `MENSAJE ACTUAL: ${currentMessage}`,
   ].filter(Boolean).join('\n\n')
 
+  console.log(`[extractAction] calling OpenRouter model=${DEFAULT_CHAT_MODEL} promptLen=${userPrompt.length}B`)
+
   try {
+    const t0 = Date.now()
     const response = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
@@ -456,6 +461,8 @@ async function extractAction(
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+
+    console.log(`[extractAction] OpenRouter response status=${response.status} t=${Date.now()-t0}ms`)
 
     if (!response.ok) {
       console.error('[extractAction] OpenRouter error:', response.status)
@@ -489,7 +496,7 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
   const t0 = Date.now()
   const pfmt = (extra: string) => `[chatbot] phone=${phone.slice(-6)} | msg=${JSON.stringify(text.slice(0, 50))} | ${extra} | t=${Date.now() - t0}ms`
 
-  console.log(pfmt(`intent=?`))
+  console.log(pfmt(`START`))
 
   // Step 1 — Hard handoff for non-catalog topics (regex, always first)
   const handoffPattern = shouldHardHandoff(text)
@@ -507,9 +514,11 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     console.log(pfmt(`action=handoff hard=${handoffPattern}`))
     return
   }
+  console.log(pfmt(`step1=no-handoff`))
 
   // Step 2 — Check for pending greeting (user said hi but was ignored)
   const greeting = await getPendingGreeting(phone, accountId)
+  console.log(pfmt(`step2=greeting greeting=${greeting ? 'found' : 'none'}`))
 
   // Load conversation context: order state + last messages
   let orderContext: Record<string, unknown> | null = null
@@ -524,15 +533,20 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     orderContext = (conv?.order_context as Record<string, unknown>) ?? null
     historyText = await loadLastMessages(conversationId, 15)
   } catch {
+    console.log(pfmt(`step2=context-load-failed`))
     // non-critical, continue without context
   }
+
+  console.log(pfmt(`step2=context orderCtx=${orderContext ? 'has' : 'none'} history=${historyText.length}B`))
 
   // ── LLM EXTRACTION: reemplaza detectIntent + suggestPrice ──
   const cart = (orderContext?.cart ?? orderContext?.presupuesto_activo) as CartState | undefined
   let extractionUsed = false
 
   try {
+    console.log(pfmt(`step3=extractAction-start cart=${cart?.items?.length ?? 0}items`))
     const extraction = await extractAction(historyText, cart, text, accountId)
+    console.log(pfmt(`step3=extractAction-done result=${extraction?.accion ?? 'null'}`))
 
     if (extraction && extraction.accion !== 'general' && extraction.accion !== 'ignore') {
       extractionUsed = true
@@ -724,10 +738,12 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
 
           // LLM response generation
           try {
-            let { text: respuesta, usage } = await callOpenRouter({
+            const result = await callOpenRouter({
               systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
               userMessage: text,
             })
+            let respuesta = result.text
+            const usage = result.usage
 
             if (respuesta.includes(HANDOFF_SENTINEL)) {
               try {
@@ -768,15 +784,18 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
         }
       }
     }
-  } catch {
+  } catch (e) {
+    console.log(pfmt(`step3=extractAction-caught ${e instanceof Error ? e.message : String(e)}`))
     // extraction failed, fall through to old flow
     extractionUsed = false
   }
 
   // ── FALLBACK: existing regex-based flow ──
   // Only reached if extraction failed or returned general/ignore
+  console.log(pfmt(`step4=fallback extractionUsed=${extractionUsed}`))
   const detected = extractionUsed ? { intent: 'general', priceListCategory: undefined } : detectIntent(text)
   const { intent, priceListCategory } = detected as { intent: IntentType; priceListCategory?: string }
+  console.log(pfmt(`step4=intent intent=${intent} category=${priceListCategory ?? 'none'}`))
 
   if (!extractionUsed) {
     logChatbotStep({
@@ -896,7 +915,8 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
-  // Step 3 — Fetch data from FacBal
+  // Step 5 — Fetch data from FacBal
+  console.log(pfmt(`step5=fetch-data intent=${intent}`))
   let dataContext = ''
   let imageUrl: string | null = null
   let imageLabel: string | null = null
@@ -1055,10 +1075,10 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
     return
   }
 
-  // Step 4 — OpenRouter generates natural response (1 call, all context)
+  // Step 6 — OpenRouter generates natural response (1 call, all context)
   try {
     const cartSummary = cart?.items?.length ? `${cart.items.length}items $${cart.total}` : 'empty'
-    console.log(pfmt(`intent=${intent} action=llm ctx=${dataContext.length}B img=${!!imageUrl} cart=${cartSummary}`))
+    console.log(pfmt(`step6=openrouter ctx=${dataContext.length}B img=${!!imageUrl} cart=${cartSummary}`))
     logChatbotStep({
       phone,
       message_text: text,
@@ -1067,10 +1087,14 @@ export async function processChatMessage(args: ChatArgs): Promise<void> {
       account_id: accountId,
     }).catch(() => {})
 
-    let { text: respuesta, usage } = await callOpenRouter({
+    const llmResult = await callOpenRouter({
       systemPrompt: CHAT_SYSTEM_PROMPT + '\n\n' + dataContext,
       userMessage: text,
     })
+    let respuesta = llmResult.text
+    const usage = llmResult.usage
+
+    console.log(pfmt(`step6=openrouter-done tokens_in=${usage.prompt_tokens} tokens_out=${usage.completion_tokens} response=${JSON.stringify(respuesta.slice(0, 80))}`))
 
     if (respuesta.includes(HANDOFF_SENTINEL)) {
       logChatbotStep({
