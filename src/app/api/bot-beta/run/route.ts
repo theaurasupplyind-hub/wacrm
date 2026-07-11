@@ -100,6 +100,28 @@ function buildDataContext(args: {
   return dataContext
 }
 
+// ─── Calienta Render + NeonDB antes de llamar a bulk-price ───
+// Render y NeonDB en tier gratuito entran en suspensión y tardan
+// 40-60s en responder el primer request. Un GET barato despierta
+// ambos servicios sin importar el resultado.
+async function warmUpFacbal(): Promise<void> {
+  const baseUrl = (process.env.FACBAL_API_URL || 'https://api-bastidores.onrender.com').replace(/\/$/, '')
+  const apiKey = process.env.FACBAL_API_KEY || ''
+
+  try {
+    const res = await fetch(`${baseUrl}/products/search?q=warmup&limit=1`, {
+      headers: apiKey ? { 'X-API-Key': apiKey } : {},
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (res.ok) {
+      console.log('[warmUpFacbal] Backend despertado OK')
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn('[warmUpFacbal] No se pudo despertar, continuando igual:', msg)
+  }
+}
+
 // ─── Handler principal ───
 
 export async function POST(req: NextRequest) {
@@ -288,6 +310,10 @@ export async function POST(req: NextRequest) {
         cantidad: p.cantidad || 1,
         regla: p.regla,
       }))
+
+      // Despertar Render + Neon si están en cold start
+      logs.push({ step: 'warmup', data: { stage: 'warming FacBal backend' } })
+      await warmUpFacbal()
 
       // Consultar precios a FacBal con timeout largo y retry automático
       // (Render free tier cold start puede tardar 40-60 segundos)
