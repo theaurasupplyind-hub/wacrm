@@ -11,6 +11,9 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
+import type { VoiceOrderResult } from '@/lib/voice-orders/types'
+import { engineSendText } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -667,6 +670,125 @@ async function debouncedChatMessage(
   }
 }
 
+// ─── Voice order helpers ───
+
+interface VoiceContext {
+  pendingVariantItems?: VoiceOrderResult['pendingVariantItems']
+  pendingClientName?: VoiceOrderResult['pendingClientName']
+  pendingInvoice?: VoiceOrderResult['pendingInvoice']
+}
+
+async function loadVoiceContext(conversationId: string): Promise<VoiceContext> {
+  try {
+    const { data } = await supabaseAdmin()
+      .from('conversations')
+      .select('voice_context')
+      .eq('id', conversationId)
+      .maybeSingle()
+    return (data?.voice_context as VoiceContext) || {}
+  } catch {
+    return {}
+  }
+}
+
+async function saveVoiceContext(conversationId: string, result: VoiceOrderResult) {
+  try {
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        voice_context: {
+          pendingVariantItems: result.pendingVariantItems || null,
+          pendingClientName: result.pendingClientName || null,
+          pendingInvoice: result.pendingInvoice || null,
+        },
+      })
+      .eq('id', conversationId)
+  } catch (err) {
+    console.error('[voice] save context error:', err)
+  }
+}
+
+async function sendVoiceResponse(
+  ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
+  result: VoiceOrderResult,
+) {
+  let text = ''
+  if (result.error && !result.pendingInvoice) {
+    text = result.error
+  } else if (result.pendingInvoice && result.pricing) {
+    text = `💰 Total: $${result.pricing.total.toLocaleString('es-AR')}\nDecí "confirmar" para guardar el presupuesto`
+  } else if (result.invoice) {
+    text = `✅ Presupuesto ${result.invoice.numero} creado — ya lo ves en el programa`
+  } else if (result.error) {
+    text = result.error
+  } else {
+    text = 'Procesando...'
+  }
+  try {
+    await engineSendText({ ...ctx, text })
+  } catch (err) {
+    console.error('[voice] send error:', err)
+  }
+}
+
+async function handleVoiceAudio(args: {
+  mediaId: string
+  accessToken: string
+  senderPhone: string
+  senderName: string
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}) {
+  try {
+    const mediaInfo = await getMediaUrl({ mediaId: args.mediaId, accessToken: args.accessToken })
+    const audio = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken: args.accessToken })
+    const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId: args.conversationId, contactId: args.contactId }
+    const result = await processVoiceOrder({
+      buffer: audio.buffer,
+      mimeType: audio.contentType,
+      senderPhone: args.senderPhone,
+      senderName: args.senderName,
+      commit: false,
+    })
+    await saveVoiceContext(args.conversationId, result)
+    await sendVoiceResponse(sendCtx, result)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[voice] Audio handler error:', msg)
+  }
+}
+
+async function handleVoiceText(args: {
+  text: string
+  senderPhone: string
+  senderName: string
+  voiceContext: VoiceContext
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}) {
+  try {
+    const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId: args.conversationId, contactId: args.contactId }
+    const result = await processTextOrder({
+      text: args.text,
+      senderPhone: args.senderPhone,
+      senderName: args.senderName,
+      commit: false,
+      pendingVariantItems: args.voiceContext.pendingVariantItems,
+      pendingClientName: args.voiceContext.pendingClientName,
+      pendingInvoice: args.voiceContext.pendingInvoice,
+    })
+    await saveVoiceContext(args.conversationId, result)
+    await sendVoiceResponse(sendCtx, result)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[voice] Text handler error:', msg)
+  }
+}
+
 async function processMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
@@ -721,6 +843,9 @@ async function processMessage(
     await handleReaction(message, conversation.id, contactRecord.id)
     return
   }
+
+  // Cargar estado previo de órdenes por voz (variantes pendientes, confirmación)
+  const voiceCtx = await loadVoiceContext(conversation.id)
 
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
@@ -849,6 +974,24 @@ async function processMessage(
   }
 
   // ============================================================
+  // Voice order: audio messages.
+  // ============================================================
+  if (message.type === 'audio' && message.audio?.id) {
+    bgTasks.push(
+      handleVoiceAudio({
+        mediaId: message.audio.id,
+        accessToken,
+        senderPhone: message.from,
+        senderName: contact.profile.name,
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+      }).catch((err) => console.error('[voice] Audio error:', err))
+    )
+  }
+
+  // ============================================================
   // Flow runner dispatch.
   //
   // If the runner consumes the message (it either advanced an active
@@ -942,19 +1085,20 @@ async function processMessage(
     })
   }
 
-  // Conversational AI bot (products, pricing, account questions).
-  // Uses debounce: collects fragmented messages for 8s before processing.
-  if (CHATBOT_ENABLED && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    console.log('[webhook] chatbot dispatch start -> conversation=%s', conversation.id)
+  // Voice order: text messages.
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
-      debouncedChatMessage(
-        inboundText,
-        conversation.id,
-        { text: inboundText, phone: message.from, accountId, userId: configOwnerUserId, contactId: contactRecord.id, conversationId: conversation.id },
-        supabaseAdmin,
-        accessToken,
-        message.from,
-      ).catch((err) => console.error('[webhook] Chatbot error:', err))
+      handleVoiceText({
+        text: inboundText,
+        senderPhone: message.from,
+        senderName: contact.profile.name,
+        voiceContext: voiceCtx,
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+      }).catch((err) => console.error('[voice] Text error:', err))
     )
   }
 
