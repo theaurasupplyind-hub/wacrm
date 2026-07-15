@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { processVoiceOrder } from '@/lib/voice-orders'
 
+// Voice pipeline (Whisper + LLM + bulk-price) puede tomar 20-40s
+export const maxDuration = 120
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
@@ -29,8 +32,4 @@ export async function POST(req: NextRequest) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: `Error interno: ${msg}`, logs: [] }, { status: 500 })
   }
-}
-
-export const config = {
-  api: { bodyParser: false },
 }
