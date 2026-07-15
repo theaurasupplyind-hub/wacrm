@@ -62,9 +62,9 @@ function formatVoiceResult(result: VoiceOrderResult): string {
   if (result.pricing) {
     for (const item of result.pricing.items) {
       if (item.precio != null) {
-        s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
+        s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
       } else {
-        s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.variante ? ` (${item.variante})` : ''} → SIN PRECIO\n`
+        s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → SIN PRECIO\n`
       }
     }
     s += `\n💰 Total: $${result.pricing.total.toLocaleString('es-AR')}\n\n`
@@ -502,7 +502,7 @@ export default function BotBetaPage() {
                             {item.cantidad}x {item.descripcion}
                             {item.faltante
                               ? ' ❌ Sin referencia'
-                              : ` → ${item.categoria} ${item.medida}${item.variante ? ` (${item.variante})` : ''} $${item.precio_base?.toLocaleString('es-AR')}`
+                              : ` → ${item.categoria} ${item.medida}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} $${item.precio_base?.toLocaleString('es-AR')}`
                             }
                             {item.medida_referencia && <span className="text-indigo-400"> (ref: {item.medida_referencia})</span>}
                           </p>
@@ -529,7 +529,7 @@ export default function BotBetaPage() {
                         <div key={i} className="space-y-1 border-b border-purple-500/10 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-foreground font-medium">
-                              {item.cantidad}x {item.categoria} {item.medida_solicitada}{item.variante ? ` (${item.variante})` : ''}
+                              {item.cantidad}x {item.categoria} {item.medida_solicitada}{item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''}
                             </span>
                             {item.precio != null ? (
                               <span className="font-mono text-foreground">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>

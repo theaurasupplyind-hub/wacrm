@@ -272,7 +272,7 @@ export async function priceItems(
       total,
       duration_ms: Date.now() - t0,
       detalles: priced.map(i => ({
-        item: `${i.cantidad}x ${i.categoria} ${i.medida_solicitada}${i.variante ? ` (${i.variante})` : ''}`,
+        item: `${i.cantidad}x ${i.categoria} ${i.medida_solicitada}${i.categoria === 'BASTIDOR' && i.variante ? ` (${i.variante})` : ''}`,
         precio_base: i.precio_base,
         regla_aplicada: i.regla_aplicada,
         precio_final: i.precio,
@@ -295,7 +295,7 @@ export async function createPresupuesto(
     .filter(i => i.precio != null)
     .map(i => ({
       cantidad: i.cantidad,
-      descripcion: `${i.categoria} ${i.medida_solicitada}${i.variante ? ` ${i.variante}` : ''}`,
+      descripcion: `${i.categoria} ${i.medida_solicitada}${i.categoria === 'BASTIDOR' && i.variante ? ` ${i.variante}` : ''}`,
       precio_unitario: i.precio!,
       total: i.precio! * i.cantidad,
     }))
@@ -306,7 +306,7 @@ export async function createPresupuesto(
   for (const f of faltantes) {
     invoiceItems.push({
       cantidad: f.cantidad,
-      descripcion: `${f.categoria} ${f.medida_solicitada}${f.variante ? ` ${f.variante}` : ''} (SIN PRECIO)`,
+      descripcion: `${f.categoria} ${f.medida_solicitada}${f.categoria === 'BASTIDOR' && f.variante ? ` ${f.variante}` : ''} (SIN PRECIO)`,
       precio_unitario: 0,
       total: 0,
     })
