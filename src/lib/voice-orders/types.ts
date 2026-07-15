@@ -17,7 +17,7 @@ export interface ResolvedItem {
 }
 
 export interface ParsedOrder {
-  tipo: 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion'
+  tipo: 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion' | 'respuesta_cancelacion'
   cliente_nombre: string | null
   items: VoiceOrderItem[]
   variante_respuesta?: string

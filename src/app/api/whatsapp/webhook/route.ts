@@ -713,10 +713,8 @@ async function sendVoiceResponse(
   result: VoiceOrderResult,
 ) {
   let text = ''
-  if (result.error && !result.pendingInvoice) {
-    text = result.error
-  } else if (result.pendingInvoice && result.pricing) {
-    text = `💰 Total: $${result.pricing.total.toLocaleString('es-AR')}\nDecí "confirmar" para guardar el presupuesto`
+  if (result.pendingInvoice && result.pricing) {
+    text = result.error || `💰 Total: $${result.pricing.total.toLocaleString('es-AR')}`
   } else if (result.invoice) {
     text = `✅ Presupuesto ${result.invoice.numero} creado — ya lo ves en el programa`
   } else if (result.error) {

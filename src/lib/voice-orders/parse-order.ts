@@ -37,6 +37,14 @@ Ej: "confirmar", "confirma", "confirmado", "si", "dale", "ok", "guarda", "guarda
   "items": []
 }
 
+=== TIPO 4: RESPUESTA DE CANCELACIÓN (el cliente cancela el presupuesto) ===
+Ej: "cancelar", "cancela", "cancelado", "no", "nada", "borrar", "eliminar", "descartar"
+{
+  "tipo": "respuesta_cancelacion",
+  "cliente_nombre": null,
+  "items": []
+}
+
 Reglas:
 - Si el texto parece una RESPUESTA simple (una variante, color, tipo),
   sin mencionar productos nuevos, devolvé tipo "respuesta_variante"
@@ -100,7 +108,7 @@ export async function parseOrder(
   }
 
   const tipo = parsed.tipo as string || 'presupuesto'
-  const tipoValido = tipo === 'respuesta_variante' || tipo === 'respuesta_confirmacion' ? tipo : 'presupuesto'
+  const tipoValido = tipo === 'respuesta_variante' || tipo === 'respuesta_confirmacion' || tipo === 'respuesta_cancelacion' ? tipo : 'presupuesto'
   const result: ParsedOrder = {
     tipo: tipoValido,
     cliente_nombre: (parsed.cliente_nombre as string) || (tipo === 'respuesta_variante' ? null : `Cliente ${phone}`),

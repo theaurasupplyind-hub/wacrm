@@ -4,12 +4,17 @@ import { parseOrder } from './parse-order'
 import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
 import { createClient, suggestPrice } from '../facbal/client'
 
-function confirmMessage(invoice: { numero: string }): string {
-  return `✅ Presupuesto ${invoice.numero} creado — ya lo ves en el programa`
-}
-
-function askConfirmMsg(pricing: { total: number }): string {
-  return `💰 Total: $${pricing.total.toLocaleString('es-AR')}\nDecí "confirmar" para guardar el presupuesto`
+function askConfirmMsg(pricing: { items: { cantidad: number; categoria: string; medida_solicitada: string; variante: string; precio: number | null }[]; total: number }, clientName: string): string {
+  let s = `📋 Presupuesto para ${clientName}\n\n`
+  for (const item of pricing.items) {
+    if (item.precio != null) {
+      s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
+    } else {
+      s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada} → SIN PRECIO\n`
+    }
+  }
+  s += `\n💰 Total: $${pricing.total.toLocaleString('es-AR')}\n\nDecí "confirmar" para guardar o "cancelar" para cancelar`
+  return s
 }
 
 async function runPipeline(
@@ -22,6 +27,16 @@ async function runPipeline(
   pendingClientName?: string | null,
   pendingInvoice?: PendingInvoice | null,
 ): Promise<VoiceOrderResult> {
+  // ── Cancelar presupuesto pendiente ──
+  if (parsedOrder.tipo === 'respuesta_cancelacion' && pendingInvoice) {
+    return {
+      transcription, parsedOrder, resolvedItems: null,
+      client: null, pricing: null, invoice: null,
+      error: '❌ Pedido cancelado',
+      logs,
+    }
+  }
+
   // ── Confirmar presupuesto pendiente ──
   if (parsedOrder.tipo === 'respuesta_confirmacion' && pendingInvoice) {
     const { client, resolvedItems, pricing } = pendingInvoice
@@ -89,7 +104,7 @@ async function runPipeline(
     const pi: PendingInvoice = { client: clientResult, resolvedItems: allResolved, pricing }
     return {
       transcription, parsedOrder, resolvedItems: allResolved,
-      client: clientResult, pricing, invoice: null, error: askConfirmMsg(pricing),
+      client: clientResult, pricing, invoice: null, error: askConfirmMsg(pricing, clientResult.nombre),
       pendingInvoice: pi, logs,
     }
   }
@@ -129,7 +144,7 @@ async function runPipeline(
   const pi: PendingInvoice = { client, resolvedItems, pricing }
   return {
     transcription, parsedOrder, resolvedItems, client,
-    pricing, invoice: null, error: askConfirmMsg(pricing),
+    pricing, invoice: null, error: askConfirmMsg(pricing, client.nombre),
     pendingInvoice: pi, logs,
   }
 }
