@@ -42,8 +42,9 @@ export async function resolveItems(
     try {
       const result = await suggestPrice(item.descripcion)
       const sug = result.items?.[0]
+      const firstDetalle = result.detalles?.[0]
 
-      // Detectar si hay múltiples variantes sin especificar
+      // Detectar variantes disponibles desde sugerencias
       const variantes = [...new Set(
         (result.sugerencias ?? [])
           .map(s => s.variante?.trim().toLowerCase())
@@ -51,9 +52,10 @@ export async function resolveItems(
       )]
       const descLower = item.descripcion.toLowerCase()
       const varianteMencionada = variantes.some(v => descLower.includes(v))
+      const hasMultipleVariants = !varianteMencionada && variantes.length > 1
 
-      if (sug && sug.categoria && sug.precio != null && !sug.faltante) {
-        const needsVar = !varianteMencionada && variantes.length > 1
+      // Caso 1: precio único resuelto (sin ambigüedad de variante)
+      if (sug && sug.categoria && sug.precio != null && !sug.faltante && !hasMultipleVariants) {
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
@@ -63,21 +65,56 @@ export async function resolveItems(
           precio_base: sug.precio,
           medida_referencia: result.medida_encontrada,
           faltante: false,
-          necesita_variante: needsVar,
-          variantes_disponibles: needsVar ? variantes : undefined,
         })
-      } else {
+        continue
+      }
+
+      // Caso 2: múltiples variantes disponibles (pedir que especifique)
+      if (hasMultipleVariants && variantes.length > 0 && firstDetalle) {
+        const cat = firstDetalle.categoria || 'BASTIDOR'
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
-          categoria: 'PRODUCTO',
-          medida: '',
+          categoria: cat,
+          medida: extractOriginalMedida(item.descripcion) || result.medida_encontrada || '',
           variante: '',
-          precio_base: null,
-          medida_referencia: null,
-          faltante: true,
+          precio_base: firstDetalle.precio,
+          medida_referencia: result.medida_encontrada,
+          faltante: false,
+          necesita_variante: true,
+          variantes_disponibles: variantes,
         })
+        continue
       }
+
+      // Caso 3: la medida existe pero hay data en sugerencias (índice de catálogo)
+      if (result.sugerencias?.length > 0 && firstDetalle) {
+        resolved.push({
+          descripcion: item.descripcion,
+          cantidad: item.cantidad,
+          categoria: firstDetalle.categoria || 'BASTIDOR',
+          medida: extractOriginalMedida(item.descripcion) || result.medida_encontrada || '',
+          variante: firstDetalle.variante || '',
+          precio_base: firstDetalle.precio,
+          medida_referencia: result.medida_encontrada,
+          faltante: firstDetalle.precio == null,
+          necesita_variante: variantes.length > 1 && !varianteMencionada,
+          variantes_disponibles: variantes.length > 1 && !varianteMencionada ? variantes : undefined,
+        })
+        continue
+      }
+
+      // Caso 4: sin resultados
+      resolved.push({
+        descripcion: item.descripcion,
+        cantidad: item.cantidad,
+        categoria: 'PRODUCTO',
+        medida: '',
+        variante: '',
+        precio_base: null,
+        medida_referencia: null,
+        faltante: true,
+      })
     } catch {
       resolved.push({
         descripcion: item.descripcion,
