@@ -2,7 +2,7 @@ import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder, Reso
 import { transcribeAudio } from './transcribe'
 import { parseOrder } from './parse-order'
 import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
-import { suggestPrice } from '../facbal/client'
+import { createClient, suggestPrice } from '../facbal/client'
 
 async function runPipeline(
   parsedOrder: ParsedOrder,
@@ -11,6 +11,7 @@ async function runPipeline(
   transcription: string,
   logs: VoiceOrderResult['logs'],
   pendingVariantItems?: ResolvedItem[],
+  pendingClientName?: string | null,
 ): Promise<VoiceOrderResult> {
   // ── Si es respuesta de variante, re-resolver items pendientes ──
   if (parsedOrder.tipo === 'respuesta_variante' && parsedOrder.variante_respuesta && pendingVariantItems?.length) {
@@ -41,9 +42,14 @@ async function runPipeline(
       }
     }
 
-    const clientResult = await searchOrCreateClient(pendingVariantItems[0]?.descripcion.includes('para')
-      ? (parsedOrder.cliente_nombre ?? phone)
-      : phone, phone, logs)
+    // Usar el nombre pendiente de la orden original
+    const nombreCliente = pendingClientName || phone
+    let clientResult: { id: number | null; nombre: string }
+    try {
+      clientResult = await createClient({ nombre: nombreCliente, telefono: phone })
+    } catch {
+      clientResult = { id: null, nombre: nombreCliente }
+    }
 
     const pricing = await priceItems(allResolved, logs)
 
@@ -87,6 +93,7 @@ async function runPipeline(
       invoice: null,
       error: `Necesito que me aclares la variante para:\n${msgs.join('\n')}`,
       pendingVariantItems: needsVar,
+      pendingClientName: parsedOrder.cliente_nombre,
       logs,
     }
   }
@@ -138,7 +145,10 @@ export async function processTextOrder(args: TextOrderArgs): Promise<VoiceOrderR
 
   try {
     const parsedOrder = await parseOrder(args.text, args.senderPhone, logs)
-    return runPipeline(parsedOrder, args.senderPhone, args.commit, args.text, logs, args.pendingVariantItems)
+    return runPipeline(
+      parsedOrder, args.senderPhone, args.commit, args.text, logs,
+      args.pendingVariantItems, args.pendingClientName,
+    )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logs.push({ step: 'voice_error', data: { error: msg } })

@@ -53,6 +53,7 @@ export interface VoiceOrderResult {
   error: string | null
   logs: VoiceOrderLog[]
   pendingVariantItems?: ResolvedItem[]
+  pendingClientName?: string | null
 }
 
 export interface VoiceOrderArgs {
@@ -69,4 +70,5 @@ export interface TextOrderArgs {
   senderName: string
   commit: boolean
   pendingVariantItems?: ResolvedItem[]
+  pendingClientName?: string | null
 }
