@@ -1,8 +1,17 @@
 export interface VoiceOrderItem {
+  descripcion: string
+  cantidad: number
+}
+
+export interface ResolvedItem {
+  descripcion: string
+  cantidad: number
   categoria: string
   medida: string
   variante: string
-  cantidad: number
+  precio_base: number | null
+  medida_referencia: string | null
+  faltante: boolean
 }
 
 export interface ParsedOrder {
@@ -31,6 +40,7 @@ export interface VoiceOrderLog {
 export interface VoiceOrderResult {
   transcription: string
   parsedOrder: ParsedOrder | null
+  resolvedItems: ResolvedItem[] | null
   client: { id: number | null; nombre: string } | null
   pricing: {
     items: PricedItem[]
@@ -44,6 +54,13 @@ export interface VoiceOrderResult {
 export interface VoiceOrderArgs {
   buffer: Buffer
   mimeType: string
+  senderPhone: string
+  senderName: string
+  commit: boolean
+}
+
+export interface TextOrderArgs {
+  text: string
   senderPhone: string
   senderName: string
   commit: boolean

@@ -1,45 +1,74 @@
-import type { VoiceOrderArgs, VoiceOrderResult } from './types'
+import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder } from './types'
 import { transcribeAudio } from './transcribe'
 import { parseOrder } from './parse-order'
-import { searchOrCreateClient, priceItems, createPresupuesto } from './execute-order'
+import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
+
+async function runPipeline(
+  parsedOrder: ParsedOrder,
+  phone: string,
+  commit: boolean,
+  transcription: string,
+  logs: VoiceOrderResult['logs'],
+): Promise<VoiceOrderResult> {
+  const client = await searchOrCreateClient(parsedOrder.cliente_nombre, phone, logs)
+
+  const resolvedItems = await resolveItems(parsedOrder.items, logs)
+
+  const pricing = await priceItems(resolvedItems, logs)
+
+  let invoice: { numero: string; id: number } | null = null
+  if (commit) {
+    invoice = await createPresupuesto(client, pricing.items, logs)
+  }
+
+  return {
+    transcription,
+    parsedOrder,
+    resolvedItems,
+    client,
+    pricing,
+    invoice,
+    error: null,
+    logs,
+  }
+}
 
 export async function processVoiceOrder(args: VoiceOrderArgs): Promise<VoiceOrderResult> {
   const logs: VoiceOrderResult['logs'] = []
 
   try {
-    // ── 1. Transcribe ──
     const transcription = await transcribeAudio(args.buffer, args.mimeType, logs)
-
-    // ── 2. Parse order ──
     const parsedOrder = await parseOrder(transcription, args.senderPhone, logs)
-
-    // ── 3. Search / create client ──
-    const client = await searchOrCreateClient(parsedOrder.cliente_nombre, args.senderPhone, logs)
-
-    // ── 4. Price items ──
-    const pricing = await priceItems(parsedOrder.items, logs)
-
-    // ── 5. Create presupuesto (only if commit=true) ──
-    let invoice: { numero: string; id: number } | null = null
-    if (args.commit) {
-      invoice = await createPresupuesto(client, pricing.items, logs)
-    }
-
-    return {
-      transcription,
-      parsedOrder,
-      client,
-      pricing,
-      invoice,
-      error: null,
-      logs,
-    }
+    return runPipeline(parsedOrder, args.senderPhone, args.commit, transcription, logs)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logs.push({ step: 'voice_error', data: { error: msg } })
     return {
       transcription: '',
       parsedOrder: null,
+      resolvedItems: null,
+      client: null,
+      pricing: null,
+      invoice: null,
+      error: msg,
+      logs,
+    }
+  }
+}
+
+export async function processTextOrder(args: TextOrderArgs): Promise<VoiceOrderResult> {
+  const logs: VoiceOrderResult['logs'] = []
+
+  try {
+    const parsedOrder = await parseOrder(args.text, args.senderPhone, logs)
+    return runPipeline(parsedOrder, args.senderPhone, args.commit, args.text, logs)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logs.push({ step: 'voice_error', data: { error: msg } })
+    return {
+      transcription: args.text,
+      parsedOrder: null,
+      resolvedItems: null,
       client: null,
       pricing: null,
       invoice: null,

@@ -4,29 +4,29 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const DEFAULT_MODEL = 'google/gemini-2.5-flash-lite'
 
-const PARSE_PROMPT = `Sos un sistema de extracción de órdenes. Del texto siguiente extraé una orden de presupuesto para Bastidores GAL.
+const PARSE_PROMPT = `Sos un sistema de extracción de órdenes de presupuesto para Bastidores GAL (taller de marcos y molduras).
+
+Del texto del cliente extraé:
+- El nombre del cliente (si menciona "a nombre de X", "para X", "soy X", o similar)
+- Los items del pedido con su descripción textual exacta
 
 Devolvé SOLO JSON sin explicaciones, con esta estructura exacta:
 {
   "tipo": "presupuesto",
-  "cliente_nombre": "nombre completo del cliente (o null si no se menciona)",
+  "cliente_nombre": "nombre completo del cliente, null si no se menciona",
   "items": [
     {
-      "categoria": "tipo de producto (BASTIDOR, ACRILICO, CIRCULAR, PINTURA, TAPACANTO, LIENZO, PRODUCTO)",
-      "medida": "medidas en formato ANCHOxALTO (ej: 120x130). Si no hay medidas exactas, inferilas del contexto o dejá null",
-      "variante": "variante del producto (lienzo profesional, sin tela, gesso, etc. null si no aplica)",
+      "descripcion": "descripción textual del producto TAL COMO LA DIJO EL CLIENTE. Incluí cantidad, medidas y variante todo junto (ej: bastidor 120x130 lienzo profesional, moldura 58x29 normal sin tela, acrilico 40x50, etc)",
       "cantidad": número entero (1 si no se especifica)
     }
   ]
 }
 
 Reglas:
-- Categoria SIEMPRE en mayúsculas
-- Si no se entiende el producto, usá categoria "PRODUCTO"
-- Para "bastidor" la medida suele ser ANCHOxALTO (ej: 60x40, 120x130)
-- "lienzo profesional" o "lp" es variante del bastidor
-- "sin tela" es variante del bastidor
-- Si dice "a nombre de X" o "para X", ese es el cliente_nombre`
+- descripcion debe ser TEXTUAL, copiá exactamente lo que dijo el cliente sobre el producto
+- Incluí medidas y variante dentro de la descripcion
+- Si dice "a nombre de X" o "para X", ese es el cliente_nombre
+- NO inventes productos ni rellenes datos que no estén en el texto`
 
 export async function parseOrder(
   text: string,
@@ -73,7 +73,6 @@ export async function parseOrder(
   const raw = data?.choices?.[0]?.message?.content
   if (!raw || !raw.trim()) throw new Error('LLM devolvió respuesta vacía.')
 
-  // Extract JSON from response (handle markdown wrapping)
   const jsonMatch = raw.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('No se pudo extraer JSON de la respuesta del LLM.')
 
@@ -89,11 +88,9 @@ export async function parseOrder(
     cliente_nombre: (parsed.cliente_nombre as string) || `Cliente ${phone}`,
     items: Array.isArray(parsed.items)
       ? parsed.items.map((i: Record<string, unknown>) => ({
-          categoria: String(i.categoria || 'PRODUCTO').toUpperCase(),
-          medida: i.medida ? String(i.medida) : '',
-          variante: i.variante ? String(i.variante) : '',
+          descripcion: String(i.descripcion || ''),
           cantidad: Math.max(1, parseInt(String(i.cantidad || '1'), 10)),
-        }))
+        })).filter(i => i.descripcion)
       : [],
   }
 
@@ -103,6 +100,7 @@ export async function parseOrder(
       model,
       cliente_extraido: result.cliente_nombre,
       items_extraidos: result.items.length,
+      items: result.items.map(i => `${i.cantidad}x ${i.descripcion}`),
       tokens_in: data.usage?.prompt_tokens ?? 0,
       tokens_out: data.usage?.completion_tokens ?? 0,
       duration_ms: Date.now() - t0,

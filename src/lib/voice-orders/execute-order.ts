@@ -1,5 +1,5 @@
-import type { VoiceOrderLog, ParsedOrder, PricedItem, VoiceOrderItem } from './types'
-import { searchClients, createClient, bulkPrice, createInvoice } from '../facbal/client'
+import type { VoiceOrderLog, ParsedOrder, PricedItem, VoiceOrderItem, ResolvedItem } from './types'
+import { searchClients, createClient, bulkPrice, suggestPrice, createInvoice } from '../facbal/client'
 import type { BulkPriceItem } from '../facbal/client'
 
 export async function searchOrCreateClient(
@@ -9,7 +9,6 @@ export async function searchOrCreateClient(
 ): Promise<{ id: number | null; nombre: string }> {
   const t0 = Date.now()
 
-  // Buscar cliente existente
   const existing = await searchClients(nombre, telefono)
   if (existing) {
     logs.push({
@@ -19,7 +18,6 @@ export async function searchOrCreateClient(
     return { id: existing.id, nombre: existing.nombre }
   }
 
-  // Crear cliente nuevo
   const created = await createClient({ nombre, telefono })
   logs.push({
     step: 'voice_client_create',
@@ -28,33 +26,119 @@ export async function searchOrCreateClient(
   return { id: created.id, nombre: created.nombre }
 }
 
-export async function priceItems(
+export async function resolveItems(
   items: VoiceOrderItem[],
+  logs: VoiceOrderLog[],
+): Promise<ResolvedItem[]> {
+  const t0 = Date.now()
+  const resolved: ResolvedItem[] = []
+
+  for (const item of items) {
+    try {
+      const result = await suggestPrice(item.descripcion)
+      const sug = result.items?.[0]
+      if (sug && sug.categoria && sug.precio != null) {
+        resolved.push({
+          descripcion: item.descripcion,
+          cantidad: item.cantidad,
+          categoria: sug.categoria,
+          medida: sug.medida,
+          variante: sug.variante || '',
+          precio_base: sug.precio,
+          medida_referencia: result.medida_encontrada,
+          faltante: false,
+        })
+      } else {
+        resolved.push({
+          descripcion: item.descripcion,
+          cantidad: item.cantidad,
+          categoria: 'PRODUCTO',
+          medida: '',
+          variante: '',
+          precio_base: null,
+          medida_referencia: null,
+          faltante: true,
+        })
+      }
+    } catch {
+      resolved.push({
+        descripcion: item.descripcion,
+        cantidad: item.cantidad,
+        categoria: 'PRODUCTO',
+        medida: '',
+        variante: '',
+        precio_base: null,
+        medida_referencia: null,
+        faltante: true,
+      })
+    }
+  }
+
+  logs.push({
+    step: 'voice_resolve',
+    data: {
+      items_count: resolved.length,
+      items: resolved.map(i => ({
+        descripcion: i.descripcion,
+        categoria: i.categoria,
+        precio_base: i.precio_base,
+        faltante: i.faltante,
+      })),
+      duration_ms: Date.now() - t0,
+    },
+  })
+
+  return resolved
+}
+
+export async function priceItems(
+  resolvedItems: ResolvedItem[],
   logs: VoiceOrderLog[],
 ): Promise<{ items: PricedItem[]; total: number }> {
   const t0 = Date.now()
 
-  const bulkItems: BulkPriceItem[] = items.map(i => ({
-    categoria: i.categoria,
-    medida: i.medida,
-    variante: i.variante || null,
-    cantidad: i.cantidad,
-  }))
+  const bulkItems: BulkPriceItem[] = resolvedItems
+    .filter(r => !r.faltante && r.categoria !== 'PRODUCTO')
+    .map(r => ({
+      categoria: r.categoria,
+      medida: r.medida,
+      variante: r.variante || null,
+      cantidad: r.cantidad,
+    }))
 
-  const result = await bulkPrice(bulkItems, 90_000)
+  let priced: PricedItem[] = []
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const priced: PricedItem[] = result.items.map((r: any) => ({
-    cantidad: r.cantidad,
-    categoria: r.categoria,
-    variante: r.variante,
-    medida_solicitada: r.medida_solicitada,
-    medida_referencia: r.medida_referencia,
-    precio: r.precio,
-    faltante: r.faltante,
-    precio_base: r.precio_base ?? null,
-    regla_aplicada: r.regla_aplicada ?? null,
-  }))
+  if (bulkItems.length > 0) {
+    const result = await bulkPrice(bulkItems, 90_000)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    priced = result.items.map((r: any) => ({
+      cantidad: r.cantidad,
+      categoria: r.categoria,
+      variante: r.variante,
+      medida_solicitada: r.medida_solicitada,
+      medida_referencia: r.medida_referencia,
+      precio: r.precio,
+      faltante: r.faltante,
+      precio_base: r.precio_base ?? null,
+      regla_aplicada: r.regla_aplicada ?? null,
+    }))
+  }
+
+  // Add items that couldn't be resolved
+  const unresolved = resolvedItems.filter(r => r.faltante || r.categoria === 'PRODUCTO')
+  for (const r of unresolved) {
+    priced.push({
+      cantidad: r.cantidad,
+      categoria: r.categoria,
+      variante: r.variante,
+      medida_solicitada: r.medida,
+      medida_referencia: r.medida_referencia || r.medida,
+      precio: null,
+      faltante: true,
+      precio_base: null,
+      regla_aplicada: null,
+    })
+  }
 
   const total = priced.reduce((sum, i) => sum + (i.precio ?? 0) * i.cantidad, 0)
   const faltantes = priced.filter(i => i.faltante)
@@ -97,12 +181,11 @@ export async function createPresupuesto(
 
   const total = invoiceItems.reduce((s, i) => s + i.total, 0)
 
-  // Si hay items faltantes, agregarlos como items sin precio para que quede registro
   const faltantes = items.filter(i => i.faltante)
   for (const f of faltantes) {
     invoiceItems.push({
       cantidad: f.cantidad,
-      descripcion: `${f.categoria} ${f.medida_solicitada}${f.variante ? ` ${f.variante}` : ''} (SIN PRECIO - consultar con agente)`,
+      descripcion: `${f.categoria} ${f.medida_solicitada}${f.variante ? ` ${f.variante}` : ''} (SIN PRECIO)`,
       precio_unitario: 0,
       total: 0,
     })

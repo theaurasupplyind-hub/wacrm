@@ -8,8 +8,6 @@ import {
   Loader2,
   UserCircle2,
   FlaskConical,
-  ShoppingCart,
-  FileText,
   List,
   Mic,
   Square,
@@ -24,9 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
-import type { CartState } from '@/lib/ai/cart-state'
-import type { InvoiceCreatePayload } from '@/lib/ai/build-invoice-payload'
-import type { VoiceOrderResult, VoiceOrderLog } from '@/lib/voice-orders/types'
+import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 
 interface Turn {
   role: 'user' | 'bot'
@@ -51,14 +47,17 @@ function formatPhone(value: string): string {
 function formatVoiceResult(result: VoiceOrderResult): string {
   let s = ''
   if (result.transcription) {
-    s += `🎤 Transcripción: "${result.transcription}"\n\n`
+    s += `📝 "${result.transcription}"\n\n`
   }
   if (result.parsedOrder) {
-    s += `📋 Cliente: ${result.parsedOrder.cliente_nombre}\n`
-    s += `📦 Items: ${result.parsedOrder.items.map(i => `${i.cantidad}x ${i.categoria}${i.medida ? ` ${i.medida}` : ''}${i.variante ? ` (${i.variante})` : ''}`).join(', ')}\n\n`
+    s += `👤 Cliente: ${result.parsedOrder.cliente_nombre}\n`
+    for (const item of result.parsedOrder.items) {
+      s += `📦 ${item.cantidad}x ${item.descripcion}\n`
+    }
+    s += '\n'
   }
   if (result.client) {
-    s += `👤 Cliente: ${result.client.nombre}${result.client.id ? ` (ID: ${result.client.id})` : ''}\n\n`
+    s += `✅ Cliente: ${result.client.nombre}${result.client.id ? ` (ID: ${result.client.id})` : ' (nuevo)'}\n\n`
   }
   if (result.pricing) {
     for (const item of result.pricing.items) {
@@ -81,9 +80,7 @@ function formatVoiceResult(result: VoiceOrderResult): string {
 
 export default function BotBetaPage() {
   const [turns, setTurns] = useState<Turn[]>([])
-  const [cart, setCart] = useState<CartState | null>(null)
-  const [invoice, setInvoice] = useState<InvoiceCreatePayload | null>(null)
-  const [logs, setLogs] = useState<VoiceOrderLog[]>([])
+  const [logs, setLogs] = useState<VoiceOrderResult['logs']>([])
   const [voiceResult, setVoiceResult] = useState<VoiceOrderResult | null>(null)
   const [phone, setPhone] = useState('1145678901')
   const [input, setInput] = useState('')
@@ -120,26 +117,21 @@ export default function BotBetaPage() {
       const res = await fetch('/api/bot-beta/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          phone,
-          history: nextTurns.map((t) => ({ role: t.role, content: t.content })),
-          cart,
-        }),
+        body: JSON.stringify({ text, phone }),
       })
-      const data = await res.json()
+      const result: VoiceOrderResult & { error?: string } = await res.json()
 
-      if (!res.ok) {
-        setTurns([...nextTurns, { role: 'bot', content: `Error: ${data.error || 'Error inesperado'}` }])
+      if (!res.ok || result.error) {
+        setTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
         scrollToBottom()
         return
       }
 
-      setTurns([...nextTurns, { role: 'bot', content: data.reply }])
-      setCart(data.cart)
-      setInvoice(data.invoice)
-      setLogs(data.logs || [])
-      if (data.invoice) setDebugTab('invoice')
+      const formatted = formatVoiceResult(result)
+      setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
+      setVoiceResult(result)
+      setLogs(result.logs || [])
+      setDebugTab('voice_logs')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Error de conexión'
       setTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
@@ -236,8 +228,6 @@ export default function BotBetaPage() {
   // ─── Reset ───
   const reset = () => {
     setTurns([])
-    setCart(null)
-    setInvoice(null)
     setLogs([])
     setVoiceResult(null)
     setDebugTab('cart')
@@ -431,145 +421,16 @@ export default function BotBetaPage() {
           <Tabs value={debugTab} onValueChange={setDebugTab} className="flex flex-1 flex-col">
             <div className="border-b border-border px-3">
               <TabsList className="h-9">
-                <TabsTrigger value="cart" className="text-xs gap-1.5">
-                  <ShoppingCart className="h-3.5 w-3.5" /> Carrito
-                </TabsTrigger>
-                <TabsTrigger value="invoice" className="text-xs gap-1.5">
-                  <FileText className="h-3.5 w-3.5" /> Factura
+                <TabsTrigger value="voice_logs" className="text-xs gap-1.5">
+                  <Volume2 className="h-3.5 w-3.5" /> Pipeline
                 </TabsTrigger>
                 <TabsTrigger value="logs" className="text-xs gap-1.5">
-                  <List className="h-3.5 w-3.5" /> Pasos
-                </TabsTrigger>
-                <TabsTrigger value="voice_logs" className="text-xs gap-1.5">
-                  <Volume2 className="h-3.5 w-3.5" /> Voz
+                  <List className="h-3.5 w-3.5" /> Logs
                 </TabsTrigger>
               </TabsList>
             </div>
 
-            {/* ─── Tab: Carrito ─── */}
-            <TabsContent value="cart" className="flex-1 overflow-y-auto p-4 m-0">
-              {!cart ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  <ShoppingCart className="mr-2 h-5 w-5 opacity-50" />
-                  Todavía no hay productos en el carrito.
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className={cn(
-                      'text-[10px]',
-                      cart.status === 'confirmado'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                        : cart.pending_confirm
-                          ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
-                          : 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-                    )}>
-                      {cart.status === 'confirmado' ? 'CONFIRMADO' : cart.pending_confirm ? 'PENDIENTE CONFIRMAR' : 'COTIZANDO'}
-                    </Badge>
-                    {cart.items_faltantes.length > 0 && (
-                      <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-400 border-red-500/30">
-                        {cart.items_faltantes.length} faltante(s)
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="space-y-2">
-                    {cart.items.map((item, i) => (
-                      <div key={i} className="rounded-lg border border-border bg-muted/50 p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-foreground">
-                            {item.cantidad}x {item.categoria} {item.medida}
-                            {item.variante ? ` (${item.variante})` : ''}
-                          </span>
-                          {item.precio_unitario != null ? (
-                            <span className="font-mono text-foreground">
-                              ${item.subtotal?.toLocaleString('es-AR')}
-                            </span>
-                          ) : (
-                            <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-400 border-red-500/30">
-                              Sin precio
-                            </Badge>
-                          )}
-                        </div>
-                        {item.precio_unitario != null && (
-                          <p className="mt-0.5 text-xs text-muted-foreground">
-                            ${item.precio_unitario.toLocaleString('es-AR')} c/u
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
-                    <span className="text-sm font-semibold text-foreground">TOTAL</span>
-                    <span className="text-lg font-bold font-mono text-foreground">
-                      ${cart.total.toLocaleString('es-AR')}
-                    </span>
-                  </div>
-                  {cart.items_faltantes.length > 0 && (
-                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
-                      <p className="text-xs font-medium text-red-400 mb-1">Productos sin precio:</p>
-                      {cart.items_faltantes.map((f, i) => (
-                        <p key={i} className="text-xs text-red-300">- {f}</p>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </TabsContent>
-
-            {/* ─── Tab: Factura ─── */}
-            <TabsContent value="invoice" className="flex-1 overflow-y-auto p-4 m-0">
-              {!invoice ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  <FileText className="mr-2 h-5 w-5 opacity-50" />
-                  Confirmá un pedido para ver la vista previa de la factura.
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-                    <p className="text-xs font-medium text-emerald-400 mb-1">Vista previa del presupuesto</p>
-                    <p className="text-xs text-muted-foreground">
-                      Este es el JSON exacto que se enviaría a <code className="text-emerald-400">POST /invoices</code> en FacBal.
-                    </p>
-                  </div>
-                  <pre className="rounded-lg bg-muted p-4 overflow-x-auto font-mono text-xs text-foreground whitespace-pre-wrap">
-                    {JSON.stringify(invoice, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </TabsContent>
-
-            {/* ─── Tab: Pasos (Logs del chatbot anterior) ─── */}
-            <TabsContent value="logs" className="flex-1 overflow-y-auto p-4 m-0">
-              {logs.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  <List className="mr-2 h-5 w-5 opacity-50" />
-                  Los pasos aparecerán acá.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {logs.map((log, i) => {
-                    const meta = VOICE_STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }
-                    return (
-                      <div key={i} className="rounded-lg border border-border p-3">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant="outline" className={`text-[10px] ${meta.color}`}>
-                            {meta.label}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground">
-                            Paso {i + 1}
-                          </span>
-                        </div>
-                        <pre className="mt-1.5 text-[11px] text-foreground/80 font-mono whitespace-pre-wrap overflow-x-auto">
-                          {JSON.stringify(log.data, null, 2)}
-                        </pre>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </TabsContent>
-
-            {/* ─── Tab: Logs de voz ─── */}
+            {/* ─── Tab: Pipeline (logs de voz) ─── */}
             <TabsContent value="voice_logs" className="flex-1 overflow-y-auto p-4 m-0">
               {!voiceResult ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -596,7 +457,26 @@ export default function BotBetaPage() {
                       <div className="mt-1 space-y-0.5">
                         {voiceResult.parsedOrder.items.map((item, i) => (
                           <p key={i} className="text-xs text-muted-foreground">
-                            {item.cantidad}x {item.categoria} {item.medida}{item.variante ? ` (${item.variante})` : ''}
+                            {item.cantidad}x {item.descripcion}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Items resueltos */}
+                  {voiceResult.resolvedItems && (
+                    <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3">
+                      <p className="text-xs font-medium text-indigo-400 mb-1">Items resueltos (suggestPrice)</p>
+                      <div className="space-y-0.5">
+                        {voiceResult.resolvedItems.map((item, i) => (
+                          <p key={i} className="text-xs text-muted-foreground">
+                            {item.cantidad}x {item.descripcion}
+                            {item.faltante
+                              ? ' ❌ Sin referencia'
+                              : ` → ${item.categoria} ${item.medida}${item.variante ? ` (${item.variante})` : ''} $${item.precio_base?.toLocaleString('es-AR')}`
+                            }
+                            {item.medida_referencia && <span className="text-indigo-400"> (ref: {item.medida_referencia})</span>}
                           </p>
                         ))}
                       </div>
