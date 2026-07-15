@@ -93,6 +93,7 @@ export default function BotBetaPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pendingVariantRef = useRef<VoiceOrderResult['pendingVariantItems']>(undefined)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -120,10 +121,11 @@ export default function BotBetaPage() {
         body: JSON.stringify({
           text,
           phone,
-          pendingVariantItems: voiceResult?.pendingVariantItems,
+          pendingVariantItems: pendingVariantRef.current,
         }),
       })
       const result: VoiceOrderResult & { error?: string } = await res.json()
+      pendingVariantRef.current = result.pendingVariantItems
 
       if (!res.ok || result.error) {
         setVoiceResult(result)
@@ -211,6 +213,7 @@ export default function BotBetaPage() {
       })
 
       const result: VoiceOrderResult & { error?: string } = await res.json()
+      pendingVariantRef.current = result.pendingVariantItems
 
       if (!res.ok || result.error) {
         setVoiceResult(result)
@@ -243,6 +246,7 @@ export default function BotBetaPage() {
     setDebugTab('cart')
     setAudioBlob(null)
     setRecording(false)
+    pendingVariantRef.current = undefined
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
