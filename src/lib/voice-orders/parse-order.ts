@@ -29,6 +29,14 @@ Ej: si el texto es solo "sin tela", "lienzo profesional", "lp", "doble 4cm", "co
   "variante_respuesta": "texto de la variante exacta que dijo"
 }
 
+=== TIPO 3: RESPUESTA DE CONFIRMACIÓN (el cliente confirma que guarde el presupuesto) ===
+Ej: "confirmar", "confirma", "confirmado", "si", "dale", "ok", "guarda", "guardar"
+{
+  "tipo": "respuesta_confirmacion",
+  "cliente_nombre": null,
+  "items": []
+}
+
 Reglas:
 - Si el texto parece una RESPUESTA simple (una variante, color, tipo),
   sin mencionar productos nuevos, devolvé tipo "respuesta_variante"
@@ -92,8 +100,9 @@ export async function parseOrder(
   }
 
   const tipo = parsed.tipo as string || 'presupuesto'
+  const tipoValido = tipo === 'respuesta_variante' || tipo === 'respuesta_confirmacion' ? tipo : 'presupuesto'
   const result: ParsedOrder = {
-    tipo: tipo === 'respuesta_variante' ? 'respuesta_variante' : 'presupuesto',
+    tipo: tipoValido,
     cliente_nombre: (parsed.cliente_nombre as string) || (tipo === 'respuesta_variante' ? null : `Cliente ${phone}`),
     items: Array.isArray(parsed.items)
       ? parsed.items.map((i: Record<string, unknown>) => ({

@@ -11,6 +11,7 @@ export async function POST(req: NextRequest) {
       phone?: string
       pendingVariantItems?: unknown[]
       pendingClientName?: string | null
+      pendingInvoice?: unknown
     }
 
     if (!body.text || !body.text.trim()) {
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
       commit: false,
       pendingVariantItems: body.pendingVariantItems as VoiceOrderResult['pendingVariantItems'],
       pendingClientName: body.pendingClientName,
+      pendingInvoice: body.pendingInvoice as VoiceOrderResult['pendingInvoice'],
     })
 
     return NextResponse.json(result satisfies VoiceOrderResult)

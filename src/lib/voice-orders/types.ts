@@ -17,7 +17,7 @@ export interface ResolvedItem {
 }
 
 export interface ParsedOrder {
-  tipo: 'presupuesto' | 'respuesta_variante'
+  tipo: 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion'
   cliente_nombre: string | null
   items: VoiceOrderItem[]
   variante_respuesta?: string
@@ -33,6 +33,12 @@ export interface PricedItem {
   faltante: boolean
   precio_base: number | null
   regla_aplicada: string | null
+}
+
+export interface PendingInvoice {
+  resolvedItems: ResolvedItem[]
+  client: { id: number | null; nombre: string }
+  pricing: { items: PricedItem[]; total: number }
 }
 
 export interface VoiceOrderLog {
@@ -54,6 +60,7 @@ export interface VoiceOrderResult {
   logs: VoiceOrderLog[]
   pendingVariantItems?: ResolvedItem[]
   pendingClientName?: string | null
+  pendingInvoice?: PendingInvoice | null
 }
 
 export interface VoiceOrderArgs {
@@ -71,4 +78,5 @@ export interface TextOrderArgs {
   commit: boolean
   pendingVariantItems?: ResolvedItem[]
   pendingClientName?: string | null
+  pendingInvoice?: PendingInvoice | null
 }

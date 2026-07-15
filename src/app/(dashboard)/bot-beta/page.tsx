@@ -95,6 +95,7 @@ export default function BotBetaPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingVariantRef = useRef<VoiceOrderResult['pendingVariantItems']>(undefined)
   const pendingClientRef = useRef<string | null | undefined>(undefined)
+  const pendingInvoiceRef = useRef<VoiceOrderResult['pendingInvoice']>(undefined)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -124,16 +125,19 @@ export default function BotBetaPage() {
           phone,
           pendingVariantItems: pendingVariantRef.current,
           pendingClientName: pendingClientRef.current,
+          pendingInvoice: pendingInvoiceRef.current,
         }),
       })
       const result: VoiceOrderResult & { error?: string } = await res.json()
       pendingVariantRef.current = result.pendingVariantItems
       pendingClientRef.current = result.pendingClientName
+      pendingInvoiceRef.current = result.pendingInvoice
 
       if (!res.ok || result.error) {
+        const msg = result.error && !result.pendingInvoice ? `Error: ${result.error}` : (result.error || 'Error inesperado')
         setVoiceResult(result)
         setLogs(result.logs || [])
-        setTurns([...nextTurns, { role: 'bot', content: result.error ? result.error : `Error: ${result.error || 'Error inesperado'}`, voiceResult: result }])
+        setTurns([...nextTurns, { role: 'bot', content: msg, voiceResult: result }])
         setDebugTab('voice_logs')
         scrollToBottom()
         return
@@ -143,6 +147,7 @@ export default function BotBetaPage() {
       setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
       setVoiceResult(result)
       setLogs(result.logs || [])
+      if (result.invoice) pendingInvoiceRef.current = undefined
       setDebugTab('voice_logs')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Error de conexión'
@@ -218,11 +223,13 @@ export default function BotBetaPage() {
       const result: VoiceOrderResult & { error?: string } = await res.json()
       pendingVariantRef.current = result.pendingVariantItems
       pendingClientRef.current = result.pendingClientName
+      pendingInvoiceRef.current = result.pendingInvoice
 
       if (!res.ok || result.error) {
+        const msg = result.error && !result.pendingInvoice ? `Error: ${result.error}` : (result.error || 'Error inesperado')
         setVoiceResult(result)
         setLogs(result.logs || [])
-        setTurns([...nextTurns, { role: 'bot', content: result.error ? result.error : `Error: ${result.error || 'Error inesperado'}`, voiceResult: result }])
+        setTurns([...nextTurns, { role: 'bot', content: msg, voiceResult: result }])
         setDebugTab('voice_logs')
         scrollToBottom()
         return
@@ -232,6 +239,7 @@ export default function BotBetaPage() {
       setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
       setVoiceResult(result)
       setLogs(result.logs || [])
+      if (result.invoice) pendingInvoiceRef.current = undefined
       setDebugTab('voice_logs')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Error de conexión'
@@ -252,6 +260,7 @@ export default function BotBetaPage() {
     setRecording(false)
     pendingVariantRef.current = undefined
     pendingClientRef.current = undefined
+    pendingInvoiceRef.current = undefined
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
