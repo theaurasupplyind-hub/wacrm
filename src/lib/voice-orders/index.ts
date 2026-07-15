@@ -14,6 +14,28 @@ async function runPipeline(
 
   const resolvedItems = await resolveItems(parsedOrder.items, logs)
 
+  // Si algún item necesita aclarar variante, no continuar
+  const needsVar = resolvedItems.filter(i => i.necesita_variante)
+  if (needsVar.length > 0) {
+    const msgs = needsVar.map(i =>
+      `"${i.descripcion}" — variantes disponibles: ${i.variantes_disponibles?.join(', ') ?? 'varias'}`
+    )
+    logs.push({
+      step: 'voice_error',
+      data: { reason: 'necesita_variante', items: needsVar.map(i => ({ descripcion: i.descripcion, variantes: i.variantes_disponibles })) },
+    })
+    return {
+      transcription,
+      parsedOrder,
+      resolvedItems,
+      client,
+      pricing: null,
+      invoice: null,
+      error: `Necesito que me aclares la variante para:\n${msgs.join('\n')}`,
+      logs,
+    }
+  }
+
   const pricing = await priceItems(resolvedItems, logs)
 
   let invoice: { numero: string; id: number } | null = null

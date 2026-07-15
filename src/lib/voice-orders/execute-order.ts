@@ -37,7 +37,18 @@ export async function resolveItems(
     try {
       const result = await suggestPrice(item.descripcion)
       const sug = result.items?.[0]
-      if (sug && sug.categoria && sug.precio != null) {
+
+      // Detectar si hay múltiples variantes sin especificar
+      const variantes = [...new Set(
+        (result.sugerencias ?? [])
+          .map(s => s.variante?.trim().toLowerCase())
+          .filter(Boolean)
+      )]
+      const descLower = item.descripcion.toLowerCase()
+      const varianteMencionada = variantes.some(v => descLower.includes(v))
+
+      if (sug && sug.categoria && sug.precio != null && !sug.faltante) {
+        const needsVar = !varianteMencionada && variantes.length > 1
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
@@ -47,6 +58,8 @@ export async function resolveItems(
           precio_base: sug.precio,
           medida_referencia: result.medida_encontrada,
           faltante: false,
+          necesita_variante: needsVar,
+          variantes_disponibles: needsVar ? variantes : undefined,
         })
       } else {
         resolved.push({

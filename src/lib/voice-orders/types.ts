@@ -12,6 +12,8 @@ export interface ResolvedItem {
   precio_base: number | null
   medida_referencia: string | null
   faltante: boolean
+  necesita_variante?: boolean
+  variantes_disponibles?: string[]
 }
 
 export interface ParsedOrder {
