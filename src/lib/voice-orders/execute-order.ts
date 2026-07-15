@@ -272,7 +272,7 @@ export async function priceItems(
       total,
       duration_ms: Date.now() - t0,
       detalles: priced.map(i => ({
-        item: `${i.cantidad}x ${i.categoria} ${i.medida_solicitada}`,
+        item: `${i.cantidad}x ${i.categoria} ${i.medida_solicitada}${i.variante ? ` (${i.variante})` : ''}`,
         precio_base: i.precio_base,
         regla_aplicada: i.regla_aplicada,
         precio_final: i.precio,
