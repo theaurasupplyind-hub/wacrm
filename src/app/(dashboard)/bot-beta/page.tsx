@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import {
   Bot,
   RotateCcw,
@@ -11,6 +11,13 @@ import {
   ShoppingCart,
   FileText,
   List,
+  Mic,
+  Square,
+  Upload,
+  Volume2,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -19,80 +26,87 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import type { CartState } from '@/lib/ai/cart-state'
 import type { InvoiceCreatePayload } from '@/lib/ai/build-invoice-payload'
-
-// ─── Tipos de la API ───
-
-interface SandboxLog {
-  step: string
-  data: Record<string, unknown>
-}
+import type { VoiceOrderResult, VoiceOrderLog } from '@/lib/voice-orders/types'
 
 interface Turn {
   role: 'user' | 'bot'
   content: string
+  voiceResult?: VoiceOrderResult
 }
 
-interface SandboxResponse {
-  reply: string
-  cart: CartState | null
-  invoice: InvoiceCreatePayload | null
-  logs: SandboxLog[]
-}
-
-// ─── Helpers visuales ───
-
-const STEP_LABELS: Record<string, { label: string; color: string }> = {
-  extraction: { label: 'Extracción LLM', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
-  pricing: { label: 'Precios FacBal', color: 'bg-purple-500/10 text-purple-400 border-purple-500/30' },
-  cart_updated: { label: 'Carrito', color: 'bg-green-500/10 text-green-400 border-green-500/30' },
-  response: { label: 'Respuesta', color: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
-  confirm_order: { label: 'Confirmación', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
-  pending_confirm: { label: 'Preguntando', color: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
-  handoff: { label: 'Derivación', color: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
-  cancel_order: { label: 'Cancelación', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
-  view_budget: { label: 'Presupuesto', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' },
-  error: { label: 'Error', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
-}
-
-const STEP_DESC: Record<string, string> = {
-  extraction: 'Intención detectada por OpenRouter',
-  pricing: 'Resultado de bulkPrice en FacBal',
-  cart_updated: 'Estado actual del carrito',
-  response: 'Respuesta generada por el LLM',
-  confirm_order: 'Pedido confirmado — invoice generado',
-  pending_confirm: 'Bot preguntando antes de confirmar',
-  handoff: 'Derivado a agente humano',
-  cancel_order: 'Pedido cancelado por el usuario',
-  view_budget: 'Presupuesto formateado',
-  error: 'Ocurrió un error en el paso',
+const VOICE_STEP_LABELS: Record<string, { label: string; color: string }> = {
+  voice_transcribe: { label: 'Transcripción', color: 'bg-sky-500/10 text-sky-400 border-sky-500/30' },
+  voice_parse: { label: 'Parseo LLM', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
+  voice_client_search: { label: 'Buscar Cliente', color: 'bg-teal-500/10 text-teal-400 border-teal-500/30' },
+  voice_client_create: { label: 'Crear Cliente', color: 'bg-teal-500/10 text-teal-400 border-teal-500/30' },
+  voice_pricing: { label: 'Precios FacBal', color: 'bg-purple-500/10 text-purple-400 border-purple-500/30' },
+  voice_invoice: { label: 'Presupuesto', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
+  voice_error: { label: 'Error', color: 'bg-red-500/10 text-red-400 border-red-500/30' },
 }
 
 function formatPhone(value: string): string {
   return value.replace(/\D/g, '')
 }
 
-// ─── Componente principal ───
+function formatVoiceResult(result: VoiceOrderResult): string {
+  let s = ''
+  if (result.transcription) {
+    s += `🎤 Transcripción: "${result.transcription}"\n\n`
+  }
+  if (result.parsedOrder) {
+    s += `📋 Cliente: ${result.parsedOrder.cliente_nombre}\n`
+    s += `📦 Items: ${result.parsedOrder.items.map(i => `${i.cantidad}x ${i.categoria}${i.medida ? ` ${i.medida}` : ''}${i.variante ? ` (${i.variante})` : ''}`).join(', ')}\n\n`
+  }
+  if (result.client) {
+    s += `👤 Cliente: ${result.client.nombre}${result.client.id ? ` (ID: ${result.client.id})` : ''}\n\n`
+  }
+  if (result.pricing) {
+    for (const item of result.pricing.items) {
+      if (item.precio != null) {
+        s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
+      } else {
+        s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada} → SIN PRECIO\n`
+      }
+    }
+    s += `\n💰 Total: $${result.pricing.total.toLocaleString('es-AR')}\n\n`
+  }
+  if (result.invoice) {
+    s += `✅ Presupuesto creado: ${result.invoice.numero}\n`
+  }
+  if (result.error) {
+    s += `\n❌ Error: ${result.error}`
+  }
+  return s
+}
 
 export default function BotBetaPage() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [cart, setCart] = useState<CartState | null>(null)
   const [invoice, setInvoice] = useState<InvoiceCreatePayload | null>(null)
-  const [logs, setLogs] = useState<SandboxLog[]>([])
+  const [logs, setLogs] = useState<VoiceOrderLog[]>([])
+  const [voiceResult, setVoiceResult] = useState<VoiceOrderResult | null>(null)
   const [phone, setPhone] = useState('1145678901')
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [debugTab, setDebugTab] = useState('cart')
+
+  // Audio recording state
+  const [recording, setRecording] = useState(false)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Scroll al último mensaje
   const scrollToBottom = () => {
     setTimeout(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
     }, 100)
   }
 
-  // ─── Enviar mensaje al sandbox ───
-  const send = async () => {
+  // ─── Text send ───
+  const sendText = async () => {
     const text = input.trim()
     if (!text || sending) return
 
@@ -113,7 +127,6 @@ export default function BotBetaPage() {
           cart,
         }),
       })
-
       const data = await res.json()
 
       if (!res.ok) {
@@ -122,18 +135,11 @@ export default function BotBetaPage() {
         return
       }
 
-      const result = data as SandboxResponse
-
-      // Actualizar estado
-      setTurns([...nextTurns, { role: 'bot', content: result.reply }])
-      setCart(result.cart)
-      setInvoice(result.invoice)
-      setLogs(result.logs || [])
-
-      // Si hay invoice, cambiar a esa pestaña
-      if (result.invoice) {
-        setDebugTab('invoice')
-      }
+      setTurns([...nextTurns, { role: 'bot', content: data.reply }])
+      setCart(data.cart)
+      setInvoice(data.invoice)
+      setLogs(data.logs || [])
+      if (data.invoice) setDebugTab('invoice')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Error de conexión'
       setTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
@@ -143,19 +149,106 @@ export default function BotBetaPage() {
     }
   }
 
-  // ─── Resetear sesión ───
+  // ─── Audio recording ───
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      chunksRef.current = []
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm;codecs=opus' })
+        setAudioBlob(blob)
+      }
+
+      recorder.start()
+      setRecording(true)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al acceder al micrófono'
+      setTurns([...turns, { role: 'bot', content: `Error: ${msg}` }])
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    setRecording(false)
+  }
+
+  // ─── File upload ───
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setAudioBlob(file)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  // ─── Send audio ───
+  const sendAudio = useCallback(async () => {
+    if (!audioBlob || sending) return
+
+    const userTurn: Turn = { role: 'user', content: '🎤 Audio enviado' }
+    const nextTurns = [...turns, userTurn]
+    setTurns(nextTurns)
+    setAudioBlob(null)
+    setSending(true)
+
+    try {
+      const formData = new FormData()
+      formData.append('audio', audioBlob, 'audio.webm')
+      formData.append('phone', phone)
+      formData.append('name', 'Cliente de prueba')
+
+      const res = await fetch('/api/bot-beta/voice-run', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const result: VoiceOrderResult & { error?: string } = await res.json()
+
+      if (!res.ok || result.error) {
+        setTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        scrollToBottom()
+        return
+      }
+
+      const formatted = formatVoiceResult(result)
+      setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
+      setVoiceResult(result)
+      setLogs(result.logs || [])
+      setDebugTab('voice_logs')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error de conexión'
+      setTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
+    } finally {
+      setSending(false)
+      scrollToBottom()
+    }
+  }, [audioBlob, sending, turns, phone])
+
+  // ─── Reset ───
   const reset = () => {
     setTurns([])
     setCart(null)
     setInvoice(null)
     setLogs([])
+    setVoiceResult(null)
     setDebugTab('cart')
+    setAudioBlob(null)
+    setRecording(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      void send()
+      void sendText()
     }
   }
 
@@ -183,8 +276,8 @@ export default function BotBetaPage() {
         </Button>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        Simulá conversaciones de WhatsApp para probar cómo el chatbot crea presupuestos.
-        Usa OpenRouter y FacBal reales, pero <strong>no se guarda nada</strong>.
+        Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje.
+        Usa OpenRouter y FacBal reales.
       </p>
 
       {/* ─── Teléfono ─── */}
@@ -216,8 +309,8 @@ export default function BotBetaPage() {
             {turns.length === 0 && (
               <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
                 <Bot className="mb-2 h-8 w-8 text-muted-foreground/60" />
-                <p>Escribí un mensaje como si fueras un cliente de WhatsApp.</p>
-                <p className="mt-1 text-xs">Ej: "quiero 3 bastidores 60x40 lienzo profesional"</p>
+                <p>Grabá un audio o escribí un mensaje.</p>
+                <p className="mt-1 text-xs">Ej: "factura un presupuesto de 2 bastidores 120x130 lienzo profesional a nombre Jesus"</p>
               </div>
             )}
 
@@ -234,13 +327,13 @@ export default function BotBetaPage() {
                 )}
                 <div
                   className={cn(
-                    'max-w-[85%] rounded-2xl px-3.5 py-2 text-sm',
+                    'max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap',
                     t.role === 'user'
                       ? 'rounded-br-sm bg-primary text-primary-foreground'
                       : 'rounded-bl-sm bg-muted text-foreground',
                   )}
                 >
-                  <p className="whitespace-pre-wrap">{t.content}</p>
+                  {t.content}
                 </div>
                 {t.role === 'user' && (
                   <UserCircle2 className="mt-1 h-5 w-5 shrink-0 text-muted-foreground" />
@@ -251,7 +344,7 @@ export default function BotBetaPage() {
             {sending && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Bot className="h-5 w-5 text-primary" />
-                <Loader2 className="h-4 w-4 animate-spin" /> Pensando…
+                <Loader2 className="h-4 w-4 animate-spin" /> Procesando…
               </div>
             )}
           </div>
@@ -269,8 +362,35 @@ export default function BotBetaPage() {
             />
             <Button
               size="sm"
-              onClick={send}
-              disabled={!input.trim() || sending}
+              variant={recording ? 'destructive' : 'outline'}
+              onClick={recording ? stopRecording : startRecording}
+              disabled={sending}
+              className="h-9 w-9 shrink-0 p-0"
+              title={recording ? 'Detener grabación' : 'Grabar audio'}
+            >
+              {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sending}
+              className="h-9 w-9 shrink-0 p-0"
+              title="Subir archivo de audio"
+            >
+              <Upload className="h-4 w-4" />
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <Button
+              size="sm"
+              onClick={audioBlob ? sendAudio : sendText}
+              disabled={(!input.trim() && !audioBlob) || sending}
               className="h-9 w-9 shrink-0 p-0"
             >
               {sending ? (
@@ -280,6 +400,24 @@ export default function BotBetaPage() {
               )}
             </Button>
           </div>
+
+          {/* Audio preview */}
+          {audioBlob && (
+            <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-muted/30">
+              <Volume2 className="h-4 w-4 text-muted-foreground shrink-0" />
+              <audio controls className="h-8 flex-1 min-w-0">
+                <source src={URL.createObjectURL(audioBlob)} type={audioBlob.type} />
+              </audio>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => setAudioBlob(null)}
+              >
+                Cancelar
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* ─── Columna derecha: Debug Panel ─── */}
@@ -302,6 +440,9 @@ export default function BotBetaPage() {
                 <TabsTrigger value="logs" className="text-xs gap-1.5">
                   <List className="h-3.5 w-3.5" /> Pasos
                 </TabsTrigger>
+                <TabsTrigger value="voice_logs" className="text-xs gap-1.5">
+                  <Volume2 className="h-3.5 w-3.5" /> Voz
+                </TabsTrigger>
               </TabsList>
             </div>
 
@@ -314,19 +455,15 @@ export default function BotBetaPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {/* Estado del carrito */}
                   <div className="flex items-center gap-2">
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-[10px]',
-                        cart.status === 'confirmado'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                          : cart.pending_confirm
-                            ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
-                            : 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-                      )}
-                    >
+                    <Badge variant="outline" className={cn(
+                      'text-[10px]',
+                      cart.status === 'confirmado'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : cart.pending_confirm
+                          ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
+                          : 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+                    )}>
                       {cart.status === 'confirmado' ? 'CONFIRMADO' : cart.pending_confirm ? 'PENDIENTE CONFIRMAR' : 'COTIZANDO'}
                     </Badge>
                     {cart.items_faltantes.length > 0 && (
@@ -335,8 +472,6 @@ export default function BotBetaPage() {
                       </Badge>
                     )}
                   </div>
-
-                  {/* Items */}
                   <div className="space-y-2">
                     {cart.items.map((item, i) => (
                       <div key={i} className="rounded-lg border border-border bg-muted/50 p-3 text-sm">
@@ -363,16 +498,12 @@ export default function BotBetaPage() {
                       </div>
                     ))}
                   </div>
-
-                  {/* Total */}
                   <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
                     <span className="text-sm font-semibold text-foreground">TOTAL</span>
                     <span className="text-lg font-bold font-mono text-foreground">
                       ${cart.total.toLocaleString('es-AR')}
                     </span>
                   </div>
-
-                  {/* Items faltantes */}
                   {cart.items_faltantes.length > 0 && (
                     <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
                       <p className="text-xs font-medium text-red-400 mb-1">Productos sin precio:</p>
@@ -394,15 +525,12 @@ export default function BotBetaPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {/* Resumen del invoice */}
                   <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
                     <p className="text-xs font-medium text-emerald-400 mb-1">Vista previa del presupuesto</p>
                     <p className="text-xs text-muted-foreground">
                       Este es el JSON exacto que se enviaría a <code className="text-emerald-400">POST /invoices</code> en FacBal.
                     </p>
                   </div>
-
-                  {/* JSON formateado */}
                   <pre className="rounded-lg bg-muted p-4 overflow-x-auto font-mono text-xs text-foreground whitespace-pre-wrap">
                     {JSON.stringify(invoice, null, 2)}
                   </pre>
@@ -410,18 +538,17 @@ export default function BotBetaPage() {
               )}
             </TabsContent>
 
-            {/* ─── Tab: Pasos (Logs) ─── */}
+            {/* ─── Tab: Pasos (Logs del chatbot anterior) ─── */}
             <TabsContent value="logs" className="flex-1 overflow-y-auto p-4 m-0">
               {logs.length === 0 ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                   <List className="mr-2 h-5 w-5 opacity-50" />
-                  Los pasos del chatbot aparecerán acá.
+                  Los pasos aparecerán acá.
                 </div>
               ) : (
                 <div className="space-y-2">
                   {logs.map((log, i) => {
-                    const meta = STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }
-                    const desc = STEP_DESC[log.step] || ''
+                    const meta = VOICE_STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }
                     return (
                       <div key={i} className="rounded-lg border border-border p-3">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -432,15 +559,131 @@ export default function BotBetaPage() {
                             Paso {i + 1}
                           </span>
                         </div>
-                        {desc && (
-                          <p className="mt-1 text-xs text-muted-foreground">{desc}</p>
-                        )}
                         <pre className="mt-1.5 text-[11px] text-foreground/80 font-mono whitespace-pre-wrap overflow-x-auto">
                           {JSON.stringify(log.data, null, 2)}
                         </pre>
                       </div>
                     )
                   })}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* ─── Tab: Logs de voz ─── */}
+            <TabsContent value="voice_logs" className="flex-1 overflow-y-auto p-4 m-0">
+              {!voiceResult ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  <Volume2 className="mr-2 h-5 w-5 opacity-50" />
+                  Enviá un audio para ver el pipeline completo.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Transcripción */}
+                  {voiceResult.transcription && (
+                    <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
+                      <p className="text-xs font-medium text-sky-400 mb-1 flex items-center gap-1.5">
+                        <Volume2 className="h-3.5 w-3.5" /> Transcripción
+                      </p>
+                      <p className="text-sm text-foreground">{voiceResult.transcription}</p>
+                    </div>
+                  )}
+
+                  {/* Orden parseada */}
+                  {voiceResult.parsedOrder && (
+                    <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+                      <p className="text-xs font-medium text-blue-400 mb-1">Orden detectada</p>
+                      <p className="text-xs text-foreground">Cliente: {voiceResult.parsedOrder.cliente_nombre}</p>
+                      <div className="mt-1 space-y-0.5">
+                        {voiceResult.parsedOrder.items.map((item, i) => (
+                          <p key={i} className="text-xs text-muted-foreground">
+                            {item.cantidad}x {item.categoria} {item.medida}{item.variante ? ` (${item.variante})` : ''}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Cliente */}
+                  {voiceResult.client && (
+                    <div className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-3">
+                      <p className="text-xs font-medium text-teal-400 mb-1">Cliente</p>
+                      <p className="text-xs text-foreground">
+                        {voiceResult.client.nombre}{voiceResult.client.id ? ` (ID: ${voiceResult.client.id})` : ' (nuevo)'}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Pricing */}
+                  {voiceResult.pricing && (
+                    <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
+                      <p className="text-xs font-medium text-purple-400 mb-1">Precios</p>
+                      {voiceResult.pricing.items.map((item, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs">
+                          <span className="text-foreground">
+                            {item.cantidad}x {item.categoria} {item.medida_solicitada}
+                          </span>
+                          {item.precio != null ? (
+                            <span className="font-mono text-foreground">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
+                          ) : (
+                            <XCircle className="h-3.5 w-3.5 text-red-400" />
+                          )}
+                        </div>
+                      ))}
+                      <div className="mt-1.5 flex items-center justify-between border-t border-purple-500/20 pt-1.5">
+                        <span className="text-xs font-semibold text-foreground">Total</span>
+                        <span className="text-sm font-bold font-mono text-foreground">
+                          ${voiceResult.pricing.total.toLocaleString('es-AR')}
+                        </span>
+                      </div>
+                      {voiceResult.pricing.items.some(i => i.faltante) && (
+                        <div className="mt-1.5 flex items-center gap-1 text-xs text-red-400">
+                          <AlertTriangle className="h-3 w-3" /> Hay productos sin precio
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Invoice created */}
+                  {voiceResult.invoice ? (
+                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      <span className="text-xs text-foreground">
+                        Presupuesto <strong>{voiceResult.invoice.numero}</strong> creado exitosamente
+                      </span>
+                    </div>
+                  ) : voiceResult.error ? (
+                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 flex items-center gap-2">
+                      <XCircle className="h-4 w-4 text-red-400" />
+                      <span className="text-xs text-foreground">Error: {voiceResult.error}</span>
+                    </div>
+                  ) : voiceResult.transcription ? (
+                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-amber-400" />
+                      <span className="text-xs text-foreground">Modo preview — no se creó presupuesto real</span>
+                    </div>
+                  ) : null}
+
+                  {/* Pipeline logs */}
+                  {voiceResult.logs.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Pipeline completo:</p>
+                      {voiceResult.logs.filter(l => l.step !== 'voice_error').map((log, i) => {
+                        const meta = VOICE_STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }
+                        return (
+                          <div key={i} className="rounded-lg border border-border p-2.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Badge variant="outline" className={`text-[10px] ${meta.color}`}>
+                                {meta.label}
+                              </Badge>
+                            </div>
+                            <pre className="mt-1 text-[10px] text-foreground/70 font-mono whitespace-pre-wrap overflow-x-auto">
+                              {JSON.stringify(log.data, null, 2)}
+                            </pre>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </TabsContent>

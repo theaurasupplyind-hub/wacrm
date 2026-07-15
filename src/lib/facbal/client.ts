@@ -260,6 +260,102 @@ export function getPriceListImageUrl(imageId: number): string {
   return `${apiUrl()}/price-list-images/${imageId}/view`
 }
 
+// ─── Clientes ───
+
+export interface FacbalClient {
+  id: number
+  nombre: string
+  domicilio: string | null
+  telefono: string | null
+  taller: string | null
+  estudiante: string | null
+  lat: number | null
+  lng: number | null
+}
+
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function similarity(a: string, b: string): number {
+  const na = normalizeText(a)
+  const nb = normalizeText(b)
+  if (na === nb) return 1
+  if (na.includes(nb) || nb.includes(na)) return 0.8
+  const tokensA = na.split(' ')
+  const tokensB = nb.split(' ')
+  const intersection = tokensA.filter(t => tokensB.includes(t)).length
+  const union = new Set([...tokensA, ...tokensB]).size
+  return union > 0 ? intersection / union : 0
+}
+
+export async function searchClients(
+  nombre: string,
+  telefono?: string,
+): Promise<FacbalClient | null> {
+  const url = `${apiUrl()}/clients`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al buscar clientes${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json() as FacbalClient[]
+  if (!Array.isArray(data)) return null
+
+  // Score all clients
+  const scored = data.map(c => {
+    let score = similarity(c.nombre, nombre)
+    // Bonus for phone match
+    if (telefono && c.telefono) {
+      const cleanPhone = telefono.replace(/\D/g, '')
+      const cleanCP = c.telefono.replace(/\D/g, '')
+      if (cleanCP.includes(cleanPhone) || cleanPhone.includes(cleanCP)) {
+        score += 0.3
+      }
+    }
+    return { client: c, score }
+  })
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored.length > 0 && scored[0].score > 0.3 ? scored[0].client : null
+}
+
+export async function createClient(data: {
+  nombre: string
+  telefono?: string
+  domicilio?: string
+}): Promise<FacbalClient> {
+  const url = `${apiUrl()}/clients`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify({
+      nombre: data.nombre,
+      telefono: data.telefono || '',
+      domicilio: data.domicilio || '',
+    }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al crear cliente${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<FacbalClient>
+}
+
 // ─── Crear factura/presupuesto ───
 
 export interface InvoiceCreatedResult {

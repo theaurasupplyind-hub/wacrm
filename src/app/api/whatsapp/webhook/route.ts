@@ -9,7 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
-import { processChatMessage } from '@/lib/ai/chatbot'
+import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -944,7 +944,7 @@ async function processMessage(
 
   // Conversational AI bot (products, pricing, account questions).
   // Uses debounce: collects fragmented messages for 8s before processing.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (CHATBOT_ENABLED && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
     console.log('[webhook] chatbot dispatch start -> conversation=%s', conversation.id)
     bgTasks.push(
       debouncedChatMessage(

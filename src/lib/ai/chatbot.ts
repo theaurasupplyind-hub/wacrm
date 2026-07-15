@@ -17,6 +17,8 @@ import { shouldHardHandoff, shouldHandoff } from './handoff-rules'
 import { logChatbotStep } from './chatbot-logger'
 import { supabaseAdmin } from './admin-client'
 
+export const CHATBOT_ENABLED = false
+
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const DEFAULT_CHAT_MODEL = 'google/gemini-2.5-flash-lite'
@@ -543,6 +545,10 @@ export async function extractAction(
 }
 
 export async function processChatMessage(args: ChatArgs): Promise<void> {
+  if (!CHATBOT_ENABLED) {
+    console.log('[chatbot] SKIPPED — CHATBOT_ENABLED=false')
+    return
+  }
   const { text, phone, accountId, userId, contactId, conversationId } = args
   const sendCtx = { accountId, userId, contactId, conversationId }
   const t0 = Date.now()
