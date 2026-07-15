@@ -126,7 +126,10 @@ export default function BotBetaPage() {
       const result: VoiceOrderResult & { error?: string } = await res.json()
 
       if (!res.ok || result.error) {
-        setTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setVoiceResult(result)
+        setLogs(result.logs || [])
+        setTurns([...nextTurns, { role: 'bot', content: result.error ? result.error : `Error: ${result.error || 'Error inesperado'}`, voiceResult: result }])
+        setDebugTab('voice_logs')
         scrollToBottom()
         return
       }
@@ -210,7 +213,10 @@ export default function BotBetaPage() {
       const result: VoiceOrderResult & { error?: string } = await res.json()
 
       if (!res.ok || result.error) {
-        setTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setVoiceResult(result)
+        setLogs(result.logs || [])
+        setTurns([...nextTurns, { role: 'bot', content: result.error ? result.error : `Error: ${result.error || 'Error inesperado'}`, voiceResult: result }])
+        setDebugTab('voice_logs')
         scrollToBottom()
         return
       }
