@@ -326,6 +326,7 @@ export async function createPresupuesto(
     envio: 0,
     tipo: 'PRESUPUESTO',
     user_id: 1,
+    numero_presupuesto: `BOT-${Date.now().toString(36).toUpperCase()}`,
   })
 
   logs.push({
