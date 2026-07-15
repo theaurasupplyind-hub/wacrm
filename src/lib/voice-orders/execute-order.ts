@@ -43,7 +43,8 @@ export async function priceItems(
 
   const result = await bulkPrice(bulkItems, 90_000)
 
-  const priced: PricedItem[] = result.items.map(r => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const priced: PricedItem[] = result.items.map((r: any) => ({
     cantidad: r.cantidad,
     categoria: r.categoria,
     variante: r.variante,
@@ -51,6 +52,8 @@ export async function priceItems(
     medida_referencia: r.medida_referencia,
     precio: r.precio,
     faltante: r.faltante,
+    precio_base: r.precio_base ?? null,
+    regla_aplicada: r.regla_aplicada ?? null,
   }))
 
   const total = priced.reduce((sum, i) => sum + (i.precio ?? 0) * i.cantidad, 0)
@@ -63,6 +66,13 @@ export async function priceItems(
       faltantes: faltantes.length,
       total,
       duration_ms: Date.now() - t0,
+      detalles: priced.map(i => ({
+        item: `${i.cantidad}x ${i.categoria} ${i.medida_solicitada}`,
+        precio_base: i.precio_base,
+        regla_aplicada: i.regla_aplicada,
+        precio_final: i.precio,
+        medida_referencia: i.medida_referencia,
+      })),
     },
   })
 

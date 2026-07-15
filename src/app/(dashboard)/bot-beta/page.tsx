@@ -618,15 +618,37 @@ export default function BotBetaPage() {
                     <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
                       <p className="text-xs font-medium text-purple-400 mb-1">Precios</p>
                       {voiceResult.pricing.items.map((item, i) => (
-                        <div key={i} className="flex items-center justify-between text-xs">
-                          <span className="text-foreground">
-                            {item.cantidad}x {item.categoria} {item.medida_solicitada}
-                          </span>
-                          {item.precio != null ? (
-                            <span className="font-mono text-foreground">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
-                          ) : (
-                            <XCircle className="h-3.5 w-3.5 text-red-400" />
-                          )}
+                        <div key={i} className="space-y-1 border-b border-purple-500/10 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-foreground font-medium">
+                              {item.cantidad}x {item.categoria} {item.medida_solicitada}
+                            </span>
+                            {item.precio != null ? (
+                              <span className="font-mono text-foreground">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
+                            ) : (
+                              <XCircle className="h-3.5 w-3.5 text-red-400" />
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+                            {item.precio_base != null && (
+                              <span className="flex items-center gap-1">
+                                Base: <span className="font-mono">${item.precio_base.toLocaleString('es-AR')}</span>
+                                {item.medida_referencia && <span>(ref: {item.medida_referencia})</span>}
+                              </span>
+                            )}
+                            {item.regla_aplicada ? (
+                              <span className="flex items-center gap-1 text-amber-400">
+                                <CheckCircle2 className="h-2.5 w-2.5" /> Regla: {item.regla_aplicada}
+                              </span>
+                            ) : item.precio_base != null ? (
+                              <span className="text-muted-foreground/60">Regla: —</span>
+                            ) : null}
+                            {item.precio != null && item.precio_base != null && item.precio !== item.precio_base && (
+                              <span className="text-purple-400">
+                                → Final: <span className="font-mono">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       ))}
                       <div className="mt-1.5 flex items-center justify-between border-t border-purple-500/20 pt-1.5">

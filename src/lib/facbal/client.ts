@@ -198,6 +198,8 @@ export interface BulkPriceResultItem {
   medida_referencia: string
   precio: number | null
   faltante: boolean
+  precio_base: number | null
+  regla_aplicada: string | null
 }
 
 export interface BulkPriceResult {
