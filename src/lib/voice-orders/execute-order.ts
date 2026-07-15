@@ -1,4 +1,4 @@
-import type { VoiceOrderLog, PricedItem, ResolvedItem, VoiceOrderItem } from './types'
+import type { VoiceOrderLog, PricedItem, ResolvedItem, VoiceOrderItem, ClientInfo } from './types'
 import { searchClients, createClient, bulkPrice, suggestPrice, createInvoice } from '../facbal/client'
 import type { BulkPriceItem } from '../facbal/client'
 
@@ -11,7 +11,7 @@ export async function searchOrCreateClient(
   nombre: string,
   telefono: string,
   logs: VoiceOrderLog[],
-): Promise<{ id: number | null; nombre: string }> {
+): Promise<ClientInfo> {
   const t0 = Date.now()
 
   const existing = await searchClients(nombre, telefono)
@@ -20,7 +20,7 @@ export async function searchOrCreateClient(
       step: 'voice_client_search',
       data: { encontrado: true, id: existing.id, nombre: existing.nombre, duration_ms: Date.now() - t0 },
     })
-    return { id: existing.id, nombre: existing.nombre }
+    return { id: existing.id, nombre: existing.nombre, telefono: existing.telefono ?? undefined, domicilio: existing.domicilio ?? undefined }
   }
 
   const created = await createClient({ nombre, telefono })
@@ -28,7 +28,7 @@ export async function searchOrCreateClient(
     step: 'voice_client_create',
     data: { id: created.id, nombre: created.nombre, duration_ms: Date.now() - t0 },
   })
-  return { id: created.id, nombre: created.nombre }
+  return { id: created.id, nombre: created.nombre, telefono: created.telefono ?? undefined }
 }
 
 export async function resolveItems(
@@ -285,7 +285,7 @@ export async function priceItems(
 }
 
 export async function createPresupuesto(
-  client: { id: number | null; nombre: string },
+  client: ClientInfo,
   items: PricedItem[],
   logs: VoiceOrderLog[],
 ): Promise<{ numero: string; id: number }> {
@@ -320,7 +320,8 @@ export async function createPresupuesto(
     fecha,
     cliente_id: client.id,
     cliente_nombre: client.nombre,
-    cliente_telefono: '',
+    cliente_telefono: client.telefono || '',
+    cliente_domicilio: client.domicilio || '',
     items: invoiceItems,
     total,
     envio: 0,

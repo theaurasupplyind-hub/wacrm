@@ -37,9 +37,11 @@ export interface PricedItem {
 
 export interface PendingInvoice {
   resolvedItems: ResolvedItem[]
-  client: { id: number | null; nombre: string }
+  client: { id: number | null; nombre: string; telefono?: string; domicilio?: string }
   pricing: { items: PricedItem[]; total: number }
 }
+
+export type ClientInfo = { id: number | null; nombre: string; telefono?: string; domicilio?: string }
 
 export interface VoiceOrderLog {
   step: string
@@ -50,7 +52,7 @@ export interface VoiceOrderResult {
   transcription: string
   parsedOrder: ParsedOrder | null
   resolvedItems: ResolvedItem[] | null
-  client: { id: number | null; nombre: string } | null
+  client: ClientInfo | null
   pricing: {
     items: PricedItem[]
     total: number

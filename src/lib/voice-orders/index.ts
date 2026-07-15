@@ -1,4 +1,4 @@
-import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder, ResolvedItem, PendingInvoice } from './types'
+import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder, ResolvedItem, PendingInvoice, ClientInfo } from './types'
 import { transcribeAudio } from './transcribe'
 import { parseOrder } from './parse-order'
 import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
@@ -68,11 +68,12 @@ async function runPipeline(
     }
 
     const nombreCliente = pendingClientName || phone
-    let clientResult: { id: number | null; nombre: string }
+    let clientResult: ClientInfo
     try {
-      clientResult = await createClient({ nombre: nombreCliente, telefono: phone })
+      const c = await createClient({ nombre: nombreCliente, telefono: phone })
+      clientResult = { id: c.id, nombre: c.nombre, telefono: c.telefono ?? undefined, domicilio: c.domicilio ?? undefined }
     } catch {
-      clientResult = { id: null, nombre: nombreCliente }
+      clientResult = { id: null, nombre: nombreCliente, telefono: phone }
     }
 
     const pricing = await priceItems(allResolved, logs)
