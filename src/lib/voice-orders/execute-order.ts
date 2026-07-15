@@ -104,7 +104,49 @@ export async function resolveItems(
         continue
       }
 
-      // Caso 4: sin resultados
+      // Caso 4: sin resultados — reintentar como bastidor si la descripción tiene medidas
+      const tieneMedidas = /(?:\d+\s*(?:[xX×]|por)\s*\d+)/.test(item.descripcion)
+      if (tieneMedidas && (!sug || !sug.categoria || sug.faltante)) {
+        const result2 = await suggestPrice(`bastidor ${item.descripcion}`)
+        const sug2 = result2.items?.[0]
+        const det2 = result2.detalles?.[0]
+        const var2 = [...new Set(
+          (result2.sugerencias ?? []).map(s => s.variante?.trim().toLowerCase()).filter(Boolean)
+        )]
+        const dLow2 = item.descripcion.toLowerCase()
+        const varMen2 = var2.some(v => dLow2.includes(v))
+
+        if (sug2 && sug2.categoria && sug2.precio != null && !sug2.faltante) {
+          if (var2.length > 1 && !varMen2) {
+            resolved.push({
+              descripcion: item.descripcion, cantidad: item.cantidad,
+              categoria: sug2.categoria, medida: extractOriginalMedida(item.descripcion) || sug2.medida,
+              variante: '', precio_base: sug2.precio,
+              medida_referencia: result2.medida_encontrada, faltante: false,
+              necesita_variante: true, variantes_disponibles: var2,
+            })
+          } else {
+            resolved.push({
+              descripcion: item.descripcion, cantidad: item.cantidad,
+              categoria: sug2.categoria, medida: extractOriginalMedida(item.descripcion) || sug2.medida,
+              variante: sug2.variante || '', precio_base: sug2.precio,
+              medida_referencia: result2.medida_encontrada, faltante: false,
+            })
+          }
+          continue
+        }
+        if (det2 && var2.length > 1 && !varMen2) {
+          resolved.push({
+            descripcion: item.descripcion, cantidad: item.cantidad,
+            categoria: det2.categoria || 'BASTIDOR', medida: extractOriginalMedida(item.descripcion) || result2.medida_encontrada || '',
+            variante: '', precio_base: det2.precio,
+            medida_referencia: result2.medida_encontrada, faltante: false,
+            necesita_variante: true, variantes_disponibles: var2,
+          })
+          continue
+        }
+      }
+
       resolved.push({
         descripcion: item.descripcion,
         cantidad: item.cantidad,
@@ -116,6 +158,30 @@ export async function resolveItems(
         faltante: true,
       })
     } catch {
+      // Reintentar como bastidor si tiene medidas
+      if (/(?:\d+\s*(?:[xX×]|por)\s*\d+)/.test(item.descripcion)) {
+        try {
+          const result2 = await suggestPrice(`bastidor ${item.descripcion}`)
+          const sug2 = result2.items?.[0]
+          const det2 = result2.detalles?.[0]
+          const var2 = [...new Set(
+            (result2.sugerencias ?? []).map(s => s.variante?.trim().toLowerCase()).filter(Boolean)
+          )]
+          const dLow2 = item.descripcion.toLowerCase()
+          const varMen2 = var2.some(v => dLow2.includes(v))
+          if (sug2 && sug2.categoria && sug2.precio != null && !sug2.faltante) {
+            resolved.push({
+              descripcion: item.descripcion, cantidad: item.cantidad,
+              categoria: sug2.categoria, medida: extractOriginalMedida(item.descripcion) || sug2.medida,
+              variante: sug2.variante || '', precio_base: sug2.precio,
+              medida_referencia: result2.medida_encontrada, faltante: false,
+              necesita_variante: var2.length > 1 && !varMen2,
+              variantes_disponibles: var2.length > 1 && !varMen2 ? var2 : undefined,
+            })
+            continue
+          }
+        } catch { /* ignore */ }
+      }
       resolved.push({
         descripcion: item.descripcion,
         cantidad: item.cantidad,
