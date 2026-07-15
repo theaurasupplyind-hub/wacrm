@@ -9,6 +9,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json() as {
       text: string
       phone?: string
+      pendingVariantItems?: unknown[]
     }
 
     if (!body.text || !body.text.trim()) {
@@ -20,6 +21,7 @@ export async function POST(req: NextRequest) {
       senderPhone: body.phone || '1145678901',
       senderName: 'Cliente de prueba',
       commit: false,
+      pendingVariantItems: body.pendingVariantItems as VoiceOrderResult['pendingVariantItems'],
     })
 
     return NextResponse.json(result satisfies VoiceOrderResult)

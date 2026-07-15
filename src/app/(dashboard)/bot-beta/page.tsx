@@ -117,7 +117,11 @@ export default function BotBetaPage() {
       const res = await fetch('/api/bot-beta/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, phone }),
+        body: JSON.stringify({
+          text,
+          phone,
+          pendingVariantItems: voiceResult?.pendingVariantItems,
+        }),
       })
       const result: VoiceOrderResult & { error?: string } = await res.json()
 

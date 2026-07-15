@@ -6,27 +6,35 @@ const DEFAULT_MODEL = 'google/gemini-2.5-flash-lite'
 
 const PARSE_PROMPT = `Sos un sistema de extracción de órdenes de presupuesto para Bastidores GAL (taller de marcos y molduras).
 
-Del texto del cliente extraé:
-- El nombre del cliente (si menciona "a nombre de X", "para X", "soy X", o similar)
-- Los items del pedido con su descripción textual exacta
+Del texto del cliente extraé la orden. Podés devolver dos tipos de respuestas:
 
-Devolvé SOLO JSON sin explicaciones, con esta estructura exacta:
+=== TIPO 1: PRESUPUESTO (pedido normal) ===
 {
   "tipo": "presupuesto",
   "cliente_nombre": "nombre completo del cliente, null si no se menciona",
   "items": [
     {
-      "descripcion": "descripción textual del producto TAL COMO LA DIJO EL CLIENTE. Incluí cantidad, medidas y variante todo junto (ej: bastidor 120x130 lienzo profesional, moldura 58x29 normal sin tela, acrilico 40x50, etc)",
+      "descripcion": "descripción textual del producto TAL COMO LA DIJO EL CLIENTE",
       "cantidad": número entero (1 si no se especifica)
     }
   ]
 }
 
+=== TIPO 2: RESPUESTA DE VARIANTE (el cliente está respondiendo a una pregunta) ===
+Ej: si el texto es solo "sin tela", "lienzo profesional", "lp", "doble 4cm", "con tela"
+{
+  "tipo": "respuesta_variante",
+  "cliente_nombre": null,
+  "items": [],
+  "variante_respuesta": "texto de la variante exacta que dijo"
+}
+
 Reglas:
-- descripcion debe ser TEXTUAL, copiá exactamente lo que dijo el cliente sobre el producto
-- Incluí medidas y variante dentro de la descripcion
-- Si dice "a nombre de X" o "para X", ese es el cliente_nombre
-- NO inventes productos ni rellenes datos que no estén en el texto`
+- Si el texto parece una RESPUESTA simple (una variante, color, tipo),
+  sin mencionar productos nuevos, devolvé tipo "respuesta_variante"
+- Si el texto menciona productos con cantidades y medidas, devolvé "presupuesto"
+- descripcion debe ser TEXTUAL, copiá exactamente lo que dijo el cliente
+- Si dice "a nombre de X" o "para X", ese es el cliente_nombre`
 
 export async function parseOrder(
   text: string,
@@ -83,23 +91,27 @@ export async function parseOrder(
     throw new Error('JSON inválido devuelto por el LLM.')
   }
 
+  const tipo = parsed.tipo as string || 'presupuesto'
   const result: ParsedOrder = {
-    tipo: 'presupuesto',
-    cliente_nombre: (parsed.cliente_nombre as string) || `Cliente ${phone}`,
+    tipo: tipo === 'respuesta_variante' ? 'respuesta_variante' : 'presupuesto',
+    cliente_nombre: (parsed.cliente_nombre as string) || (tipo === 'respuesta_variante' ? null : `Cliente ${phone}`),
     items: Array.isArray(parsed.items)
       ? parsed.items.map((i: Record<string, unknown>) => ({
           descripcion: String(i.descripcion || ''),
           cantidad: Math.max(1, parseInt(String(i.cantidad || '1'), 10)),
         })).filter(i => i.descripcion)
       : [],
+    variante_respuesta: parsed.variante_respuesta as string | undefined,
   }
 
   logs.push({
     step: 'voice_parse',
     data: {
       model,
+      tipo: result.tipo,
       cliente_extraido: result.cliente_nombre,
       items_extraidos: result.items.length,
+      variante_respuesta: result.variante_respuesta,
       items: result.items.map(i => `${i.cantidad}x ${i.descripcion}`),
       tokens_in: data.usage?.prompt_tokens ?? 0,
       tokens_out: data.usage?.completion_tokens ?? 0,

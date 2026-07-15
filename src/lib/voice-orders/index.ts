@@ -1,7 +1,8 @@
-import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder } from './types'
+import type { VoiceOrderArgs, TextOrderArgs, VoiceOrderResult, ParsedOrder, ResolvedItem } from './types'
 import { transcribeAudio } from './transcribe'
 import { parseOrder } from './parse-order'
 import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
+import { suggestPrice } from '../facbal/client'
 
 async function runPipeline(
   parsedOrder: ParsedOrder,
@@ -9,16 +10,69 @@ async function runPipeline(
   commit: boolean,
   transcription: string,
   logs: VoiceOrderResult['logs'],
+  pendingVariantItems?: ResolvedItem[],
 ): Promise<VoiceOrderResult> {
-  const client = await searchOrCreateClient(parsedOrder.cliente_nombre, phone, logs)
+  // ── Si es respuesta de variante, re-resolver items pendientes ──
+  if (parsedOrder.tipo === 'respuesta_variante' && parsedOrder.variante_respuesta && pendingVariantItems?.length) {
+    const variant = parsedOrder.variante_respuesta.trim().toLowerCase()
+    const allResolved: ResolvedItem[] = []
 
+    for (const item of pendingVariantItems) {
+      const nuevaDesc = `${item.descripcion} ${variant}`
+      try {
+        const result = await suggestPrice(nuevaDesc)
+        const sug = result.items?.[0] || result.detalles?.[0]
+        if (sug && sug.categoria && sug.precio != null && !sug.faltante) {
+          allResolved.push({
+            descripcion: item.descripcion,
+            cantidad: item.cantidad,
+            categoria: sug.categoria,
+            medida: item.medida,
+            variante: variant,
+            precio_base: sug.precio,
+            medida_referencia: result.medida_encontrada || item.medida_referencia,
+            faltante: false,
+          })
+        } else {
+          allResolved.push({ ...item, variante: variant, faltante: true })
+        }
+      } catch {
+        allResolved.push({ ...item, variante: variant, faltante: true })
+      }
+    }
+
+    const clientResult = await searchOrCreateClient(pendingVariantItems[0]?.descripcion.includes('para')
+      ? (parsedOrder.cliente_nombre ?? phone)
+      : phone, phone, logs)
+
+    const pricing = await priceItems(allResolved, logs)
+
+    let invoice: { numero: string; id: number } | null = null
+    if (commit) {
+      invoice = await createPresupuesto(clientResult, pricing.items, logs)
+    }
+
+    return {
+      transcription,
+      parsedOrder,
+      resolvedItems: allResolved,
+      client: clientResult,
+      pricing,
+      invoice,
+      error: null,
+      logs,
+    }
+  }
+
+  // ── Pedido normal ──
+  const client = await searchOrCreateClient(parsedOrder.cliente_nombre ?? phone, phone, logs)
   const resolvedItems = await resolveItems(parsedOrder.items, logs)
 
-  // Si algún item necesita aclarar variante, no continuar
+  // Mostrar TODOS los items que necesitan variante juntos
   const needsVar = resolvedItems.filter(i => i.necesita_variante)
   if (needsVar.length > 0) {
     const msgs = needsVar.map(i =>
-      `"${i.descripcion}" — variantes disponibles: ${i.variantes_disponibles?.join(', ') ?? 'varias'}`
+      `"${i.descripcion}" — variantes: ${i.variantes_disponibles?.join(', ') ?? 'varias'}`
     )
     logs.push({
       step: 'voice_error',
@@ -32,6 +86,7 @@ async function runPipeline(
       pricing: null,
       invoice: null,
       error: `Necesito que me aclares la variante para:\n${msgs.join('\n')}`,
+      pendingVariantItems: needsVar,
       logs,
     }
   }
@@ -83,7 +138,7 @@ export async function processTextOrder(args: TextOrderArgs): Promise<VoiceOrderR
 
   try {
     const parsedOrder = await parseOrder(args.text, args.senderPhone, logs)
-    return runPipeline(parsedOrder, args.senderPhone, args.commit, args.text, logs)
+    return runPipeline(parsedOrder, args.senderPhone, args.commit, args.text, logs, args.pendingVariantItems)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logs.push({ step: 'voice_error', data: { error: msg } })
