@@ -1,6 +1,11 @@
-import type { VoiceOrderLog, ParsedOrder, PricedItem, VoiceOrderItem, ResolvedItem } from './types'
+import type { VoiceOrderLog, PricedItem, ResolvedItem, VoiceOrderItem } from './types'
 import { searchClients, createClient, bulkPrice, suggestPrice, createInvoice } from '../facbal/client'
 import type { BulkPriceItem } from '../facbal/client'
+
+function extractOriginalMedida(descripcion: string): string {
+  const m = descripcion.match(/(\d+)\s*(?:[xX×]|por)\s*(\d+)/)
+  return m ? `${m[1]}x${m[2]}` : ''
+}
 
 export async function searchOrCreateClient(
   nombre: string,
@@ -53,7 +58,7 @@ export async function resolveItems(
           descripcion: item.descripcion,
           cantidad: item.cantidad,
           categoria: sug.categoria,
-          medida: sug.medida,
+          medida: extractOriginalMedida(item.descripcion) || sug.medida,
           variante: sug.variante || '',
           precio_base: sug.precio,
           medida_referencia: result.medida_encontrada,
