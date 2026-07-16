@@ -712,12 +712,12 @@ async function sendBudgetImage(
   ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
   invoiceId: number,
 ) {
-  const baseUrl = process.env.FACBAL_API_URL?.replace(/\/+$/, '')
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
   if (!baseUrl) {
-    console.warn('[voice] FACBAL_API_URL not set — skipping budget image')
+    console.warn('[voice] NEXT_PUBLIC_BASE_URL not set — skipping budget image')
     return
   }
-  const imageUrl = `${baseUrl}/invoices/${invoiceId}/image`
+  const imageUrl = `${baseUrl.replace(/\/+$/, '')}/api/budget-image/${invoiceId}`
   try {
     await engineSendMedia({
       ...ctx,

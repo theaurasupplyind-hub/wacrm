@@ -1,0 +1,277 @@
+import { ImageResponse } from '@vercel/og'
+
+export const runtime = 'edge'
+
+const ACCENT = '#00C853'
+const CARD_WIDTH = 400
+
+function formatPrice(n: number): string {
+  const f = new Intl.NumberFormat('es-AR', { style: 'decimal', maximumFractionDigits: 0 })
+  return '$' + f.format(Math.round(n))
+}
+
+function formatCant(n: number): string {
+  return n === 0 ? '' : Number.isInteger(n) ? n.toString() : n.toString()
+}
+
+function receiptHeight(itemCount: number): number {
+  return 440 + itemCount * 52
+}
+
+interface InvoiceData {
+  id: number
+  numero_presupuesto: string | null
+  numero_factura: string
+  fecha: string
+  cliente_nombre: string
+  cliente_telefono: string | null
+  cliente_domicilio: string | null
+  total: number
+  envio: number
+  tipo: string
+  items: {
+    cantidad: number
+    descripcion: string
+    precio_unitario: number
+    total: number
+  }[]
+}
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params
+  const invoiceId = parseInt(id, 10)
+  if (isNaN(invoiceId)) {
+    return new Response('Invalid invoice ID', { status: 400 })
+  }
+
+  const facbalUrl = process.env.FACBAL_API_URL?.replace(/\/+$/, '')
+  const apiKey = process.env.FACBAL_API_KEY
+  if (!facbalUrl || !apiKey) {
+    return new Response('FacBal not configured', { status: 500 })
+  }
+
+  let inv: InvoiceData
+  try {
+    const res = await fetch(`${facbalUrl}/invoices/${invoiceId}`, {
+      headers: { 'X-API-Key': apiKey },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      return new Response('Invoice not found', { status: 404 })
+    }
+    inv = await res.json()
+  } catch {
+    return new Response('Failed to fetch invoice', { status: 502 })
+  }
+
+  const items = (inv.items || []).filter((i) => i.descripcion?.trim())
+  const envio = inv.envio || 0
+  const totalConEnvio = (inv.total || 0) + envio
+  const subtotal = inv.total || 0
+  const envDisplay = envio === 0 ? 'Sin cargo' : formatPrice(envio)
+
+  const isPresupuesto = inv.tipo === 'PRESUPUESTO'
+  const num = inv.numero_presupuesto || inv.numero_factura
+  const contacto = [inv.cliente_telefono, inv.cliente_domicilio].filter(Boolean).join(' ')
+
+  const height = receiptHeight(items.length)
+
+  return new ImageResponse(
+    (
+      <div
+        style={{
+          width: CARD_WIDTH,
+          height,
+          display: 'flex',
+          flexDirection: 'column',
+          fontFamily: 'sans-serif',
+          background: '#f5f5f5',
+          padding: 16,
+        }}
+      >
+        <div
+          style={{
+            background: '#fff',
+            borderRadius: 16,
+            padding: '24px 20px',
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+          }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: 20 }}>
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 800,
+                letterSpacing: 1,
+                color: '#1a1a1a',
+              }}
+            >
+              BASTIDORES GAL
+            </div>
+            <div
+              style={{
+                width: 40,
+                height: 3,
+                background: ACCENT,
+                borderRadius: 2,
+                margin: '8px auto',
+              }}
+            />
+            <div style={{ fontSize: 13, color: '#888' }}>
+              #{num} | {inv.fecha}
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: '#f8faf8',
+              borderRadius: 12,
+              padding: '12px 14px',
+              marginBottom: 16,
+              border: '1px solid #eef3ee',
+            }}
+          >
+            <div
+              style={{
+                fontWeight: 700,
+                fontSize: 15,
+                color: '#1a1a1a',
+                marginBottom: 2,
+              }}
+            >
+              {inv.cliente_nombre}
+            </div>
+            <div style={{ fontSize: 13, color: '#666' }}>{contacto}</div>
+          </div>
+
+          <div style={{ width: '100%', marginBottom: 12, fontSize: 13 }}>
+            <div
+              style={{
+                display: 'flex',
+                fontSize: 11,
+                fontWeight: 600,
+                color: '#999',
+                textTransform: 'uppercase',
+                paddingBottom: 6,
+                borderBottom: '1px solid #eee',
+              }}
+            >
+              <div style={{ width: '15%' }}>Cant</div>
+              <div style={{ flex: 1 }}>Detalle</div>
+              <div style={{ textAlign: 'right', width: '25%' }}>Total</div>
+            </div>
+
+            {items.map((item, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  padding: '6px 0',
+                  borderBottom: '1px solid #f5f5f5',
+                }}
+              >
+                <div
+                  style={{ width: '15%', verticalAlign: 'top' }}
+                >
+                  {formatCant(item.cantidad)}
+                </div>
+                <div style={{ flex: 1, verticalAlign: 'top' }}>
+                  <div>{item.descripcion}</div>
+                  <div style={{ fontSize: 11, color: '#999' }}>
+                    {formatPrice(item.precio_unitario)} c/u
+                  </div>
+                </div>
+                <div
+                  style={{
+                    textAlign: 'right',
+                    width: '25%',
+                    verticalAlign: 'top',
+                  }}
+                >
+                  {formatPrice(item.total)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div
+            style={{
+              border: 'none',
+              borderTop: '1px dashed #ddd',
+              margin: '8px 0',
+            }}
+          />
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              fontSize: 13,
+              padding: '3px 0',
+              fontWeight: 700,
+              color: '#1a1a1a',
+            }}
+          >
+            <span>Subtotal</span>
+            <span>{formatPrice(subtotal)}</span>
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              fontSize: 13,
+              padding: '3px 0',
+              color: '#555',
+            }}
+          >
+            <span>Envio</span>
+            <span>{envDisplay}</span>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: `2px solid ${ACCENT}`,
+            }}
+          >
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>
+              TOTAL A PAGAR
+            </span>
+            <span
+              style={{
+                fontSize: isPresupuesto ? 24 : 28,
+                fontWeight: 800,
+                color: ACCENT,
+              }}
+            >
+              {formatPrice(totalConEnvio)}
+            </span>
+          </div>
+
+          <div
+            style={{
+              textAlign: 'center',
+              marginTop: 16,
+              paddingTop: 12,
+              borderTop: '1px solid #f0f0f0',
+              fontSize: 11,
+              color: '#bbb',
+            }}
+          >
+            Presupuesto
+          </div>
+        </div>
+      </div>
+    ),
+    { width: CARD_WIDTH, height },
+  )
+}
