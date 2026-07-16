@@ -5,6 +5,28 @@ export const runtime = 'edge'
 const ACCENT = '#00C853'
 const CARD_WIDTH = 400
 
+async function loadGoogleFont(
+  font: string,
+  weight: number,
+  text: string = '',
+): Promise<{ name: string; data: ArrayBuffer; weight: number; style: 'normal' }> {
+  const params = new URLSearchParams({
+    family: `${font}:wght@${weight}`,
+    display: 'swap',
+  })
+  if (text) params.set('text', text)
+  const css = await (
+    await fetch(`https://fonts.googleapis.com/css2?${params}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' },
+    })
+  ).text()
+  const match = css.match(/src:\s*url\(([^)]+)\)/)
+  if (!match) throw new Error(`Font ${font} ${weight} not found`)
+  const fontUrl = match[1]
+  const data = await fetch(fontUrl).then((r) => r.arrayBuffer())
+  return { name: font, data, weight, style: 'normal' as const }
+}
+
 function formatPrice(n: number): string {
   const f = new Intl.NumberFormat('es-AR', { style: 'decimal', maximumFractionDigits: 0 })
   return '$' + f.format(Math.round(n))
@@ -79,6 +101,11 @@ export async function GET(
 
   const height = receiptHeight(items.length)
 
+  const fontName = 'Noto Sans'
+  const fonts = await Promise.all(
+    [400, 600, 800].map((w) => loadGoogleFont(fontName, w)),
+  ) as { name: string; data: ArrayBuffer; weight: 400 | 600 | 800; style: 'normal' }[]
+
   return new ImageResponse(
     (
       <div
@@ -87,7 +114,7 @@ export async function GET(
           height,
           display: 'flex',
           flexDirection: 'column',
-          fontFamily: 'sans-serif',
+          fontFamily: fontName,
           background: '#f5f5f5',
           padding: 16,
         }}
@@ -175,9 +202,7 @@ export async function GET(
                   borderBottom: '1px solid #f5f5f5',
                 }}
               >
-                <div
-                  style={{ width: '15%', verticalAlign: 'top' }}
-                >
+                <div style={{ width: '15%', verticalAlign: 'top' }}>
                   {formatCant(item.cantidad)}
                 </div>
                 <div style={{ flex: 1, verticalAlign: 'top' }}>
@@ -272,6 +297,6 @@ export async function GET(
         </div>
       </div>
     ),
-    { width: CARD_WIDTH, height },
+    { width: CARD_WIDTH, height, fonts },
   )
 }
