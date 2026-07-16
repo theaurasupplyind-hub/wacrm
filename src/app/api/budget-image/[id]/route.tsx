@@ -51,9 +51,11 @@ export async function GET(
 
   const fonts = await Promise.all([400, 700, 800].map(w => loadGFont(FONT, w)))
 
+  const h = 340 + items.length * 48
+
   return new ImageResponse(
     <div style={{
-      width: W, height: 500,
+      width: W, height: h,
       display: 'flex', flexDirection: 'column',
       fontFamily: FONT, background: '#f5f5f5', padding: 16,
     }}>
@@ -62,17 +64,17 @@ export async function GET(
         padding: '24px 20px',
         display: 'flex', flexDirection: 'column', flex: 1,
       }}>
-        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 20 }}>
           <div style={{ fontSize: 20, fontWeight: 800, color: '#1a1a1a' }}>BASTIDORES GAL</div>
           <div style={{ width: 40, height: 3, background: ACCENT, margin: '8px auto' }} />
           <div style={{ fontSize: 14, color: '#888' }}>#{num} | {inv.fecha}</div>
         </div>
         <div style={{ fontSize: 16, fontWeight: 700, color: '#1a1a1a', marginBottom: 4 }}>{inv.cliente_nombre}</div>
         <div style={{ fontSize: 14, color: '#666', marginBottom: 16 }}>{contacto}</div>
-        {items.slice(0, 5).map((item: any, i: number) => (
+        {items.map((item: any, i: number) => (
           <div key={i} style={{ display: 'flex', padding: '4px 0', borderBottom: '1px solid #eee' }}>
             <div style={{ width: 40, fontSize: 13 }}>{item.cantidad}x</div>
-            <div style={{ flex: 1, fontSize: 13 }}>
+            <div style={{ flex: 1, fontSize: 13, display: 'flex', flexDirection: 'column' }}>
               <div>{item.descripcion}</div>
               <div style={{ fontSize: 11, color: '#999' }}>{$n(item.precio_unitario)} c/u</div>
             </div>
@@ -87,6 +89,6 @@ export async function GET(
         <div style={{ textAlign: 'center', marginTop: 20, fontSize: 11, color: '#bbb' }}>Presupuesto</div>
       </div>
     </div>,
-    { width: W, height: 500, fonts },
+    { width: W, height: h, fonts },
   )
 }
