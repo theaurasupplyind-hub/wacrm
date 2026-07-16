@@ -3,7 +3,7 @@ import { ImageResponse } from '@vercel/og'
 export const runtime = 'edge'
 
 const ACCENT = '#00C853'
-const W = 400
+const W = 800
 const FONT = 'Noto Sans'
 
 async function loadGFont(font: string, w: number) {
@@ -22,7 +22,7 @@ function $n(n: number): string {
 }
 
 function h(items: number): number {
-  return 340 + items * 52
+  return 680 + items * 104
 }
 
 export async function GET(
@@ -62,65 +62,65 @@ export async function GET(
     <div style={{
       width: W, height,
       display: 'flex', flexDirection: 'column',
-      fontFamily: FONT, background: '#f5f5f5', padding: 16,
+      fontFamily: FONT, background: '#f5f5f5', padding: 32,
     }}>
       <div style={{
-        background: '#fff', borderRadius: 16,
-        padding: '24px 20px', flex: 1,
+        background: '#fff', borderRadius: 32,
+        padding: '48px 40px', flex: 1,
         display: 'flex', flexDirection: 'column',
       }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 20 }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: '#1a1a1a', display: 'flex' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 40 }}>
+          <div style={{ fontSize: 40, fontWeight: 800, color: '#1a1a1a', display: 'flex' }}>
             BASTIDORES GAL
           </div>
           <div style={{
-            width: 40, height: 3, background: ACCENT, margin: '8px auto',
+            width: 80, height: 6, background: ACCENT, margin: '16px auto',
           }} />
-          <div style={{ fontSize: 14, color: '#888', display: 'flex' }}>
+          <div style={{ fontSize: 28, color: '#888', display: 'flex' }}>
             {`#${num} | ${inv.fecha}`}
           </div>
         </div>
 
         <div style={{
-          background: '#f8faf8', borderRadius: 12, padding: '12px 14px',
-          marginBottom: 16, border: '1px solid #eef3ee',
+          background: '#f8faf8', borderRadius: 24, padding: '24px 28px',
+          marginBottom: 32, border: '2px solid #eef3ee',
           display: 'flex', flexDirection: 'column',
         }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: '#1a1a1a', marginBottom: 2, display: 'flex' }}>
+          <div style={{ fontWeight: 700, fontSize: 30, color: '#1a1a1a', marginBottom: 4, display: 'flex' }}>
             {inv.cliente_nombre}
           </div>
-          <div style={{ fontSize: 13, color: '#666', display: 'flex' }}>
+          <div style={{ fontSize: 26, color: '#666', display: 'flex' }}>
             {contacto}
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', width: '100%', marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', width: '100%', marginBottom: 24 }}>
           <div style={{
-            display: 'flex', fontSize: 11, fontWeight: 600, color: '#999',
-            paddingBottom: 6, borderBottom: '1px solid #eee',
+            display: 'flex', fontSize: 22, fontWeight: 600, color: '#999',
+            paddingBottom: 12, borderBottom: '2px solid #eee',
           }}>
-            <div style={{ width: 48, display: 'flex' }}>Cant</div>
+            <div style={{ width: 96, display: 'flex' }}>Cant</div>
             <div style={{ flex: 1, display: 'flex' }}>Detalle</div>
-            <div style={{ width: 80, display: 'flex', justifyContent: 'flex-end' }}>Total</div>
+            <div style={{ width: 160, display: 'flex', justifyContent: 'flex-end' }}>Total</div>
           </div>
 
           {items.map((item: any, i: number) => (
             <div key={i} style={{
-              display: 'flex', padding: '6px 0',
-              borderBottom: '1px solid #f5f5f5',
+              display: 'flex', padding: '12px 0',
+              borderBottom: '2px solid #f5f5f5',
             }}>
-              <div style={{ width: 48, display: 'flex', fontSize: 13 }}>
+              <div style={{ width: 96, display: 'flex', fontSize: 26 }}>
                 {item.cantidad === 0 ? '' : `${item.cantidad}`}
               </div>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontSize: 13 }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontSize: 26 }}>
                 <div style={{ display: 'flex' }}>{item.descripcion}</div>
-                <div style={{ display: 'flex', fontSize: 11, color: '#999' }}>
+                <div style={{ display: 'flex', fontSize: 22, color: '#999' }}>
                   {`${$n(item.precio_unitario)} c/u`}
                 </div>
               </div>
               <div style={{
-                width: 80, display: 'flex', justifyContent: 'flex-end',
-                fontSize: 13, fontWeight: 600,
+                width: 160, display: 'flex', justifyContent: 'flex-end',
+                fontSize: 26, fontWeight: 600,
               }}>
                 {$n(item.total)}
               </div>
@@ -128,31 +128,33 @@ export async function GET(
           ))}
         </div>
 
-        <div style={{ display: 'flex', borderBottom: '1px solid #ddd', margin: '8px 0' }} />
+        <div style={{ display: 'flex', borderBottom: '2px solid #ddd', margin: '16px 0' }} />
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', fontWeight: 700, color: '#1a1a1a' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 26, padding: '6px 0', fontWeight: 700, color: '#1a1a1a' }}>
           <span>Subtotal</span>
           <span>{$n(subtotal)}</span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', color: '#555' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 26, padding: '6px 0', color: '#555' }}>
           <span>Envio</span>
           <span>{envio === 0 ? 'Sin cargo' : $n(envio)}</span>
         </div>
 
         <div style={{
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          marginTop: 12, paddingTop: 12,
-          borderTop: `2px solid ${ACCENT}`,
+          marginTop: 24, paddingTop: 24,
+          borderTop: `4px solid ${ACCENT}`,
         }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>TOTAL A PAGAR</span>
-          <span style={{ fontSize: 28, fontWeight: 800, color: ACCENT }}>{$n(total)}</span>
+          <span style={{ fontSize: 32, fontWeight: 700, color: '#222' }}>TOTAL A PAGAR</span>
+          <span style={{ fontSize: 56, fontWeight: 800, color: ACCENT, lineHeight: 1 }}>
+            {$n(total)}
+          </span>
         </div>
 
         <div style={{
           display: 'flex', justifyContent: 'center',
-          marginTop: 16, paddingTop: 12,
-          borderTop: '1px solid #f0f0f0',
-          fontSize: 11, color: '#bbb',
+          marginTop: 32, paddingTop: 24,
+          borderTop: '2px solid #f0f0f0',
+          fontSize: 22, color: '#bbb',
         }}>
           Presupuesto
         </div>
