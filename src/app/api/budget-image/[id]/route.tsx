@@ -4,36 +4,27 @@ export const runtime = 'edge'
 
 const ACCENT = '#00C853'
 const CARD_WIDTH = 400
+const FONT = 'Noto Sans'
 
 async function loadGoogleFont(
   font: string,
   weight: number,
-  text: string = '',
-): Promise<{ name: string; data: ArrayBuffer; weight: number; style: 'normal' }> {
-  const params = new URLSearchParams({
-    family: `${font}:wght@${weight}`,
-    display: 'swap',
-  })
-  if (text) params.set('text', text)
+): Promise<{ name: string; data: ArrayBuffer; weight: 400 | 600 | 800; style: 'normal' }> {
   const css = await (
-    await fetch(`https://fonts.googleapis.com/css2?${params}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' },
-    })
+    await fetch(
+      `https://fonts.googleapis.com/css2?family=${font}:wght@${weight}&display=swap`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' } },
+    )
   ).text()
   const match = css.match(/src:\s*url\(([^)]+)\)/)
   if (!match) throw new Error(`Font ${font} ${weight} not found`)
-  const fontUrl = match[1]
-  const data = await fetch(fontUrl).then((r) => r.arrayBuffer())
-  return { name: font, data, weight, style: 'normal' as const }
+  const data = await fetch(match[1]).then((r) => r.arrayBuffer())
+  return { name: font, data, weight: weight as 400 | 600 | 800, style: 'normal' as const }
 }
 
 function formatPrice(n: number): string {
   const f = new Intl.NumberFormat('es-AR', { style: 'decimal', maximumFractionDigits: 0 })
   return '$' + f.format(Math.round(n))
-}
-
-function formatCant(n: number): string {
-  return n === 0 ? '' : Number.isInteger(n) ? n.toString() : n.toString()
 }
 
 function receiptHeight(itemCount: number): number {
@@ -81,9 +72,7 @@ export async function GET(
       headers: { 'X-API-Key': apiKey },
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) {
-      return new Response('Invoice not found', { status: 404 })
-    }
+    if (!res.ok) return new Response('Invoice not found', { status: 404 })
     inv = await res.json()
   } catch {
     return new Response('Failed to fetch invoice', { status: 502 })
@@ -93,28 +82,22 @@ export async function GET(
   const envio = inv.envio || 0
   const totalConEnvio = (inv.total || 0) + envio
   const subtotal = inv.total || 0
-  const envDisplay = envio === 0 ? 'Sin cargo' : formatPrice(envio)
-
-  const isPresupuesto = inv.tipo === 'PRESUPUESTO'
   const num = inv.numero_presupuesto || inv.numero_factura
   const contacto = [inv.cliente_telefono, inv.cliente_domicilio].filter(Boolean).join(' ')
 
-  const height = receiptHeight(items.length)
-
-  const fontName = 'Noto Sans'
   const fonts = await Promise.all(
-    [400, 600, 800].map((w) => loadGoogleFont(fontName, w)),
-  ) as { name: string; data: ArrayBuffer; weight: 400 | 600 | 800; style: 'normal' }[]
+    [400, 600, 800].map((w) => loadGoogleFont(FONT, w)),
+  )
 
   return new ImageResponse(
     (
       <div
         style={{
           width: CARD_WIDTH,
-          height,
+          height: receiptHeight(items.length),
           display: 'flex',
           flexDirection: 'column',
-          fontFamily: fontName,
+          fontFamily: FONT,
           background: '#f5f5f5',
           padding: 16,
         }}
@@ -130,14 +113,7 @@ export async function GET(
           }}
         >
           <div style={{ textAlign: 'center', marginBottom: 20 }}>
-            <div
-              style={{
-                fontSize: 20,
-                fontWeight: 800,
-                letterSpacing: 1,
-                color: '#1a1a1a',
-              }}
-            >
+            <div style={{ fontSize: 20, fontWeight: 800, color: '#1a1a1a' }}>
               BASTIDORES GAL
             </div>
             <div
@@ -145,7 +121,6 @@ export async function GET(
                 width: 40,
                 height: 3,
                 background: ACCENT,
-                borderRadius: 2,
                 margin: '8px auto',
               }}
             />
@@ -163,14 +138,7 @@ export async function GET(
               border: '1px solid #eef3ee',
             }}
           >
-            <div
-              style={{
-                fontWeight: 700,
-                fontSize: 15,
-                color: '#1a1a1a',
-                marginBottom: 2,
-              }}
-            >
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#1a1a1a', marginBottom: 2 }}>
               {inv.cliente_nombre}
             </div>
             <div style={{ fontSize: 13, color: '#666' }}>{contacto}</div>
@@ -183,7 +151,6 @@ export async function GET(
                 fontSize: 11,
                 fontWeight: 600,
                 color: '#999',
-                textTransform: 'uppercase',
                 paddingBottom: 6,
                 borderBottom: '1px solid #eee',
               }}
@@ -202,35 +169,23 @@ export async function GET(
                   borderBottom: '1px solid #f5f5f5',
                 }}
               >
-                <div style={{ width: '15%', verticalAlign: 'top' }}>
-                  {formatCant(item.cantidad)}
+                <div style={{ width: '15%' }}>
+                  {item.cantidad === 0 ? '' : Number.isInteger(item.cantidad) ? item.cantidad.toString() : item.cantidad.toString()}
                 </div>
-                <div style={{ flex: 1, verticalAlign: 'top' }}>
+                <div style={{ flex: 1 }}>
                   <div>{item.descripcion}</div>
                   <div style={{ fontSize: 11, color: '#999' }}>
                     {formatPrice(item.precio_unitario)} c/u
                   </div>
                 </div>
-                <div
-                  style={{
-                    textAlign: 'right',
-                    width: '25%',
-                    verticalAlign: 'top',
-                  }}
-                >
+                <div style={{ textAlign: 'right', width: '25%' }}>
                   {formatPrice(item.total)}
                 </div>
               </div>
             ))}
           </div>
 
-          <div
-            style={{
-              border: 'none',
-              borderTop: '1px dashed #ddd',
-              margin: '8px 0',
-            }}
-          />
+          <div style={{ borderBottom: '1px dashed #ddd', margin: '8px 0' }} />
 
           <div
             style={{
@@ -255,7 +210,7 @@ export async function GET(
             }}
           >
             <span>Envio</span>
-            <span>{envDisplay}</span>
+            <span>{envio === 0 ? 'Sin cargo' : formatPrice(envio)}</span>
           </div>
 
           <div
@@ -273,7 +228,7 @@ export async function GET(
             </span>
             <span
               style={{
-                fontSize: isPresupuesto ? 24 : 28,
+                fontSize: 28,
                 fontWeight: 800,
                 color: ACCENT,
               }}
@@ -297,6 +252,6 @@ export async function GET(
         </div>
       </div>
     ),
-    { width: CARD_WIDTH, height, fonts },
+    { width: CARD_WIDTH, height: receiptHeight(items.length), fonts },
   )
 }
