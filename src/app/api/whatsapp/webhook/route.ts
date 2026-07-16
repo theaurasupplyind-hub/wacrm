@@ -13,7 +13,7 @@ import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -708,6 +708,29 @@ async function saveVoiceContext(conversationId: string, result: VoiceOrderResult
   }
 }
 
+async function sendBudgetImage(
+  ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
+  invoiceId: number,
+) {
+  const baseUrl = process.env.FACBAL_API_URL?.replace(/\/+$/, '')
+  if (!baseUrl) {
+    console.warn('[voice] FACBAL_API_URL not set — skipping budget image')
+    return
+  }
+  const imageUrl = `${baseUrl}/invoices/${invoiceId}/image`
+  try {
+    await engineSendMedia({
+      ...ctx,
+      kind: 'image',
+      link: imageUrl,
+      caption: 'Presupuesto Bastidores GAL',
+    })
+    console.log('[voice] Budget image sent OK for invoice', invoiceId)
+  } catch (err) {
+    console.error('[voice] Budget image send failed:', err)
+  }
+}
+
 async function sendVoiceResponse(
   ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
   result: VoiceOrderResult,
@@ -716,7 +739,8 @@ async function sendVoiceResponse(
   if (result.pendingInvoice && result.pricing) {
     text = result.error || `💰 Total: $${result.pricing.total.toLocaleString('es-AR')}`
   } else if (result.invoice) {
-    text = `✅ Presupuesto ${result.invoice.numero} creado — ya lo ves en el programa`
+    text = `✅ Presupuesto ${result.invoice.numero} creado`
+    sendBudgetImage(ctx, result.invoice.id)
   } else if (result.error) {
     text = result.error
   } else {
