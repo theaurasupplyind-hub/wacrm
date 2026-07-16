@@ -22,7 +22,7 @@ function $n(n: number): string {
 }
 
 function h(items: number): number {
-  return 680 + items * 104
+  return 860 + items * 100
 }
 
 export async function GET(
