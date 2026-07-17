@@ -13,6 +13,7 @@ import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
+import { processExpenseMessage, looksLikeExpense } from '@/lib/expenses'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
@@ -807,7 +808,46 @@ async function handleVoiceText(args: {
     await sendVoiceResponse(sendCtx, result)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[voice] Text handler error:', msg)
+    console.error('[voice] Text error:', msg)
+  }
+}
+
+// ─── Expense helpers ───
+
+async function handleExpenseMessage(args: {
+  messageType: 'text' | 'audio' | 'image' | 'document'
+  text?: string | null
+  mediaId?: string | null
+  mimeType?: string | null
+  accessToken: string
+  senderPhone: string
+  senderName: string
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}) {
+  try {
+    const result = await processExpenseMessage({
+      db: supabaseAdmin(),
+      messageType: args.messageType,
+      text: args.text,
+      mediaId: args.mediaId,
+      mimeType: args.mimeType,
+      accessToken: args.accessToken,
+      senderPhone: args.senderPhone,
+      senderName: args.senderName,
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+    })
+    if (result.handled) {
+      console.log('[expense] handled conversation=%s expenseId=%s', args.conversationId, result.expenseId)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[expense] handler error:', msg)
   }
 }
 
@@ -974,6 +1014,9 @@ async function processMessage(
   // ask for clarification. Fire-and-forget so it never blocks the
   // webhook response or subsequent messages in the same batch.
   // ============================================================
+  const mediaCaption = message.image?.caption || message.document?.caption || ''
+  const mediaLooksLikeExpense = looksLikeExpense(mediaCaption)
+
   if (message.type === 'image' || message.type === 'document') {
     bgTasks.push(
       processVoucherMessage({
@@ -992,6 +1035,48 @@ async function processMessage(
       }).catch((err) => {
         console.error('[webhook] Voucher processing error:', err)
       })
+    )
+  }
+
+  // ============================================================
+  // Expense Bot: image or document with expense intent in caption.
+  // ============================================================
+  if ((message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense) {
+    bgTasks.push(
+      handleExpenseMessage({
+        messageType: message.type,
+        mediaId: message.image?.id || message.document?.id,
+        mimeType: message.image?.mime_type || message.document?.mime_type,
+        accessToken,
+        senderPhone: message.from,
+        senderName: contact.profile.name,
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+      }).catch((err) => console.error('[expense] Media error:', err))
+    )
+  }
+
+  // ============================================================
+  // Expense Bot: audio messages.
+  // Try expenses first; if it doesn't look like an expense, fall
+  // through to voice orders.
+  // ============================================================
+  if (message.type === 'audio' && message.audio?.id) {
+    bgTasks.push(
+      handleExpenseMessage({
+        messageType: 'audio',
+        mediaId: message.audio.id,
+        mimeType: message.audio.mime_type,
+        accessToken,
+        senderPhone: message.from,
+        senderName: contact.profile.name,
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+      }).catch((err) => console.error('[expense] Audio error:', err))
     )
   }
 
@@ -1105,6 +1190,24 @@ async function processMessage(
       contactId: contactRecord.id,
       configOwnerUserId,
     })
+  }
+
+  // Expense Bot: text messages.
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText)) {
+    console.log('[expense] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    bgTasks.push(
+      handleExpenseMessage({
+        messageType: 'text',
+        text: inboundText,
+        accessToken,
+        senderPhone: message.from,
+        senderName: contact.profile.name,
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+      }).catch((err) => console.error('[expense] Text error:', err))
+    )
   }
 
   // Voice order: text messages.

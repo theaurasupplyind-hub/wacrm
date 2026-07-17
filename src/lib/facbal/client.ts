@@ -405,3 +405,145 @@ export async function createInvoice(payload: {
 
   return res.json() as Promise<InvoiceCreatedResult>
 }
+
+// ─── Gastos ───
+
+export interface ExpenseCategory {
+  id: number
+  name: string
+  slug: string
+  color: string
+  icon: string
+  type: string
+  is_default: number
+  created_by: number | null
+  created_at: string
+}
+
+export interface Expense {
+  id: number
+  date: string
+  amount: number
+  description: string
+  category_id: number
+  provider_id: number | null
+  employee_id: number | null
+  payment_method: string
+  reference: string | null
+  source: string
+  created_by_user_id: number | null
+  created_by_contact_id: number | null
+  status: string
+  raw_input: string | null
+  media_url: string | null
+  media_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
+  const url = `${apiUrl()}/expense-categories`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar categorías${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as ExpenseCategory[]) : []
+}
+
+export async function createExpenseCategory(
+  payload: Omit<ExpenseCategory, 'id' | 'created_at'>,
+): Promise<ExpenseCategory> {
+  const url = `${apiUrl()}/expense-categories`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al crear categoría${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<ExpenseCategory>
+}
+
+export async function createExpense(
+  payload: Omit<Expense, 'id' | 'created_at' | 'updated_at'>,
+): Promise<Expense> {
+  const url = `${apiUrl()}/expenses`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al crear gasto${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<Expense>
+}
+
+export async function listExpenses(params?: {
+  from_date?: string
+  to_date?: string
+  category_id?: number
+  provider_id?: number
+  employee_id?: number
+  source?: string
+  status?: string
+  limit?: number
+}): Promise<Expense[]> {
+  const q = new URLSearchParams()
+  if (params?.from_date) q.set('from_date', params.from_date)
+  if (params?.to_date) q.set('to_date', params.to_date)
+  if (params?.category_id) q.set('category_id', String(params.category_id))
+  if (params?.provider_id) q.set('provider_id', String(params.provider_id))
+  if (params?.employee_id) q.set('employee_id', String(params.employee_id))
+  if (params?.source) q.set('source', params.source)
+  if (params?.status) q.set('status', params.status)
+  if (params?.limit) q.set('limit', String(params.limit))
+  const qs = q.toString()
+  const url = `${apiUrl()}/expenses${qs ? '?' + qs : ''}`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar gastos${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as Expense[]) : []
+}
+
+export async function migrateExpenses(): Promise<{ status: string; created: number }> {
+  const url = `${apiUrl()}/expenses/migrate`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al migrar gastos${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ status: string; created: number }>
+}
+
+// ─── Fin del archivo ───

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "node_modules/ecc-universal/skills/coding-standards/SKILL.md",
+    "node_modules/ecc-universal/skills/frontend-patterns/SKILL.md",
+    "node_modules/ecc-universal/skills/make-interfaces-feel-better/SKILL.md",
+    "node_modules/ecc-universal/skills/security-review/SKILL.md",
+    "node_modules/ecc-universal/skills/verification-loop/SKILL.md",
+    "node_modules/ecc-universal/skills/strategic-compact/SKILL.md"
+  ]
+}
