@@ -117,11 +117,16 @@ export interface VoucherReviewCreatePayload {
   extracted_referencia?: string | null
   extracted_banco?: string | null
   extracted_nombre_cliente?: string | null
+  extracted_nombre_origen?: string | null
+  extracted_nombre_destino?: string | null
   match_status: 'matched' | 'ambiguous' | 'no_match'
   matched_invoice_id?: number | null
   matched_invoice_numero?: string | null
   matched_cliente_nombre?: string | null
   matched_saldo_pendiente?: number | null
+  entity_type?: string | null
+  entity_id?: number | null
+  entity_name?: string | null
   candidatas: VoucherCandidatePayload[]
   media_mime_type: string
   media_base64: string
@@ -138,12 +143,22 @@ export interface MatchVoucherCandidate {
   score: number
 }
 
+export interface DestinationCandidate {
+  entity_type: 'PROVIDER' | 'EMPLOYEE'
+  entity_id: number
+  entity_name: string
+  score: number
+}
+
 export interface MatchVoucherResult {
-  candidates: MatchVoucherCandidate[]
+  invoice_candidates: MatchVoucherCandidate[]
+  destination_candidates: DestinationCandidate[]
 }
 
 export async function matchVoucherByName(args: {
   nombre_cliente?: string | null
+  nombre_origen?: string | null
+  nombre_destino?: string | null
   monto?: number | null
   tolerancia?: number
 }): Promise<MatchVoucherResult> {
@@ -153,6 +168,8 @@ export async function matchVoucherByName(args: {
     headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
     body: JSON.stringify({
       nombre_cliente: args.nombre_cliente ?? null,
+      nombre_origen: args.nombre_origen ?? null,
+      nombre_destino: args.nombre_destino ?? null,
       monto: args.monto ?? null,
       tolerancia: args.tolerancia ?? 50,
     }),

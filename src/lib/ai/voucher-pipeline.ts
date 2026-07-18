@@ -8,7 +8,7 @@ import {
   matchVoucherByName,
   createVoucherReview,
 } from '../facbal/client'
-import type { MatchVoucherCandidate } from '../facbal/client'
+import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
 const MEDIA_TIMEOUT_MS = 15_000
 
@@ -125,11 +125,16 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           extracted_referencia: ctx.pendingExtraction?.referencia ?? null,
           extracted_banco: ctx.pendingExtraction?.banco ?? null,
           extracted_nombre_cliente: ctx.pendingExtraction?.nombre_cliente ?? null,
+          extracted_nombre_origen: ctx.pendingExtraction?.nombre_origen ?? null,
+          extracted_nombre_destino: ctx.pendingExtraction?.nombre_destino ?? null,
           match_status: 'matched' as const,
           matched_invoice_id: chosen.invoice_id,
           matched_invoice_numero: chosen.numero_factura,
           matched_cliente_nombre: chosen.cliente_nombre,
           matched_saldo_pendiente: chosen.saldo_pendiente,
+          entity_type: null,
+          entity_id: null,
+          entity_name: null,
           candidatas: ctx.pendingCandidates.map((c) => ({
             invoice_id: c.invoice_id,
             numero_factura: c.numero_factura,
@@ -223,12 +228,16 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let extractedReference: string | null = null
   let extractedBank: string | null = null
   let extractedNombreCliente: string | null = null
+  let extractedNombreOrigen: string | null = null
+  let extractedNombreDestino: string | null = null
   let matchStatus: MatchStatus = 'no_match'
   let matchedInvoiceId: number | null = null
   let matchedInvoiceNumero: string | null = null
   let matchedClienteNombre: string | null = null
   let matchedSaldoPendiente: number | null = null
+  let bestDestination: DestinationCandidate | null = null
   let candidates: MatchVoucherCandidate[] = []
+  let destCandidates: DestinationCandidate[] = []
   let mensajeRespuesta: string
   let errorMessage: string | null = null
 
@@ -244,9 +253,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     extractedReference = voucher.referencia
     extractedBank = voucher.banco
     extractedNombreCliente = voucher.nombre_cliente
+    extractedNombreOrigen = voucher.nombre_origen
+    extractedNombreDestino = voucher.nombre_destino
     console.log(
-      '[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s nombre=%s',
-      voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente,
+      '[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s nombre=%s origen=%s destino=%s',
+      voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino,
     )
 
     // STEP 3 — Extracted, now match by name + amount
@@ -258,11 +269,14 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     try {
       const result = await matchVoucherByName({
         nombre_cliente: voucher.nombre_cliente,
+        nombre_origen: voucher.nombre_origen,
+        nombre_destino: voucher.nombre_destino,
         monto: voucher.monto,
         tolerancia: 50,
       })
-      candidates = result.candidates || []
-      console.log('[voucher] matchVoucherByName returned %d candidates', candidates.length)
+      candidates = result.invoice_candidates || []
+      destCandidates = result.destination_candidates || []
+      console.log('[voucher] matchVoucherByName: %d invoice candidates, %d destination candidates', candidates.length, destCandidates.length)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[voucher] MATCH_API failed:', msg)
@@ -270,11 +284,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
 
     // STEP 4 — Determine match
-    const match = matchVoucher({ voucher, candidates })
+    const match = matchVoucher({ voucher, candidates, destinationCandidates: destCandidates })
     matchStatus = match.status
     matchedInvoiceId = match.matchedInvoiceId
+    bestDestination = match.bestDestination
     mensajeRespuesta = match.mensajeRespuesta
-    console.log('[voucher] Match result: status=%s', match.status)
+    console.log('[voucher] Match result: status=%s bestDest=%s', match.status, bestDestination?.entity_name || 'none')
 
     const matchedInfo = pickBestMatch(match.candidatas)
     if (matchedInfo) {
@@ -306,11 +321,16 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         extracted_referencia: extractedReference,
         extracted_banco: extractedBank,
         extracted_nombre_cliente: extractedNombreCliente,
+        extracted_nombre_origen: extractedNombreOrigen,
+        extracted_nombre_destino: extractedNombreDestino,
         match_status: stageStatus,
         matched_invoice_id: matchedInvoiceId,
         matched_invoice_numero: matchedInvoiceNumero,
         matched_cliente_nombre: matchedClienteNombre,
         matched_saldo_pendiente: matchedSaldoPendiente,
+        entity_type: bestDestination?.entity_type ?? null,
+        entity_id: bestDestination?.entity_id ?? null,
+        entity_name: bestDestination?.entity_name ?? null,
         candidatas: candidates.map((c) => ({
           invoice_id: c.invoice_id,
           numero_factura: c.numero_factura,
@@ -341,6 +361,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         referencia: extractedReference,
         banco: extractedBank,
         nombre_cliente: extractedNombreCliente,
+        nombre_origen: extractedNombreOrigen,
+        nombre_destino: extractedNombreDestino,
       },
       pendingCandidates: candidates,
       awaitingConfirmation: true,

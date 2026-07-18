@@ -1,5 +1,5 @@
 import type { VoucherData } from './voucher-extraction'
-import type { MatchVoucherCandidate } from '../facbal/client'
+import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
 const SCORE_MATCHED = 0.5
 
@@ -10,6 +10,7 @@ export interface MatchResult {
   mensajeRespuesta: string
   matchedInvoiceId: number | null
   candidatas: MatchVoucherCandidate[]
+  bestDestination: DestinationCandidate | null
 }
 
 function formatMonto(n: number): string {
@@ -17,66 +18,76 @@ function formatMonto(n: number): string {
 }
 
 /**
- * Match a voucher's extracted data against candidate invoices from the API.
+ * Match a voucher's extracted data against candidate invoices and destinations.
+ * Invoice candidates are matched by nombre_origen (quien paga).
+ * Destination candidates are matched by nombre_destino (quien cobra).
  * candidates should already be sorted by score descending.
  */
 export function matchVoucher(args: {
   voucher: VoucherData
   candidates: MatchVoucherCandidate[]
+  destinationCandidates: DestinationCandidate[]
 }): MatchResult {
-  const { voucher, candidates } = args
-  const nombreCliente = voucher.nombre_cliente?.trim() || null
+  const { voucher, candidates, destinationCandidates } = args
+  const nombreOrigen = voucher.nombre_origen?.trim() || voucher.nombre_cliente?.trim() || null
+  const nombreDestino = voucher.nombre_destino?.trim() || null
+
+  // Best destination by score
+  const bestDest = destinationCandidates.length > 0
+    ? destinationCandidates.reduce((a, b) => (a.score >= b.score ? a : b))
+    : null
 
   if (candidates.length === 0) {
+    const msg = nombreOrigen
+      ? `Buscamos facturas para "${nombreOrigen}" pero no encontramos ninguna pendiente que coincida con el monto. Un agente revisará tu comprobante.`
+      : 'No encontramos facturas pendientes que coincidan con el comprobante. Un agente lo revisará.'
     return {
       status: 'no_match',
-      mensajeRespuesta:
-        nombreCliente
-          ? `Buscamos facturas para "${nombreCliente}" pero no encontramos ninguna pendiente que coincida con el monto. Un agente revisará tu comprobante.`
-          : 'No encontramos facturas pendientes que coincidan con el comprobante. Un agente lo revisará.',
+      mensajeRespuesta: msg,
       matchedInvoiceId: null,
       candidatas: [],
+      bestDestination: bestDest,
     }
   }
 
-  // Filter candidates that actually match the monto within tolerance
   const monto = voucher.monto
   const byScore = [...candidates].sort((a, b) => b.score - a.score)
   const best = byScore[0]
-
-  // If best candidate has good score and monto is within tolerance (or no monto needed)
   const montoOk = monto === null || monto <= 0 || Math.abs(monto - best.saldo_pendiente) <= 50
 
   if (best.score >= SCORE_MATCHED && montoOk) {
+    const destMsg = bestDest
+      ? ` El destino es ${bestDest.entity_type === 'PROVIDER' ? 'Proveedor' : 'Empleado'}: ${bestDest.entity_name}.`
+      : ''
+    const msg = nombreOrigen
+      ? `Gracias ${nombreOrigen}. Tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} corresponde a ${best.cliente_nombre} — Factura ${best.numero_factura} (saldo: ${formatMonto(best.saldo_pendiente)}).${destMsg} Lo estamos procesando.`
+      : `Registramos tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} para ${best.cliente_nombre} — Factura ${best.numero_factura}.${destMsg} Lo estamos procesando.`
     return {
       status: 'matched',
-      mensajeRespuesta:
-        nombreCliente
-          ? `Gracias ${nombreCliente}. Tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} corresponde a ${best.cliente_nombre} — Factura ${best.numero_factura} (saldo: ${formatMonto(best.saldo_pendiente)}). Lo estamos procesando.`
-          : `Registramos tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} para ${best.cliente_nombre} — Factura ${best.numero_factura}. Lo estamos procesando.`,
+      mensajeRespuesta: msg,
       matchedInvoiceId: best.invoice_id,
       candidatas: [best],
+      bestDestination: bestDest,
     }
   }
 
-  // Too many close matches — ambiguous
+  // Ambiguous
   const lineas = byScore.map(
     (c, i) =>
       `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
   )
-
   const intro =
-    nombreCliente && byScore.some((c) => c.score > 0.2)
-      ? `Encontramos diferentes clientes con saldos y nombres parecidos a "${nombreCliente}". ¿Cuál es correcto?`
+    nombreOrigen && byScore.some((c) => c.score > 0.2)
+      ? `Encontramos diferentes clientes con saldos y nombres parecidos a "${nombreOrigen}". ¿Cuál es correcto?`
       : monto && monto > 0
-        ? `Encontramos varias facturas con saldo cercano a ${formatMonto(monto)}. ¿A cuáles corresponde tu pago?`
+        ? `Encontramos varias facturas con saldo cercano a ${formatMonto(monto)}. ¿A cuál corresponde tu pago?`
         : 'No pudimos identificar el cliente o el monto. Decinos el número de factura o el nombre del cliente.'
 
   return {
     status: 'ambiguous',
-    mensajeRespuesta:
-      intro + '\n\n' + lineas.join('\n') + '\n\nRespondé con el número de factura o el nombre completo.',
+    mensajeRespuesta: intro + '\n\n' + lineas.join('\n') + '\n\nRespondé con el número de factura o el nombre completo.',
     matchedInvoiceId: null,
     candidatas: byScore,
+    bestDestination: bestDest,
   }
 }

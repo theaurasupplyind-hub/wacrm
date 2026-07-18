@@ -9,6 +9,8 @@ export interface VoucherData {
   referencia: string | null
   banco: string | null
   nombre_cliente: string | null
+  nombre_origen: string | null
+  nombre_destino: string | null
 }
 
 interface OpenRouterContentPart {
@@ -184,6 +186,12 @@ function parseVoucherJson(raw: string): VoucherData {
     nombre_cliente: typeof parsed.nombre_cliente === 'string' && parsed.nombre_cliente.trim()
       ? parsed.nombre_cliente.trim()
       : null,
+    nombre_origen: typeof parsed.nombre_origen === 'string' && parsed.nombre_origen.trim()
+      ? parsed.nombre_origen.trim()
+      : null,
+    nombre_destino: typeof parsed.nombre_destino === 'string' && parsed.nombre_destino.trim()
+      ? parsed.nombre_destino.trim()
+      : null,
   }
 }
 
@@ -195,13 +203,16 @@ Devolvé EXCLUSIVAMENTE un JSON sin texto adicional, con este formato:
   "fecha": string (ej: "15/03/2026", null si no se ve),
   "referencia": string (número de operación, comprobante o referencia, null si no se ve),
   "banco": string (nombre del banco o billetera, null si no se ve),
-  "nombre_cliente": string (nombre del remitente o cliente que aparece en el comprobante, null si no se ve)
+  "nombre_cliente": string (nombre del remitente o cliente que aparece en el comprobante, null si no se ve),
+  "nombre_origen": string (nombre de QUIEN PAGÓ, el que aparece después de "DE" o como remitente, null si no se ve),
+  "nombre_destino": string (nombre de QUIEN COBRÓ, el que aparece después de "PARA" o como beneficiario, null si no se ve)
 }
 
 Reglas:
 - Si un campo no se distingue claramente, poné null.
 - No inventes datos si la imagen está borrosa o no se lee bien.
-- El monto debe ser solo el número, sin símbolos ni texto.`
+- El monto debe ser solo el número, sin símbolos ni texto.
+- Distinguí correctamente entre origen (quien paga) y destino (quien cobra).`
 
 export async function extractVoucherData(args: {
   base64: string
