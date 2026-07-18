@@ -611,6 +611,31 @@ export interface Employee {
   base_salary: number
 }
 
+export interface AttendanceRecord {
+  employee_id: number
+  date: string
+  status: string
+}
+
+export async function createAttendance(
+  record: AttendanceRecord,
+): Promise<{ id: number } & AttendanceRecord> {
+  const url = `${apiUrl()}/attendance`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify(record),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al registrar asistencia${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ id: number } & AttendanceRecord>
+}
+
 export async function listProviders(): Promise<Provider[]> {
   const url = `${apiUrl()}/providers`
   const res = await fetch(url, {

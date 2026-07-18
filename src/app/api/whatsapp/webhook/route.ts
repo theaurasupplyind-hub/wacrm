@@ -14,6 +14,7 @@ import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
+import { processAttendanceMessage, looksLikeAttendance } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
@@ -813,6 +814,35 @@ async function handleVoiceText(args: {
   }
 }
 
+// ─── Attendance helpers ───
+
+async function handleAttendanceMessage(args: {
+  text: string
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}): Promise<boolean> {
+  try {
+    const result = await processAttendanceMessage({
+      text: args.text,
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+    })
+    if (result.handled) {
+      console.log('[attendance] handled conversation=%s employee=%s', args.conversationId, result.employeeName)
+      return true
+    }
+    return false
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[attendance] handler error:', msg)
+    return false
+  }
+}
+
 // ─── Expense helpers ───
 
 async function handleExpenseMessage(args: {
@@ -1242,6 +1272,27 @@ async function processMessage(
     )
   }
 
+  // Attendance: text messages with arrival intent
+  const isAttendanceText = !flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText && looksLikeAttendance(inboundText)
+  if (isAttendanceText) {
+    console.log('[attendance] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    bgTasks.push(
+      (async () => {
+        try {
+          await handleAttendanceMessage({
+            text: inboundText,
+            accountId,
+            userId: configOwnerUserId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+          })
+        } catch (err) {
+          console.error('[attendance] Text error:', err)
+        }
+      })()
+    )
+  }
+
   // Voucher context: text reply to ambiguous voucher (debe ir antes que Voice Orders)
   if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
     console.log('[voucher] text dispatch (context reply) -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
@@ -1271,7 +1322,7 @@ async function processMessage(
     )
   }
 
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText && !isAttendanceText) {
     console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
       handleVoiceText({
