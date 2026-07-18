@@ -113,11 +113,10 @@ function detectPaymentMethod(text: string): { method: string | null; remaining: 
 
 function detectSplitPayments(text: string): { payments: PaymentSplit[] | null; remaining: string } {
   // "965.167,69 por transferencia y 450.000 en efectivo"
+  // "$965.167,69 por transferencia y 450.000 en efectivo"
   // "450.000 en efectivo y 965.167 por transferencia"
-  // Buscamos dos montos con métodos de pago entre ellos
-  const numPattern = '(\\d[\\d.,]+)'
+  const numPattern = '(\\$?\\s*\\d[\\d.,]*)'
   const methodPattern = '(por|en)\\s+(transferencia|efectivo|transferi|transferí|debito|débito|credito|crédito|qr|mercado\\s+pago|mp)'
-  // ($X por/en metodo) y ($Y por/en metodo)
   const fullPattern = new RegExp(
     `${numPattern}\\s*${methodPattern}\\s+y\\s+${numPattern}\\s*${methodPattern}`,
     'i'
@@ -125,9 +124,10 @@ function detectSplitPayments(text: string): { payments: PaymentSplit[] | null; r
   const match = text.match(fullPattern)
   if (!match) return { payments: null, remaining: text }
 
-  const amount1 = parseNumber(match[1])
+  const cleanNum = (s: string) => s.replace(/[$\s]/g, '')
+  const amount1 = parseNumber(cleanNum(match[1]))
   const method1Raw = match[3].toLowerCase()
-  const amount2 = parseNumber(match[4])
+  const amount2 = parseNumber(cleanNum(match[4]))
   const method2Raw = match[6].toLowerCase()
 
   if (!amount1 || !amount2) return { payments: null, remaining: text }
@@ -144,6 +144,17 @@ function detectSplitPayments(text: string): { payments: PaymentSplit[] | null; r
     ],
     remaining: text.replace(match[0], ' ').replace(/\s+/g, ' ').trim(),
   }
+}
+
+/**
+ * Remueve frases de saldo ("El saldo en transferencia es 4.000.000...")
+ * para que no interfieran con la detección de montos del gasto.
+ */
+function stripSaldoStatements(text: string): string {
+  return text
+    .replace(/\.?\s*(?:el\s+)?saldo\s+(?:en\s+\w+\s+)?(?:es|de)\s+[\d.,\s$]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function detectEntity(text: string): { provider: string | null; employee: string | null; remaining: string } {
@@ -305,6 +316,9 @@ export function parseExpense(text: string): ParsedExpense {
   date = parsedDate.date
   remaining = parsedDate.remaining
 
+  // Remover frases de saldo para que no contaminen montos
+  remaining = stripSaldoStatements(remaining)
+
   // Detectar split payments antes de extraer monto individual
   let payments: PaymentSplit[] | null = null
   let splitResult = detectSplitPayments(remaining)
@@ -335,7 +349,9 @@ export function parseExpense(text: string): ParsedExpense {
   const normalizedRemaining = normalize(remaining)
   let description = normalizedRemaining
     .replace(/\b(gaste|gasto|pague|pago|compre|compra|paguemos|gastamos|compramos|deposite|deposito|transferi|transfiera|costo|cuesto|pagamos|pagaste|debemos|adeudamos|debo|pagar|puse|puso)\b/gi, ' ')
-    .replace(/\b(hoy|le|a|de|el|la|los|las|del|al|por|para|con|en|un|una|unos|unas|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/gi, ' ')
+    .replace(/\b(hoy|le|a|de|el|la|los|las|del|al|por|para|con|en|un|una|unos|unas|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|saldo)\b/gi, ' ')
+    .replace(/\b\d{4,}\b/g, ' ')
+    .replace(/[.\s]{2,}/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 
@@ -343,10 +359,20 @@ export function parseExpense(text: string): ParsedExpense {
     description = category || 'Gasto'
   }
 
+  // Inferir categoría según contexto cuando no se detectó
+  let finalCategory = category
+  if (!finalCategory && provider) {
+    finalCategory = normalized.includes('debemos') || normalized.includes('adeudamos') || normalized.includes('deuda')
+      ? 'Compra a proveedor'
+      : 'Pago a proveedor'
+  } else if (!finalCategory && employee) {
+    finalCategory = 'Sueldos y salarios'
+  }
+
   return {
     amount,
     description: description.charAt(0).toUpperCase() + description.slice(1),
-    category,
+    category: finalCategory,
     provider,
     employee,
     payment_method,

@@ -24,12 +24,27 @@ function tokenScore(a: string, b: string): number {
   const nb = normalize(b)
   if (!na || !nb) return 0
   if (na === nb) return 1
-  if (na.startsWith(nb) || nb.startsWith(na)) return 0.9
-  if (na.includes(nb) || nb.includes(na)) return 0.8
+  if (na.startsWith(nb) || nb.startsWith(na)) return 0.95
+  if (na.includes(nb) || nb.includes(na)) return 0.85
+
   const tokensA = na.split(' ')
   const tokensB = nb.split(' ')
-  const common = tokensA.filter(t => tokensB.some(bt => bt.includes(t) || t.includes(bt)))
-  return common.length / Math.max(tokensA.length, tokensB.length)
+
+  // Intentar con tallo (sin plural español)
+  const stem = (w: string) => w.endsWith('s') ? w.slice(0, -1) : w
+  const matchToken = (ta: string, tb: string) =>
+    ta === tb || stem(ta) === stem(tb) || ta.includes(tb) || tb.includes(ta)
+
+  const common = tokensA.filter(t => tokensB.some(bt => matchToken(t, bt)))
+  const score = common.length / Math.max(tokensA.length, tokensB.length)
+
+  // Si al menos 1 token matchea fuerte (includes), dar bonus
+  const strongMatch = tokensA.some(t => tokensB.some(bt => t.includes(bt) || bt.includes(t)))
+  if (strongMatch && score > 0) {
+    return Math.min(score + 0.2, 0.95)
+  }
+
+  return score
 }
 
 function slugify(name: string): string {

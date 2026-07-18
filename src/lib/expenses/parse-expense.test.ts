@@ -118,3 +118,16 @@ describe('fuel expense', () => {
     expect(result.description!.toLowerCase()).toContain('fiorino')
   })
 })
+
+describe('real-world message with saldo', () => {
+  it('parses payment correctly ignoring saldo statement', () => {
+    const msg = 'Hoy le pagamos a la madera $965.167,69 por transferencia y 450.000 en efectivo. El saldo en transferencia es 4.000.000 y el saldo en efectivo es 1.261.792,27'
+    const result = parseExpense(msg)
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(1415167.69)
+    expect(result.provider).toBe('la madera')
+    expect(result.payments).toHaveLength(2)
+    expect(result.payments![0].amount).toBe(965167.69)
+    expect(result.payments![1].amount).toBe(450000)
+  })
+})
