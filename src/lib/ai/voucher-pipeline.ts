@@ -292,8 +292,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       'Gracias por tu comprobante. No pudimos leerlo automáticamente. Un agente lo revisará y te confirmará el pago.'
   }
 
-  // STEP 5 — If matched → stage. If ambiguous → save context + ask.
-  if (matchStatus === 'matched') {
+  // STEP 5 — Stage to backend_gal for ALL statuses (matched, ambiguous, no_match)
+  // so they appear in the FacGal review panel. Only ambiguous also saves context
+  // for multi-turn follow-up.
+  async function stageVoucher(stageStatus: MatchStatus): Promise<void> {
     try {
       const payload = {
         source_message_id: message.id,
@@ -304,7 +306,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         extracted_referencia: extractedReference,
         extracted_banco: extractedBank,
         extracted_nombre_cliente: extractedNombreCliente,
-        match_status: 'matched' as const,
+        match_status: stageStatus,
         matched_invoice_id: matchedInvoiceId,
         matched_invoice_numero: matchedInvoiceNumero,
         matched_cliente_nombre: matchedClienteNombre,
@@ -320,14 +322,18 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         media_base64: mediaBase64,
       }
       await createVoucherReview(payload)
-      console.log('[voucher] Staged for manual review')
+      console.log('[voucher] Staged for manual review (status=%s)', stageStatus)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[voucher] STAGING failed:', msg)
       errorMessage = [errorMessage, `Staging: ${msg}`].filter(Boolean).join(' | ')
     }
-  } else if (matchStatus === 'ambiguous') {
-    // Save context for follow-up
+  }
+
+  await stageVoucher(matchStatus)
+
+  if (matchStatus === 'ambiguous') {
+    // Save context for follow-up multi-turn
     await saveVoucherContext(db, conversationId, {
       pendingExtraction: {
         monto: extractedAmount,
@@ -343,6 +349,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       sourceMessageId: message.id,
     })
     console.log('[voucher] Saved context, awaiting user clarification')
+  } else if (matchStatus !== 'no_match') {
+    // matched: clear context if any
+    await clearVoucherContext(db, conversationId)
   }
 
   await saveAttempt({

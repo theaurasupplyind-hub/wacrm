@@ -14,6 +14,7 @@ import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
+import { loadVoucherContext } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
@@ -916,6 +917,10 @@ async function processMessage(
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
   const hasPendingExpense = expenseCtx.stage === 'collecting' && !!expenseCtx.pendingExpense
 
+  // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
+  const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
+  const hasPendingVoucher = voucherCtx.awaitingConfirmation && voucherCtx.pendingCandidates.length > 0
+
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
@@ -1237,7 +1242,25 @@ async function processMessage(
     )
   }
 
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
+  // Voucher context: text reply to ambiguous voucher (debe ir antes que Voice Orders)
+  if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
+    console.log('[voucher] text dispatch (context reply) -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    bgTasks.push(
+      processVoucherMessage({
+        message: {
+          id: message.id,
+          from: message.from,
+          type: 'text',
+          text: inboundText,
+        },
+        accessToken,
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+      }).catch((err) => console.error('[voucher] Text context error:', err))
+    )
+  } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
     console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
       handleVoiceText({
