@@ -147,14 +147,48 @@ function detectSplitPayments(text: string): { payments: PaymentSplit[] | null; r
 }
 
 /**
- * Remueve frases de saldo ("El saldo en transferencia es 4.000.000...")
- * para que no interfieran con la detección de montos del gasto.
+ * Extrae datos de saldo/deuda restante ("El saldo en transferencia es 4.000.000...")
+ * Devuelve los splits de saldo y el texto sin ellos.
  */
-function stripSaldoStatements(text: string): string {
-  return text
-    .replace(/\.?\s*(?:el\s+)?saldo\s+(?:en\s+\w+\s+)?(?:es|de)\s+[\d.,\s$]+/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+function parseSaldoStatements(text: string): { saldo: PaymentSplit[] | null; remaining: string } {
+  const saldoPatterns = [
+    // "saldo en transferencia es 4.000.000 y saldo en efectivo es 1.261.792,27"
+    /(?:el\s+)?saldo\s+en\s+(transferencia|efectivo)\s+(?:es|de)\s+([\d.,]+)\s+y\s+(?:el\s+)?saldo\s+en\s+(transferencia|efectivo)\s+(?:es|de)\s+([\d.,]+)/i,
+    // "saldo en transferencia es 4.000.000" (simple)
+    /(?:el\s+)?saldo\s+en\s+(transferencia|efectivo)\s+(?:es|de)\s+([\d.,]+)/i,
+  ]
+
+  for (const pattern of saldoPatterns) {
+    const match = text.match(pattern)
+    if (!match) continue
+
+    if (match[3]) {
+      // Dos métodos: "saldo en X es A y saldo en Y es B"
+      const method1 = match[1].toLowerCase()
+      const amount1 = parseNumber(match[2])
+      const method2 = match[3].toLowerCase()
+      const amount2 = parseNumber(match[4])
+      if (!amount1 || !amount2) continue
+      return {
+        saldo: [
+          { amount: amount1, payment_method: PAYMENT_METHODS[method1] || method1 },
+          { amount: amount2, payment_method: PAYMENT_METHODS[method2] || method2 },
+        ],
+        remaining: text.replace(match[0], ' ').replace(/\s+/g, ' ').trim(),
+      }
+    }
+
+    // Un solo método
+    const method = match[1].toLowerCase()
+    const amount = parseNumber(match[2])
+    if (!amount) continue
+    return {
+      saldo: [{ amount, payment_method: PAYMENT_METHODS[method] || method }],
+      remaining: text.replace(match[0], ' ').replace(/\s+/g, ' ').trim(),
+    }
+  }
+
+  return { saldo: null, remaining: text }
 }
 
 function cleanEntityName(name: string): string {
@@ -322,8 +356,10 @@ export function parseExpense(text: string): ParsedExpense {
   date = parsedDate.date
   remaining = parsedDate.remaining
 
-  // Remover frases de saldo para que no contaminen montos
-  remaining = stripSaldoStatements(remaining)
+  // Extraer datos de saldo
+  let saldo: PaymentSplit[] | null = null
+  let saldoResult = parseSaldoStatements(remaining)
+  ;({ saldo, remaining } = saldoResult)
 
   // Detectar split payments antes de extraer monto individual
   let payments: PaymentSplit[] | null = null
@@ -383,6 +419,7 @@ export function parseExpense(text: string): ParsedExpense {
     employee,
     payment_method,
     payments: payments || undefined,
+    saldo: saldo || undefined,
     reference: null,
     date: date || todayString(),
     isExpenseIntent,

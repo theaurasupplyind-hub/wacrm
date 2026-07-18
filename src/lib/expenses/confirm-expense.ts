@@ -27,6 +27,19 @@ export function buildExpenseConfirmation(result: ExpenseExecutionResult): string
   }
   lines.push(`📝 ${result.description}`)
 
+  // Saldo/deuda restante
+  if (result.saldoResult && result.saldoResult.expenseId) {
+    lines.push('')
+    lines.push('📋 Deuda registrada (saldo pendiente):')
+    lines.push(`💰 $${result.saldoResult.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`)
+    if (result.saldoResult.payments && result.saldoResult.payments.length > 1) {
+      for (const p of result.saldoResult.payments) {
+        const label = p.payment_method === 'efectivo' ? 'Efectivo' : 'Transferencia'
+        lines.push(`   ${label}: $${p.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`)
+      }
+    }
+  }
+
   if (result.isNewCategory) {
     lines.push('Si querés corregir la categoría, escribí "corregir categoría".')
   }

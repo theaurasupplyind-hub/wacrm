@@ -100,6 +100,57 @@ export async function registrarPago(args: {
   return res.json() as Promise<PagoRegistrado>
 }
 
+export interface VoucherCandidatePayload {
+  invoice_id: number
+  numero_factura: string
+  saldo_pendiente: number
+  cliente_nombre?: string | null
+  fecha?: string | null
+}
+
+export interface VoucherReviewCreatePayload {
+  source_message_id?: string | null
+  wa_id: string
+  contact_name?: string | null
+  extracted_monto?: number | null
+  extracted_fecha?: string | null
+  extracted_referencia?: string | null
+  extracted_banco?: string | null
+  match_status: 'matched' | 'ambiguous' | 'no_match'
+  matched_invoice_id?: number | null
+  matched_invoice_numero?: string | null
+  matched_cliente_nombre?: string | null
+  matched_saldo_pendiente?: number | null
+  candidatas: VoucherCandidatePayload[]
+  media_mime_type: string
+  media_base64: string
+}
+
+export async function createVoucherReview(
+  payload: VoucherReviewCreatePayload,
+): Promise<{ status: string; id: number }> {
+  const url = `${apiUrl()}/voucher-reviews`
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...apiKeyHeader(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(40_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al crear voucher review${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  return res.json() as Promise<{ status: string; id: number }>
+}
+
 export async function buscarProductos(
   query: string,
 ): Promise<Producto[]> {

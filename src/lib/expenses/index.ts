@@ -1,13 +1,13 @@
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { parseExpense } from './parse-expense'
-import { fuzzyMatchExpense } from './fuzzy-match'
+import { fuzzyMatchExpense, resolveExpenseCategory } from './fuzzy-match'
 import { executeExpense } from './execute-expense'
 import { buildExpenseConfirmation } from './confirm-expense'
 import { transcribeExpense } from './transcribe-expense'
 import { extractExpenseData } from './extract-expense'
 import { loadExpenseContext, saveExpenseContext, clearExpenseContext } from './context'
-import type { ParsedExpense, ExpenseContextState } from './types'
+import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult, PaymentSplit, ExpenseContextState } from './types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export interface ProcessExpenseMessageArgs {
@@ -100,6 +100,45 @@ export async function processExpenseMessage(
       mediaUrl,
       mediaId: args.mediaId || null,
     })
+
+    // Si hay saldo y el primer gasto fue exitoso, crear segundo expense (compra/deuda)
+    if (parsed.saldo && parsed.saldo.length > 0 && result.expenseId && match.providerId) {
+      const saldoAmount = parsed.saldo.reduce((sum, s) => sum + s.amount, 0)
+      const compraCategory = await resolveExpenseCategory('Compra a proveedor')
+      if (compraCategory.categoryId) {
+        const saldoParsed: ParsedExpense = {
+          amount: saldoAmount,
+          description: `Saldo pendiente${match.providerName ? ` de ${match.providerName}` : ''}`,
+          category: 'Compra a proveedor',
+          provider: parsed.provider,
+          employee: null,
+          payment_method: parsed.saldo.length === 1 ? parsed.saldo[0].payment_method : null,
+          payments: parsed.saldo,
+          reference: null,
+          date: parsed.date || new Date().toISOString().slice(0, 10),
+          isExpenseIntent: true,
+          raw: parsed.raw,
+        }
+        const saldoMatch: ExpenseFuzzyMatch = {
+          categoryId: compraCategory.categoryId,
+          categoryName: 'Compra a proveedor',
+          categoryWasCreated: compraCategory.created,
+          providerId: match.providerId,
+          providerName: match.providerName,
+          employeeId: null,
+          employeeName: null,
+        }
+        const saldoResult = await executeExpense(saldoParsed, saldoMatch, {
+          source: 'whatsapp',
+          createdByContactId: parseInt(args.contactId, 10) || null,
+          mediaUrl,
+          mediaId: args.mediaId || null,
+        })
+        if (saldoResult.expenseId) {
+          result.saldoResult = saldoResult
+        }
+      }
+    }
 
     // Auditoría
     try {

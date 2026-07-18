@@ -5,7 +5,7 @@ import { extractVoucherData } from './voucher-extraction'
 import { matchVoucher, type MatchStatus } from './voucher-matching'
 import {
   getFacturasPendientes,
-  registrarPago,
+  createVoucherReview,
 } from '../facbal/client'
 import type { FacturaPendiente } from '../facbal/client'
 
@@ -115,6 +115,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let extractedBank: string | null = null
   let matchStatus: MatchStatus = 'no_match'
   let matchedInvoiceId: number | null = null
+  let matchedInvoiceNumero: string | null = null
+  let matchedClienteNombre: string | null = null
+  let matchedSaldoPendiente: number | null = null
+  let candidatas: FacturaPendiente[] = []
   let mensajeRespuesta: string
   let errorMessage: string | null = null
 
@@ -136,25 +140,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     await notify({ ...sendCtx, text: `Comprobante leído: monto ${montoStr}. Buscando tus facturas pendientes...` })
 
     console.log('[voucher] Querying FacBal for phone=%s', normalizedPhone.slice(-6))
-    let facturasPendientes: FacturaPendiente[]
+    let facturasPendientes: FacturaPendiente[] = []
     try {
       facturasPendientes = await getFacturasPendientes(normalizedPhone)
       console.log('[voucher] FacBal returned %d pending invoices', facturasPendientes.length)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[voucher] FACBAL_API failed:', msg)
-      await saveAttempt({
-        messageId: message.id,
-        contactId,
-        matchStatus: 'no_match',
-        extractedAmount,
-        extractedDate,
-        extractedReference,
-        extractedBank,
-        errorMessage: `FacBal API: ${msg}`,
-      })
-      await notify({ ...sendCtx, text: 'Error al consultar tus facturas. Un agente te contactará.' })
-      return
+      errorMessage = `FacBal API: ${msg}`
+      mensajeRespuesta = 'Recibimos tu comprobante y lo derivamos para validación manual.'
     }
 
     // STEP 4 — Invoices found
@@ -167,25 +161,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     const match = matchVoucher({ voucher, facturasPendientes })
     matchStatus = match.status
     matchedInvoiceId = match.matchedInvoiceId
+    candidatas = match.candidatas
+    if (matchedInvoiceId !== null) {
+      const matchedInvoice = facturasPendientes.find((f) => f.invoice_id === matchedInvoiceId)
+      matchedInvoiceNumero = matchedInvoice?.numero_factura ?? null
+      matchedClienteNombre = matchedInvoice?.cliente_nombre ?? null
+      matchedSaldoPendiente = matchedInvoice?.saldo_pendiente ?? null
+    }
     mensajeRespuesta = match.mensajeRespuesta
     console.log('[voucher] Match result: status=%s invoiceId=%s', match.status, match.matchedInvoiceId)
-
-    if (match.status === 'matched' && matchedInvoiceId !== null && voucher.monto !== null) {
-      try {
-        const fechaPago = voucher.fecha || new Date().toLocaleDateString('es-AR')
-        console.log('[voucher] Registering payment invoice=%d amount=%s', matchedInvoiceId, voucher.monto)
-        await registrarPago({
-          invoiceId: matchedInvoiceId,
-          monto: voucher.monto,
-          fecha: fechaPago,
-        })
-        console.log('[voucher] Payment registered OK')
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error('[voucher] FACBAL_PAYMENT failed:', msg)
-        errorMessage = `Pago registrado en FacBal falló: ${msg}`
-      }
-    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[voucher] EXTRACTION failed:', msg)
@@ -193,6 +177,45 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     matchStatus = 'no_match'
     mensajeRespuesta =
       'Gracias por tu comprobante. No pudimos leerlo automáticamente. Un agente lo revisará y te confirmará el pago.'
+  }
+
+  try {
+    const payload = {
+      source_message_id: message.id,
+      wa_id: normalizedPhone,
+      contact_name: null,
+      extracted_monto: extractedAmount,
+      extracted_fecha: extractedDate,
+      extracted_referencia: extractedReference,
+      extracted_banco: extractedBank,
+      match_status: matchStatus,
+      matched_invoice_id: matchedInvoiceId,
+      matched_invoice_numero: matchedInvoiceNumero,
+      matched_cliente_nombre: matchedClienteNombre,
+      matched_saldo_pendiente: matchedSaldoPendiente,
+      candidatas: candidatas.map((c) => ({
+        invoice_id: c.invoice_id,
+        numero_factura: c.numero_factura,
+        saldo_pendiente: c.saldo_pendiente,
+        cliente_nombre: c.cliente_nombre,
+        fecha: c.fecha,
+      })),
+      media_mime_type: mimeType,
+      media_base64: mediaBase64,
+    } as const
+
+    await createVoucherReview(payload)
+    console.log('[voucher] Voucher staged for manual review')
+    mensajeRespuesta =
+      'Recibimos tu comprobante y lo estamos validando manualmente. Te confirmamos en breve.'
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[voucher] STAGING failed:', msg)
+    errorMessage = [errorMessage, `Staging: ${msg}`].filter(Boolean).join(' | ')
+    if (!mensajeRespuesta) {
+      mensajeRespuesta =
+        'Recibimos tu comprobante pero hubo un problema técnico al guardarlo para revisión. Te contactaremos en breve.'
+    }
   }
 
   await saveAttempt({

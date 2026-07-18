@@ -6,6 +6,7 @@ export interface ParsedExpense {
   employee: string | null
   payment_method: string | null
   payments?: PaymentSplit[] | null  // split payments
+  saldo?: PaymentSplit[] | null    // saldo/deuda restante
   reference: string | null
   date: string | null // YYYY-MM-DD
   isExpenseIntent: boolean
@@ -35,6 +36,7 @@ export interface ExpenseExecutionResult {
   providerName: string | null
   employeeName: string | null
   payments?: PaymentSplit[] | null
+  saldoResult?: ExpenseExecutionResult | null  // segundo expense (saldo/deuda)
   status: string
   isNewCategory: boolean
   error?: string
