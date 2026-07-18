@@ -72,8 +72,21 @@ export async function registrarPago(args: {
   invoiceId: number
   monto: number
   fecha: string
+  entityType?: string | null
+  entityId?: number | null
 }): Promise<PagoRegistrado> {
   const url = `${apiUrl()}/payments`
+  const body: Record<string, unknown> = {
+    invoice_id: args.invoiceId,
+    amount: args.monto,
+    date: args.fecha,
+    method: 'Transferencia',
+    user_id: 0,
+  }
+  if (args.entityType && args.entityId) {
+    body.entity_type = args.entityType
+    body.entity_id = args.entityId
+  }
 
   const res = await fetch(url, {
     method: 'POST',
@@ -81,12 +94,7 @@ export async function registrarPago(args: {
       ...apiKeyHeader(),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      invoice_id: args.invoiceId,
-      amount: args.monto,
-      date: args.fecha,
-      method: 'Transferencia',
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   })
 
@@ -129,6 +137,7 @@ export interface VoucherReviewCreatePayload {
   entity_type?: string | null
   entity_id?: number | null
   entity_name?: string | null
+  review_status?: string | null
   candidatas: VoucherCandidatePayload[]
   media_mime_type: string
   media_base64: string

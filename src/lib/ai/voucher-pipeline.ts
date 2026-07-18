@@ -7,6 +7,7 @@ import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVouch
 import {
   matchVoucherByName,
   createVoucherReview,
+  registrarPago,
 } from '../facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
@@ -188,7 +189,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   }
 
   // STEP 1 — ACK for new media message
-  await notify({ ...sendCtx, text: 'Recibimos tu comprobante. Lo estamos procesando...' })
+  await notify({ ...sendCtx, text: 'Comprobante recibido, revisando, tomara un segundo...' })
 
   let mediaBase64: string
   let mimeType: string
@@ -240,8 +241,6 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   }
 
   // STEP 2 — Downloaded, now analyzing
-  await notify({ ...sendCtx, text: 'Analizando el comprobante con IA...' })
-
   let extractedAmount: number | null = null
   let extractedDate: string | null = null
   let extractedReference: string | null = null
@@ -284,11 +283,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     )
 
     // STEP 3 — Extracted, now match by name + amount
-    const montoStr = voucher.monto ? `$${voucher.monto.toLocaleString('es-AR')}` : '?'
     const nombreStr = voucher.nombre_cliente || 'desconocido'
-    await notify({ ...sendCtx, text: `Comprobante leído: ${nombreStr}, monto ${montoStr}. Buscando coincidencias...` })
-
-    console.log('[voucher] Calling matchVoucherByName nombre=%s monto=%s', nombreStr, montoStr)
+    console.log('[voucher] Calling matchVoucherByName nombre=%s monto=%s', nombreStr, voucher.monto)
     try {
       const result = await matchVoucherByName({
         nombre_cliente: voucher.nombre_cliente,
@@ -335,7 +331,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   // STEP 5 — Stage to backend_gal for ALL statuses (matched, ambiguous, no_match)
   // so they appear in the FacGal review panel. Only ambiguous also saves context
   // for multi-turn follow-up.
-  async function stageVoucher(stageStatus: MatchStatus): Promise<void> {
+  async function stageVoucher(stageStatus: MatchStatus, reviewStatus?: string): Promise<void> {
     try {
       const payload = {
         source_message_id: message.id,
@@ -351,6 +347,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         extracted_cbu_destino: extractedCbuDestino,
         extracted_cuit_destino: extractedCuitDestino,
         match_status: stageStatus,
+        review_status: reviewStatus,
         matched_invoice_id: matchedInvoiceId,
         matched_invoice_numero: matchedInvoiceNumero,
         matched_cliente_nombre: matchedClienteNombre,
@@ -377,7 +374,33 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
   }
 
-  await stageVoucher(matchStatus)
+  // Stage to backend_gal first
+  if (matchStatus === 'matched') {
+    await stageVoucher('matched', 'completed')
+  } else {
+    await stageVoucher(matchStatus)
+  }
+
+  // If matched, register the actual payment
+  if (matchStatus === 'matched' && matchedInvoiceId !== null && extractedAmount !== null && extractedAmount > 0) {
+    try {
+      const fechaPago = extractedDate || new Date().toISOString().slice(0, 10)
+      await registrarPago({
+        invoiceId: matchedInvoiceId,
+        monto: extractedAmount,
+        fecha: fechaPago,
+        entityType: bestDestination?.entity_type ?? null,
+        entityId: bestDestination?.entity_id ?? null,
+      })
+      console.log('[voucher] Payment registered OK invoice=%s amount=%s', matchedInvoiceId, extractedAmount)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[voucher] PAYMENT_FAILED:', msg)
+      errorMessage = [errorMessage, `Payment: ${msg}`].filter(Boolean).join(' | ')
+      // The review is staged as 'completed' but payment failed — let user know
+      mensajeRespuesta = 'Registramos el comprobante pero hubo un error al crear el pago. Un agente lo revisará.'
+    }
+  }
 
   if (matchStatus === 'ambiguous') {
     // Push to pending array for follow-up multi-turn
@@ -454,7 +477,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       console.error('[voucher] Auto-consume pending text error:', err)
     }
   } else if (matchStatus === 'matched') {
-    // Remove this message from pending if it was in the stack (e.g. from a previous run)
+    // Remove from pending stack if it was there (e.g. re-processed via context)
     await removePendingVoucher(db, conversationId, message.id)
   }
 
