@@ -14,7 +14,7 @@ import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
-import { loadVoucherContext } from '@/lib/ai/voucher-context'
+import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
@@ -919,7 +919,7 @@ async function processMessage(
 
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
-  const hasPendingVoucher = voucherCtx.awaitingConfirmation && voucherCtx.pendingCandidates.length > 0
+  const hasPendingVoucher = voucherCtx.pending.length > 0
 
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
@@ -1260,7 +1260,18 @@ async function processMessage(
         conversationId: conversation.id,
       }).catch((err) => console.error('[voucher] Text context error:', err))
     )
-  } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
+  } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
+    // No pending voucher context yet — store as pending text in case an image arrives soon
+    // The pipeline will auto-consume this if it creates an ambiguous context within 60s
+    console.log('[voucher] storing pending text -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    bgTasks.push(
+      pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
+        console.error('[voucher] pushPendingText error:', err),
+      ),
+    )
+  }
+
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
     console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
       handleVoiceText({

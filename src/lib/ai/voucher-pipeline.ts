@@ -3,7 +3,7 @@ import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
 import { matchVoucher, type MatchStatus } from './voucher-matching'
-import { loadVoucherContext, saveVoucherContext, clearVoucherContext } from './voucher-context'
+import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
   createVoucherReview,
@@ -102,33 +102,50 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
   console.log('[voucher] START msg_id=%s phone=%s type=%s', message.id, normalizedPhone.slice(-6), message.type)
 
-  // STEP 0 — Load context for multi-turn
+  // STEP 0 — Idempotencia: skip if this message was already processed
+  if (message.type !== 'text' && message.id) {
+    try {
+      const { data: existing } = await db
+        .from('voucher_extractions')
+        .select('message_id')
+        .eq('message_id', message.id)
+        .maybeSingle()
+      if (existing) {
+        console.log('[voucher] SKIP duplicate msg_id=%s', message.id)
+        return
+      }
+    } catch {
+      // table might not exist, continue anyway
+    }
+  }
+
+  // STEP 0b — Load context for multi-turn
   const ctx = await loadVoucherContext(db, conversationId)
 
-  // STEP 0b — If awaiting clarification and this is a text reply
-  if (ctx.awaitingConfirmation && ctx.pendingCandidates.length > 0 && (message.type === 'text' || message.text)) {
+  // STEP 0b — If there are pending items awaiting clarification and this is a text reply
+  const pendingItem = ctx.pending.length > 0 ? ctx.pending[0] : null
+  if (pendingItem && (message.type === 'text' || message.text)) {
     const userText = message.text || ''
-    console.log('[voucher] User reply to clarification: "%s"', userText)
-    const chosen = interpretUserResponse(userText, ctx.pendingCandidates)
+    console.log('[voucher] User reply to clarification: "%s" (pending msg=%s)', userText, pendingItem.sourceMessageId)
+    const chosen = interpretUserResponse(userText, pendingItem.candidates)
     if (chosen) {
-      const matched = pickBestMatch([chosen])
-      await clearVoucherContext(db, conversationId)
+      await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
 
       // Stage the confirmed match
       try {
         const payload = {
-          source_message_id: ctx.sourceMessageId || message.id,
+          source_message_id: pendingItem.sourceMessageId,
           wa_id: normalizedPhone,
           contact_name: null,
-          extracted_monto: ctx.pendingExtraction?.monto ?? null,
-          extracted_fecha: ctx.pendingExtraction?.fecha ?? null,
-          extracted_referencia: ctx.pendingExtraction?.referencia ?? null,
-          extracted_banco: ctx.pendingExtraction?.banco ?? null,
-          extracted_nombre_cliente: ctx.pendingExtraction?.nombre_cliente ?? null,
-          extracted_nombre_origen: ctx.pendingExtraction?.nombre_origen ?? null,
-          extracted_nombre_destino: ctx.pendingExtraction?.nombre_destino ?? null,
-          extracted_cbu_destino: ctx.pendingExtraction?.cbu_destino ?? null,
-          extracted_cuit_destino: ctx.pendingExtraction?.cuit_destino ?? null,
+          extracted_monto: pendingItem.extraction.monto ?? null,
+          extracted_fecha: pendingItem.extraction.fecha ?? null,
+          extracted_referencia: pendingItem.extraction.referencia ?? null,
+          extracted_banco: pendingItem.extraction.banco ?? null,
+          extracted_nombre_cliente: pendingItem.extraction.nombre_cliente ?? null,
+          extracted_nombre_origen: pendingItem.extraction.nombre_origen ?? null,
+          extracted_nombre_destino: pendingItem.extraction.nombre_destino ?? null,
+          extracted_cbu_destino: pendingItem.extraction.cbu_destino ?? null,
+          extracted_cuit_destino: pendingItem.extraction.cuit_destino ?? null,
           match_status: 'matched' as const,
           matched_invoice_id: chosen.invoice_id,
           matched_invoice_numero: chosen.numero_factura,
@@ -137,15 +154,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           entity_type: null,
           entity_id: null,
           entity_name: null,
-          candidatas: ctx.pendingCandidates.map((c) => ({
+          candidatas: pendingItem.candidates.map((c) => ({
             invoice_id: c.invoice_id,
             numero_factura: c.numero_factura,
             saldo_pendiente: c.saldo_pendiente,
             cliente_nombre: c.cliente_nombre,
             fecha: c.fecha,
           })),
-          media_mime_type: ctx.mediaMimeType || 'application/octet-stream',
-          media_base64: ctx.mediaBase64 || '',
+          media_mime_type: pendingItem.mediaMimeType,
+          media_base64: pendingItem.mediaBase64,
         }
         await createVoucherReview(payload)
         console.log('[voucher] Staged for review after user clarification')
@@ -159,7 +176,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         text: `Gracias. Confirmamos tu pago para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}. Un agente lo está verificando y pronto lo procesará.`,
       })
     } else {
-      const lines = ctx.pendingCandidates.map(
+      const lines = pendingItem.candidates.map(
         (c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
       )
       await notify({
@@ -363,9 +380,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   await stageVoucher(matchStatus)
 
   if (matchStatus === 'ambiguous') {
-    // Save context for follow-up multi-turn
-    await saveVoucherContext(db, conversationId, {
-      pendingExtraction: {
+    // Push to pending array for follow-up multi-turn
+    await addPendingVoucher(db, conversationId, {
+      sourceMessageId: message.id,
+      extraction: {
         monto: extractedAmount,
         fecha: extractedDate,
         referencia: extractedReference,
@@ -376,16 +394,68 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         cbu_destino: extractedCbuDestino,
         cuit_destino: extractedCuitDestino,
       },
-      pendingCandidates: candidates,
-      awaitingConfirmation: true,
+      candidates,
+      bestDestination,
       mediaBase64,
       mediaMimeType: mimeType,
-      sourceMessageId: message.id,
     })
-    console.log('[voucher] Saved context, awaiting user clarification')
-  } else if (matchStatus !== 'no_match') {
-    // matched: clear context if any
-    await clearVoucherContext(db, conversationId)
+    console.log('[voucher] Pushed to pending array, awaiting user clarification')
+
+    // Auto-consume any pending text that was stored before the context
+    try {
+      const pendingText = await consumePendingText(db, conversationId)
+      if (pendingText) {
+        console.log('[voucher] Auto-consuming pending text: "%s"', pendingText)
+        const autoChosen = interpretUserResponse(pendingText, candidates)
+        if (autoChosen) {
+          await removePendingVoucher(db, conversationId, message.id)
+          // Stage confirmed match (same logic as user confirmation block)
+          const payload = {
+            source_message_id: message.id,
+            wa_id: normalizedPhone,
+            contact_name: null,
+            extracted_monto: extractedAmount,
+            extracted_fecha: extractedDate,
+            extracted_referencia: extractedReference,
+            extracted_banco: extractedBank,
+            extracted_nombre_cliente: extractedNombreCliente,
+            extracted_nombre_origen: extractedNombreOrigen,
+            extracted_nombre_destino: extractedNombreDestino,
+            extracted_cbu_destino: extractedCbuDestino,
+            extracted_cuit_destino: extractedCuitDestino,
+            match_status: 'matched' as const,
+            matched_invoice_id: autoChosen.invoice_id,
+            matched_invoice_numero: autoChosen.numero_factura,
+            matched_cliente_nombre: autoChosen.cliente_nombre,
+            matched_saldo_pendiente: autoChosen.saldo_pendiente,
+            entity_type: bestDestination?.entity_type ?? null,
+            entity_id: bestDestination?.entity_id ?? null,
+            entity_name: bestDestination?.entity_name ?? null,
+            candidatas: candidates.map((c) => ({
+              invoice_id: c.invoice_id,
+              numero_factura: c.numero_factura,
+              saldo_pendiente: c.saldo_pendiente,
+              cliente_nombre: c.cliente_nombre,
+              fecha: c.fecha,
+            })),
+            media_mime_type: mimeType,
+            media_base64: mediaBase64,
+          }
+          await createVoucherReview(payload)
+          console.log('[voucher] Auto-resolved by pending text')
+          mensajeRespuesta = `Gracias. Tu pago para ${autoChosen.cliente_nombre} — Factura ${autoChosen.numero_factura} se está procesando.`
+          matchStatus = 'matched'
+        } else {
+          // Pending text didn't match, keep ambiguous state
+          console.log('[voucher] Pending text did not match any candidate')
+        }
+      }
+    } catch (err) {
+      console.error('[voucher] Auto-consume pending text error:', err)
+    }
+  } else if (matchStatus === 'matched') {
+    // Remove this message from pending if it was in the stack (e.g. from a previous run)
+    await removePendingVoucher(db, conversationId, message.id)
   }
 
   await saveAttempt({
