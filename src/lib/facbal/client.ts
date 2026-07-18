@@ -116,6 +116,7 @@ export interface VoucherReviewCreatePayload {
   extracted_fecha?: string | null
   extracted_referencia?: string | null
   extracted_banco?: string | null
+  extracted_nombre_cliente?: string | null
   match_status: 'matched' | 'ambiguous' | 'no_match'
   matched_invoice_id?: number | null
   matched_invoice_numero?: string | null
@@ -124,6 +125,44 @@ export interface VoucherReviewCreatePayload {
   candidatas: VoucherCandidatePayload[]
   media_mime_type: string
   media_base64: string
+}
+
+export interface MatchVoucherCandidate {
+  invoice_id: number
+  numero_factura: string
+  cliente_nombre: string
+  cliente_telefono: string
+  saldo_pendiente: number
+  total: number
+  fecha: string
+  score: number
+}
+
+export interface MatchVoucherResult {
+  candidates: MatchVoucherCandidate[]
+}
+
+export async function matchVoucherByName(args: {
+  nombre_cliente?: string | null
+  monto?: number | null
+  tolerancia?: number
+}): Promise<MatchVoucherResult> {
+  const url = `${apiUrl()}/invoices/match-voucher`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify({
+      nombre_cliente: args.nombre_cliente ?? null,
+      monto: args.monto ?? null,
+      tolerancia: args.tolerancia ?? 50,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`FacBal API error ${res.status} en match-voucher${detail ? `: ${detail}` : ''}`)
+  }
+  return res.json() as Promise<MatchVoucherResult>
 }
 
 export async function createVoucherReview(

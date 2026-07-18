@@ -8,6 +8,7 @@ export interface VoucherData {
   fecha: string | null
   referencia: string | null
   banco: string | null
+  nombre_cliente: string | null
 }
 
 interface OpenRouterContentPart {
@@ -180,6 +181,9 @@ function parseVoucherJson(raw: string): VoucherData {
     banco: typeof parsed.banco === 'string' && parsed.banco.trim()
       ? parsed.banco.trim()
       : null,
+    nombre_cliente: typeof parsed.nombre_cliente === 'string' && parsed.nombre_cliente.trim()
+      ? parsed.nombre_cliente.trim()
+      : null,
   }
 }
 
@@ -190,7 +194,8 @@ Devolvé EXCLUSIVAMENTE un JSON sin texto adicional, con este formato:
   "monto": número (ej: 15000.50, sin signo de pesos),
   "fecha": string (ej: "15/03/2026", null si no se ve),
   "referencia": string (número de operación, comprobante o referencia, null si no se ve),
-  "banco": string (nombre del banco o billetera, null si no se ve)
+  "banco": string (nombre del banco o billetera, null si no se ve),
+  "nombre_cliente": string (nombre del remitente o cliente que aparece en el comprobante, null si no se ve)
 }
 
 Reglas:

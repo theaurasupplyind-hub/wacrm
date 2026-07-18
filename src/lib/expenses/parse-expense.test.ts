@@ -86,6 +86,13 @@ describe('debt detection', () => {
     expect(result.amount).toBe(380263)
     expect(result.provider).toBe('Nico Madison')
   })
+
+  it('detects debt with "pesos" between keyword and name', () => {
+    const result = parseExpense('Le debemos 380.263 pesos a Nico Madison')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(380263)
+    expect(result.provider).toBe('Nico Madison')
+  })
 })
 
 describe('custom date parsing', () => {

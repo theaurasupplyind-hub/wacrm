@@ -232,7 +232,8 @@ function detectEntity(text: string): { provider: string | null; employee: string
   }
 
   // "le debemos a [nombre]" o "adeudamos a [nombre]" → proveedor
-  const deudaMatch = remaining.match(/(?:le\s+)?(?:debemos|adeudamos|debo|deuda)\s+(?:a\s+)?([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s*$/i)
+  // Salta palabras intermedias como "pesos", "plata", etc.
+  const deudaMatch = remaining.match(/(?:le\s+)?(?:debemos|adeudamos|debo|deuda)\s+(?:\S+\s+)?(?:a\s+)?([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s*$/i)
   if (deudaMatch) {
     provider = cleanEntityName(deudaMatch[1].trim())
     remaining = remaining.replace(deudaMatch[0], ' ').replace(/\s+/g, ' ').trim()
@@ -241,12 +242,14 @@ function detectEntity(text: string): { provider: string | null; employee: string
 
   // Si no se detectó proveedor ni empleado, intentar "... a [nombre]" al final
   if (!provider && !employee) {
-    const toMatch = remaining.match(/\ba\s+([a-záéíóúñ]+)\s*$/i)
+    const toMatch = remaining.match(/\ba\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s*$/i)
     if (toMatch) {
       const before = remaining.slice(0, remaining.indexOf(toMatch[0])).toLowerCase()
       const cleaned = cleanEntityName(toMatch[1].trim())
       if (before.includes('sueldo') || before.includes('salario') || before.includes('pago de')) {
         employee = cleaned
+      } else if (before.includes('debemos') || before.includes('adeudamos') || before.includes('deuda')) {
+        provider = cleaned
       } else {
         provider = cleaned
       }
