@@ -826,7 +826,7 @@ async function handleExpenseMessage(args: {
   userId: string
   conversationId: string
   contactId: string
-}) {
+}): Promise<boolean> {
   try {
     const result = await processExpenseMessage({
       db: supabaseAdmin(),
@@ -844,10 +844,13 @@ async function handleExpenseMessage(args: {
     })
     if (result.handled) {
       console.log('[expense] handled conversation=%s expenseId=%s', args.conversationId, result.expenseId)
+      return true
     }
+    return false
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] handler error:', msg)
+    return false
   }
 }
 
@@ -1042,59 +1045,72 @@ async function processMessage(
   // Expense Bot: image or document with expense intent in caption.
   // ============================================================
   if ((message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense) {
+    const msgType = message.type as 'image' | 'document'
     bgTasks.push(
-      handleExpenseMessage({
-        messageType: message.type,
-        mediaId: message.image?.id || message.document?.id,
-        mimeType: message.image?.mime_type || message.document?.mime_type,
-        accessToken,
-        senderPhone: message.from,
-        senderName: contact.profile.name,
-        accountId,
-        userId: configOwnerUserId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-      }).catch((err) => console.error('[expense] Media error:', err))
+      (async () => {
+        try {
+          await handleExpenseMessage({
+            messageType: msgType,
+            mediaId: message.image?.id || message.document?.id,
+            mimeType: message.image?.mime_type || message.document?.mime_type,
+            accessToken,
+            senderPhone: message.from,
+            senderName: contact.profile.name,
+            accountId,
+            userId: configOwnerUserId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+          })
+        } catch (err) {
+          console.error('[expense] Media error:', err)
+        }
+      })()
     )
   }
 
   // ============================================================
-  // Expense Bot: audio messages.
-  // Try expenses first; if it doesn't look like an expense, fall
-  // through to voice orders.
+  // Expense + Voice: audio messages (secuencial).
+  // Primero intenta expense; si no lo maneja, ejecuta voz.
   // ============================================================
   if (message.type === 'audio' && message.audio?.id) {
+    const audioId = message.audio.id
+    const audioMime = message.audio.mime_type
     bgTasks.push(
-      handleExpenseMessage({
-        messageType: 'audio',
-        mediaId: message.audio.id,
-        mimeType: message.audio.mime_type,
-        accessToken,
-        senderPhone: message.from,
-        senderName: contact.profile.name,
-        accountId,
-        userId: configOwnerUserId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-      }).catch((err) => console.error('[expense] Audio error:', err))
-    )
-  }
-
-  // ============================================================
-  // Voice order: audio messages.
-  // ============================================================
-  if (message.type === 'audio' && message.audio?.id) {
-    bgTasks.push(
-      handleVoiceAudio({
-        mediaId: message.audio.id,
-        accessToken,
-        senderPhone: message.from,
-        senderName: contact.profile.name,
-        accountId,
-        userId: configOwnerUserId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-      }).catch((err) => console.error('[voice] Audio error:', err))
+      (async () => {
+        let handled = false
+        try {
+          handled = await handleExpenseMessage({
+            messageType: 'audio',
+            mediaId: audioId,
+            mimeType: audioMime,
+            accessToken,
+            senderPhone: message.from,
+            senderName: contact.profile.name,
+            accountId,
+            userId: configOwnerUserId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+          })
+        } catch (err) {
+          console.error('[expense] Audio error:', err)
+        }
+        if (!handled) {
+          try {
+            await handleVoiceAudio({
+              mediaId: audioId,
+              accessToken,
+              senderPhone: message.from,
+              senderName: contact.profile.name,
+              accountId,
+              userId: configOwnerUserId,
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+            })
+          } catch (err) {
+            console.error('[voice] Audio error:', err)
+          }
+        }
+      })()
     )
   }
 
@@ -1192,26 +1208,32 @@ async function processMessage(
     })
   }
 
-  // Expense Bot: text messages.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText)) {
+  // Voice order: text messages. Skip if expense already handled.
+  const isExpenseText = !flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText)
+  if (isExpenseText) {
     console.log('[expense] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
-      handleExpenseMessage({
-        messageType: 'text',
-        text: inboundText,
-        accessToken,
-        senderPhone: message.from,
-        senderName: contact.profile.name,
-        accountId,
-        userId: configOwnerUserId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-      }).catch((err) => console.error('[expense] Text error:', err))
+      (async () => {
+        try {
+          await handleExpenseMessage({
+            messageType: 'text',
+            text: inboundText,
+            accessToken,
+            senderPhone: message.from,
+            senderName: contact.profile.name,
+            accountId,
+            userId: configOwnerUserId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+          })
+        } catch (err) {
+          console.error('[expense] Text error:', err)
+        }
+      })()
     )
   }
 
-  // Voice order: text messages.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText) {
     console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(
       handleVoiceText({

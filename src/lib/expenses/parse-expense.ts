@@ -157,6 +157,11 @@ function stripSaldoStatements(text: string): string {
     .trim()
 }
 
+function cleanEntityName(name: string): string {
+  // Remueve artículos al inicio del nombre para mejorar fuzzy match
+  return name.replace(/^(la|el|los|las)\s+/i, '').trim() || name
+}
+
 function detectEntity(text: string): { provider: string | null; employee: string | null; remaining: string } {
   let remaining = text
   let provider: string | null = null
@@ -168,7 +173,7 @@ function detectEntity(text: string): { provider: string | null; employee: string
   const provMatch = remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ\s]+?)(?=\s+(?:costo|de\s+|por\s+|y\s+|\d|$))/i)
     || remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ]+)/i)
   if (provMatch) {
-    provider = provMatch[1].trim()
+    provider = cleanEntityName(provMatch[1].trim())
     remaining = remaining.replace(provMatch[0], ' ').replace(/\s+/g, ' ').trim()
     return { provider, employee, remaining }
   }
@@ -178,7 +183,7 @@ function detectEntity(text: string): { provider: string | null; employee: string
     const empMatch = remaining.match(/(?:a\s+)?empleado\s+([a-záéíóúñ]+)/i)
       || remaining.match(/sueldo(?:\s+a)?\s+([a-záéíóúñ]+)/i)
     if (empMatch) {
-      employee = empMatch[1].trim()
+      employee = cleanEntityName(empMatch[1].trim())
       remaining = remaining.replace(empMatch[0], ' ').replace(/\s+/g, ' ').trim()
       return { provider, employee, remaining }
     }
@@ -187,7 +192,7 @@ function detectEntity(text: string): { provider: string | null; employee: string
   // "le pagamos a [nombre]" → proveedor
   const pagoMatch = remaining.match(/(?:le\s+)?(?:pagamos|pague|pagué|pago|pagaste|pagar)\s+a\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)/i)
   if (pagoMatch) {
-    provider = pagoMatch[1].trim()
+    provider = cleanEntityName(pagoMatch[1].trim())
     remaining = remaining.replace(pagoMatch[0], ' ').replace(/\s+/g, ' ').trim()
     return { provider, employee, remaining }
   }
@@ -195,7 +200,7 @@ function detectEntity(text: string): { provider: string | null; employee: string
   // "le debemos a [nombre]" o "adeudamos a [nombre]" → proveedor
   const deudaMatch = remaining.match(/(?:le\s+)?(?:debemos|adeudamos|debo|deuda)\s+(?:a\s+)?([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s*$/i)
   if (deudaMatch) {
-    provider = deudaMatch[1].trim()
+    provider = cleanEntityName(deudaMatch[1].trim())
     remaining = remaining.replace(deudaMatch[0], ' ').replace(/\s+/g, ' ').trim()
     return { provider, employee, remaining }
   }
@@ -205,10 +210,11 @@ function detectEntity(text: string): { provider: string | null; employee: string
     const toMatch = remaining.match(/\ba\s+([a-záéíóúñ]+)\s*$/i)
     if (toMatch) {
       const before = remaining.slice(0, remaining.indexOf(toMatch[0])).toLowerCase()
+      const cleaned = cleanEntityName(toMatch[1].trim())
       if (before.includes('sueldo') || before.includes('salario') || before.includes('pago de')) {
-        employee = toMatch[1].trim()
+        employee = cleaned
       } else {
-        provider = toMatch[1].trim()
+        provider = cleaned
       }
       remaining = remaining.replace(toMatch[0], ' ').replace(/\s+/g, ' ').trim()
     }
