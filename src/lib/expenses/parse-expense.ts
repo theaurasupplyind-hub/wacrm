@@ -1,4 +1,4 @@
-import type { ParsedExpense } from './types'
+import type { ParsedExpense, PaymentSplit } from './types'
 
 const EXPENSE_INTENT_KEYWORDS = [
   'gaste', 'gasté', 'gasto',
@@ -8,6 +8,8 @@ const EXPENSE_INTENT_KEYWORDS = [
   'deposité', 'deposite', 'deposito',
   'transferí', 'transferi', 'transfiera',
   'costo', 'costó', 'cuesto',
+  'debemos', 'adeudamos', 'debo', 'deuda',
+  'pagamos', 'puse', 'puso',
 ]
 
 const PAYMENT_METHODS: Record<string, string> = {
@@ -44,13 +46,19 @@ function extractAmount(text: string): { amount: number | null; remaining: string
     }
   }
 
-  // Buscar el primer número que parezca un monto
-  const numMatch = text.match(/(\d[\d.,]*)/)
-  if (numMatch) {
-    const amount = parseNumber(numMatch[1])
-    if (amount && amount > 0) {
-      return { amount, remaining: text.replace(numMatch[1], ' ').trim() }
+  // Encontrar TODOS los números y elegir el más grande (evita confundir días como "16")
+  const allNumMatches = [...text.matchAll(/(\d[\d.,]*)/g)]
+  let bestNum: string | null = null
+  let bestValue = 0
+  for (const m of allNumMatches) {
+    const val = parseNumber(m[1])
+    if (val && val > bestValue) {
+      bestValue = val
+      bestNum = m[1]
     }
+  }
+  if (bestNum) {
+    return { amount: bestValue, remaining: text.replace(bestNum, ' ').trim() }
   }
 
   return { amount: null, remaining: text }
@@ -96,11 +104,46 @@ function detectPaymentMethod(text: string): { method: string | null; remaining: 
     if (lower.includes(keyword)) {
       return {
         method,
-        remaining: text.replace(new RegExp(keyword, 'gi'), ' ').replace(/\s+/g, ' ').trim(),
+        remaining: text.replace(new RegExp(keyword.replace(/\s/g, '\\s+'), 'gi'), ' ').replace(/\s+/g, ' ').trim(),
       }
     }
   }
   return { method: null, remaining: text }
+}
+
+function detectSplitPayments(text: string): { payments: PaymentSplit[] | null; remaining: string } {
+  // "965.167,69 por transferencia y 450.000 en efectivo"
+  // "450.000 en efectivo y 965.167 por transferencia"
+  // Buscamos dos montos con métodos de pago entre ellos
+  const numPattern = '(\\d[\\d.,]+)'
+  const methodPattern = '(por|en)\\s+(transferencia|efectivo|transferi|transferí|debito|débito|credito|crédito|qr|mercado\\s+pago|mp)'
+  // ($X por/en metodo) y ($Y por/en metodo)
+  const fullPattern = new RegExp(
+    `${numPattern}\\s*${methodPattern}\\s+y\\s+${numPattern}\\s*${methodPattern}`,
+    'i'
+  )
+  const match = text.match(fullPattern)
+  if (!match) return { payments: null, remaining: text }
+
+  const amount1 = parseNumber(match[1])
+  const method1Raw = match[3].toLowerCase()
+  const amount2 = parseNumber(match[4])
+  const method2Raw = match[6].toLowerCase()
+
+  if (!amount1 || !amount2) return { payments: null, remaining: text }
+
+  const resolveMethod = (raw: string): string => {
+    const m = raw.replace(/\s+/g, ' ').trim()
+    return PAYMENT_METHODS[m] || m
+  }
+
+  return {
+    payments: [
+      { amount: amount1, payment_method: resolveMethod(method1Raw) },
+      { amount: amount2, payment_method: resolveMethod(method2Raw) },
+    ],
+    remaining: text.replace(match[0], ' ').replace(/\s+/g, ' ').trim(),
+  }
 }
 
 function detectEntity(text: string): { provider: string | null; employee: string | null; remaining: string } {
@@ -108,12 +151,15 @@ function detectEntity(text: string): { provider: string | null; employee: string
   let provider: string | null = null
   let employee: string | null = null
 
+  const lower = normalize(remaining)
+
   // "a proveedor X" o "proveedor X"
-  const provMatch = remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ\s]+?)(?=\s+(?:costo|de\s+|por\s+|\d|$))/i)
-    || remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ\s]+)/i)
+  const provMatch = remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ\s]+?)(?=\s+(?:costo|de\s+|por\s+|y\s+|\d|$))/i)
+    || remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ]+)/i)
   if (provMatch) {
     provider = provMatch[1].trim()
     remaining = remaining.replace(provMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    return { provider, employee, remaining }
   }
 
   // "empleado X" o "a X" para sueldo
@@ -123,14 +169,30 @@ function detectEntity(text: string): { provider: string | null; employee: string
     if (empMatch) {
       employee = empMatch[1].trim()
       remaining = remaining.replace(empMatch[0], ' ').replace(/\s+/g, ' ').trim()
+      return { provider, employee, remaining }
     }
+  }
+
+  // "le pagamos a [nombre]" → proveedor
+  const pagoMatch = remaining.match(/(?:le\s+)?(?:pagamos|pague|pagué|pago|pagaste|pagar)\s+a\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)/i)
+  if (pagoMatch) {
+    provider = pagoMatch[1].trim()
+    remaining = remaining.replace(pagoMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    return { provider, employee, remaining }
+  }
+
+  // "le debemos a [nombre]" o "adeudamos a [nombre]" → proveedor
+  const deudaMatch = remaining.match(/(?:le\s+)?(?:debemos|adeudamos|debo|deuda)\s+(?:a\s+)?([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s*$/i)
+  if (deudaMatch) {
+    provider = deudaMatch[1].trim()
+    remaining = remaining.replace(deudaMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    return { provider, employee, remaining }
   }
 
   // Si no se detectó proveedor ni empleado, intentar "... a [nombre]" al final
   if (!provider && !employee) {
     const toMatch = remaining.match(/\ba\s+([a-záéíóúñ]+)\s*$/i)
     if (toMatch) {
-      // Decidir si es proveedor o empleado por palabras cercanas
       const before = remaining.slice(0, remaining.indexOf(toMatch[0])).toLowerCase()
       if (before.includes('sueldo') || before.includes('salario') || before.includes('pago de')) {
         employee = toMatch[1].trim()
@@ -169,6 +231,52 @@ function todayString(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+function daysAgo(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().slice(0, 10)
+}
+
+function parseDateFromText(text: string): { date: string | null; remaining: string } {
+  // "ayer"
+  const ayerMatch = text.match(/\bayer\b/i)
+  if (ayerMatch) {
+    return { date: daysAgo(1), remaining: text.replace(ayerMatch[0], ' ').replace(/\s+/g, ' ').trim() }
+  }
+
+  // "anteayer"
+  const anteayerMatch = text.match(/\banteayer\b/i)
+  if (anteayerMatch) {
+    return { date: daysAgo(2), remaining: text.replace(anteayerMatch[0], ' ').replace(/\s+/g, ' ').trim() }
+  }
+
+  // "hoy"
+  const hoyMatch = text.match(/\bhoy\b/i)
+  if (hoyMatch) {
+    return { date: todayString(), remaining: text.replace(hoyMatch[0], ' ').replace(/\s+/g, ' ').trim() }
+  }
+
+  // "el 15/7/26" o "15/07/2026" o "15-7-26"
+  const dateMatch = text.match(/el\s+(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/i)
+  if (dateMatch) {
+    let [_, d, m, y] = dateMatch
+    let year = y.length === 2 ? '20' + y : y
+    const dateStr = `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+    return { date: dateStr, remaining: text.replace(dateMatch[0], ' ').replace(/\s+/g, ' ').trim() }
+  }
+
+  // "15/7/26" sin "el"
+  const bareDateMatch = text.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/)
+  if (bareDateMatch) {
+    let [_, d, m, y] = bareDateMatch
+    let year = y.length === 2 ? '20' + y : y
+    const dateStr = `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+    return { date: dateStr, remaining: text.replace(bareDateMatch[0], ' ').replace(/\s+/g, ' ').trim() }
+  }
+
+  return { date: null, remaining: text }
+}
+
 export function parseExpense(text: string): ParsedExpense {
   const raw = text.trim()
   if (!raw) {
@@ -189,8 +297,27 @@ export function parseExpense(text: string): ParsedExpense {
   const normalized = normalize(raw)
   const isExpenseIntent = EXPENSE_INTENT_KEYWORDS.some(k => normalized.includes(k))
 
-  // Extraer monto
-  let { amount, remaining } = extractAmount(raw)
+  // Extraer fecha primero
+  let remaining = raw
+  let date: string | null
+  let parsedDate: { date: string | null; remaining: string }
+  parsedDate = parseDateFromText(remaining)
+  date = parsedDate.date
+  remaining = parsedDate.remaining
+
+  // Detectar split payments antes de extraer monto individual
+  let payments: PaymentSplit[] | null = null
+  let splitResult = detectSplitPayments(remaining)
+  ;({ payments, remaining } = splitResult)
+  let amount: number | null = null
+  if (payments && payments.length > 1) {
+    amount = payments.reduce((sum, p) => sum + p.amount, 0)
+    remaining = splitResult.remaining
+  } else {
+    let amountResult = extractAmount(remaining)
+    amount = amountResult.amount
+    remaining = amountResult.remaining
+  }
 
   // Extraer método de pago
   const { method: payment_method, remaining: remaining2 } = detectPaymentMethod(remaining)
@@ -207,8 +334,8 @@ export function parseExpense(text: string): ParsedExpense {
   // Limpiar conectores comunes (normalizamos acentos para que \b funcione)
   const normalizedRemaining = normalize(remaining)
   let description = normalizedRemaining
-    .replace(/\b(gaste|gasto|pague|pago|compre|compra|paguemos|gastamos|compramos|deposite|deposito|transferi|transfiera|costo|cuesto)\b/gi, ' ')
-    .replace(/\b(a|de|el|la|los|las|del|al|por|para|con|en|un|una|unos|unas)\b/gi, ' ')
+    .replace(/\b(gaste|gasto|pague|pago|compre|compra|paguemos|gastamos|compramos|deposite|deposito|transferi|transfiera|costo|cuesto|pagamos|pagaste|debemos|adeudamos|debo|pagar|puse|puso)\b/gi, ' ')
+    .replace(/\b(hoy|le|a|de|el|la|los|las|del|al|por|para|con|en|un|una|unos|unas|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 
@@ -223,8 +350,9 @@ export function parseExpense(text: string): ParsedExpense {
     provider,
     employee,
     payment_method,
+    payments: payments || undefined,
     reference: null,
-    date: todayString(),
+    date: date || todayString(),
     isExpenseIntent,
     raw,
   }

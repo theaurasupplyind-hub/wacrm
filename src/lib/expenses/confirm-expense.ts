@@ -14,6 +14,17 @@ export function buildExpenseConfirmation(result: ExpenseExecutionResult): string
   if (result.employeeName) {
     lines.push(`👷 Empleado: ${result.employeeName}`)
   }
+  if (result.payments && result.payments.length > 1) {
+    for (const p of result.payments) {
+      const label = p.payment_method === 'efectivo' ? 'Efectivo' : 'Transferencia'
+      lines.push(`   ${label}: $${p.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`)
+    }
+  } else {
+    const methodLabel = result.payments?.[0]?.payment_method
+    if (methodLabel && methodLabel !== 'efectivo') {
+      lines.push(`💳 ${methodLabel === 'transferencia' ? 'Transferencia' : methodLabel}`)
+    }
+  }
   lines.push(`📝 ${result.description}`)
 
   if (result.isNewCategory) {

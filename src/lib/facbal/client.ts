@@ -441,6 +441,115 @@ export interface Expense {
   updated_at: string
 }
 
+export interface PaymentSplit {
+  amount: number
+  payment_method: string
+}
+
+export interface ExpenseCreatePayload {
+  date: string
+  amount: number
+  description: string
+  category_id: number
+  provider_id?: number | null
+  employee_id?: number | null
+  payment_method?: string
+  payments?: PaymentSplit[]
+  reference?: string
+  source?: string
+  created_by_user_id?: number | null
+  created_by_contact_id?: number | null
+  status?: string
+  raw_input?: string | null
+  media_url?: string | null
+  media_id?: string | null
+}
+
+export interface Provider {
+  id: number
+  name: string
+  cuit?: string | null
+  alias_mp?: string | null
+  alias_cbu?: string | null
+  address?: string | null
+  balance: number
+  stock_qty: number
+}
+
+export interface Employee {
+  id: number
+  name: string
+  phone?: string | null
+  address?: string | null
+  active: number
+  job_type: string
+  base_salary: number
+}
+
+export async function listProviders(): Promise<Provider[]> {
+  const url = `${apiUrl()}/providers`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar proveedores${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as Provider[]) : []
+}
+
+export async function searchProviders(q: string): Promise<Provider[]> {
+  const url = `${apiUrl()}/providers/search?q=${encodeURIComponent(q)}`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al buscar proveedores${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as Provider[]) : []
+}
+
+export async function listEmployees(): Promise<Employee[]> {
+  const url = `${apiUrl()}/employees`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar empleados${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as Employee[]) : []
+}
+
+export async function searchEmployees(q: string): Promise<Employee[]> {
+  const url = `${apiUrl()}/employees/search?q=${encodeURIComponent(q)}`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al buscar empleados${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as Employee[]) : []
+}
+
 export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
   const url = `${apiUrl()}/expense-categories`
   const res = await fetch(url, {
@@ -477,7 +586,7 @@ export async function createExpenseCategory(
 }
 
 export async function createExpense(
-  payload: Omit<Expense, 'id' | 'created_at' | 'updated_at'>,
+  payload: ExpenseCreatePayload,
 ): Promise<Expense> {
   const url = `${apiUrl()}/expenses`
   const res = await fetch(url, {

@@ -1,4 +1,4 @@
-import { createExpense } from '@/lib/facbal/client'
+import { createExpense, type ExpenseCreatePayload } from '@/lib/facbal/client'
 import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult } from './types'
 
 export async function executeExpense(
@@ -47,7 +47,7 @@ export async function executeExpense(
     description.push(`(empleado: ${match.employeeName})`)
   }
 
-  const expense = await createExpense({
+  const payload: ExpenseCreatePayload = {
     date: parsed.date || new Date().toISOString().slice(0, 10),
     amount: parsed.amount,
     description: description.join(' ').trim(),
@@ -63,7 +63,13 @@ export async function executeExpense(
     raw_input: parsed.raw,
     media_url: options.mediaUrl || null,
     media_id: options.mediaId || null,
-  })
+  }
+
+  if (parsed.payments && parsed.payments.length > 1) {
+    payload.payments = parsed.payments
+  }
+
+  const expense = await createExpense(payload)
 
   return {
     expenseId: expense.id,
@@ -72,6 +78,7 @@ export async function executeExpense(
     categoryName: match.categoryName || 'Sin categoría',
     providerName: match.providerName,
     employeeName: match.employeeName,
+    payments: parsed.payments || null,
     status: expense.status,
     isNewCategory: match.categoryWasCreated,
   }

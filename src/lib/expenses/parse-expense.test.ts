@@ -57,3 +57,64 @@ describe('looksLikeExpense', () => {
     expect(looksLikeExpense('quiero un bastidor 40x50')).toBe(false)
   })
 })
+
+describe('split payments', () => {
+  it('detects split payment: $X por transferencia y $Y en efectivo', () => {
+    const result = parseExpense('pagamos a la madera 965.167,69 por transferencia y 450.000 en efectivo')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(1415167.69)
+    expect(result.provider).toBe('la madera')
+    expect(result.payments).toHaveLength(2)
+    expect(result.payments![0].amount).toBe(965167.69)
+    expect(result.payments![0].payment_method).toBe('transferencia')
+    expect(result.payments![1].amount).toBe(450000)
+    expect(result.payments![1].payment_method).toBe('efectivo')
+  })
+
+  it('detects split payment: $X en efectivo y $Y por transferencia', () => {
+    const result = parseExpense('pague 5000 en efectivo y 10000 por transferencia')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(15000)
+    expect(result.payments).toHaveLength(2)
+  })
+})
+
+describe('debt detection', () => {
+  it('detects "le debemos" as expense intent with provider', () => {
+    const result = parseExpense('le debemos 380.263 a Nico Madison')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(380263)
+    expect(result.provider).toBe('Nico Madison')
+  })
+})
+
+describe('custom date parsing', () => {
+  it('parses "el 15/7/26" as date', () => {
+    const result = parseExpense('el 15/7/26 pagamos 5000 de luz')
+    expect(result.date).toBe('2026-07-15')
+  })
+
+  it('parses "ayer" as date', () => {
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    const expected = yesterday.toISOString().slice(0, 10)
+    const result = parseExpense('ayer pague 3000 de agua')
+    expect(result.date).toBe(expected)
+  })
+
+  it('parses "hoy" as date', () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const result = parseExpense('hoy pague 2000 de internet')
+    expect(result.date).toBe(today)
+  })
+})
+
+describe('fuel expense', () => {
+  it('detects fuel expense with vehicle in description', () => {
+    const result = parseExpense('hoy jueves 16 le puse 101027 a la fiorino en nafta')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(101027)
+    expect(result.category).toBe('nafta')
+    expect(result.description!.toLowerCase()).toContain('fiorino')
+  })
+})

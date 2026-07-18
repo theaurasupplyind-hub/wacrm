@@ -1,8 +1,11 @@
 import {
   listExpenseCategories,
   createExpenseCategory,
-  searchClients,
+  listProviders,
+  listEmployees,
   type ExpenseCategory,
+  type Provider,
+  type Employee,
 } from '@/lib/facbal/client'
 import type { ParsedExpense, ExpenseFuzzyMatch } from './types'
 
@@ -123,15 +126,39 @@ export async function resolveExpenseEntities(
   let employeeName: string | null = null
 
   if (parsed.provider) {
-    // Buscar en clientes? No, proveedores no están en /clients. Por ahora no resolvemos.
-    // En una v2 se agregará endpoint de búsqueda de proveedores.
     providerName = parsed.provider
+    const providers = await listProviders()
+    let bestScore = 0
+    let best: Provider | null = null
+    for (const prov of providers) {
+      const score = tokenScore(prov.name, parsed.provider)
+      if (score > bestScore) {
+        bestScore = score
+        best = prov
+      }
+    }
+    if (best && bestScore >= 0.6) {
+      providerId = best.id
+      providerName = best.name
+    }
   }
 
   if (parsed.employee) {
-    // Buscar empleado por nombre en /clients? No, empleados son otra tabla.
-    // Por ahora no resolvemos automáticamente.
     employeeName = parsed.employee
+    const employees = await listEmployees()
+    let bestScore = 0
+    let best: Employee | null = null
+    for (const emp of employees) {
+      const score = tokenScore(emp.name, parsed.employee)
+      if (score > bestScore) {
+        bestScore = score
+        best = emp
+      }
+    }
+    if (best && bestScore >= 0.6) {
+      employeeId = best.id
+      employeeName = best.name
+    }
   }
 
   return {
