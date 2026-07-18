@@ -11,6 +11,8 @@ export interface VoucherData {
   nombre_cliente: string | null
   nombre_origen: string | null
   nombre_destino: string | null
+  cbu_destino: string | null
+  cuit_destino: string | null
 }
 
 interface OpenRouterContentPart {
@@ -192,6 +194,12 @@ function parseVoucherJson(raw: string): VoucherData {
     nombre_destino: typeof parsed.nombre_destino === 'string' && parsed.nombre_destino.trim()
       ? parsed.nombre_destino.trim()
       : null,
+    cbu_destino: typeof parsed.cbu_destino === 'string' && parsed.cbu_destino.trim()
+      ? parsed.cbu_destino.trim().replace(/\s/g, '')
+      : null,
+    cuit_destino: typeof parsed.cuit_destino === 'string' && parsed.cuit_destino.trim()
+      ? parsed.cuit_destino.trim().replace(/\s/g, '')
+      : null,
   }
 }
 
@@ -205,14 +213,17 @@ Devolvé EXCLUSIVAMENTE un JSON sin texto adicional, con este formato:
   "banco": string (nombre del banco o billetera, null si no se ve),
   "nombre_cliente": string (nombre del remitente o cliente que aparece en el comprobante, null si no se ve),
   "nombre_origen": string (nombre de QUIEN PAGÓ, el que aparece después de "DE" o como remitente, null si no se ve),
-  "nombre_destino": string (nombre de QUIEN COBRÓ, el que aparece después de "PARA" o como beneficiario, null si no se ve)
+  "nombre_destino": string (nombre de QUIEN COBRÓ, el que aparece después de "PARA" o como beneficiario, null si no se ve),
+  "cbu_destino": string (CBU, CVU o alias del que cobra si aparece en el comprobante, null si no se ve),
+  "cuit_destino": string (CUIT/CUIL del que cobra si aparece en el comprobante, null si no se ve)
 }
 
 Reglas:
 - Si un campo no se distingue claramente, poné null.
 - No inventes datos si la imagen está borrosa o no se lee bien.
 - El monto debe ser solo el número, sin símbolos ni texto.
-- Distinguí correctamente entre origen (quien paga) y destino (quien cobra).`
+- Distinguí correctamente entre origen (quien paga) y destino (quien cobra).
+- El CBU/CVU son números largos (22 dígitos). CUIT tiene formato XX-XXXXXXXX-X.`
 
 export async function extractVoucherData(args: {
   base64: string

@@ -127,6 +127,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           extracted_nombre_cliente: ctx.pendingExtraction?.nombre_cliente ?? null,
           extracted_nombre_origen: ctx.pendingExtraction?.nombre_origen ?? null,
           extracted_nombre_destino: ctx.pendingExtraction?.nombre_destino ?? null,
+          extracted_cbu_destino: ctx.pendingExtraction?.cbu_destino ?? null,
+          extracted_cuit_destino: ctx.pendingExtraction?.cuit_destino ?? null,
           match_status: 'matched' as const,
           matched_invoice_id: chosen.invoice_id,
           matched_invoice_numero: chosen.numero_factura,
@@ -230,6 +232,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let extractedNombreCliente: string | null = null
   let extractedNombreOrigen: string | null = null
   let extractedNombreDestino: string | null = null
+  let extractedCbuDestino: string | null = null
+  let extractedCuitDestino: string | null = null
   let matchStatus: MatchStatus = 'no_match'
   let matchedInvoiceId: number | null = null
   let matchedInvoiceNumero: string | null = null
@@ -255,9 +259,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     extractedNombreCliente = voucher.nombre_cliente
     extractedNombreOrigen = voucher.nombre_origen
     extractedNombreDestino = voucher.nombre_destino
+    extractedCbuDestino = voucher.cbu_destino
+    extractedCuitDestino = voucher.cuit_destino
     console.log(
-      '[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s nombre=%s origen=%s destino=%s',
-      voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino,
+      '[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s nombre=%s origen=%s destino=%s cbu=%s cuit=%s',
+      voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino, voucher.cbu_destino, voucher.cuit_destino,
     )
 
     // STEP 3 — Extracted, now match by name + amount
@@ -271,6 +277,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         nombre_cliente: voucher.nombre_cliente,
         nombre_origen: voucher.nombre_origen,
         nombre_destino: voucher.nombre_destino,
+        cbu_destino: voucher.cbu_destino,
+        cuit_destino: voucher.cuit_destino,
         monto: voucher.monto,
         tolerancia: 50,
       })
@@ -323,6 +331,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         extracted_nombre_cliente: extractedNombreCliente,
         extracted_nombre_origen: extractedNombreOrigen,
         extracted_nombre_destino: extractedNombreDestino,
+        extracted_cbu_destino: extractedCbuDestino,
+        extracted_cuit_destino: extractedCuitDestino,
         match_status: stageStatus,
         matched_invoice_id: matchedInvoiceId,
         matched_invoice_numero: matchedInvoiceNumero,
@@ -363,6 +373,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         nombre_cliente: extractedNombreCliente,
         nombre_origen: extractedNombreOrigen,
         nombre_destino: extractedNombreDestino,
+        cbu_destino: extractedCbuDestino,
+        cuit_destino: extractedCuitDestino,
       },
       pendingCandidates: candidates,
       awaitingConfirmation: true,

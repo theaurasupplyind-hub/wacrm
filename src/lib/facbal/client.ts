@@ -119,6 +119,8 @@ export interface VoucherReviewCreatePayload {
   extracted_nombre_cliente?: string | null
   extracted_nombre_origen?: string | null
   extracted_nombre_destino?: string | null
+  extracted_cbu_destino?: string | null
+  extracted_cuit_destino?: string | null
   match_status: 'matched' | 'ambiguous' | 'no_match'
   matched_invoice_id?: number | null
   matched_invoice_numero?: string | null
@@ -147,6 +149,9 @@ export interface DestinationCandidate {
   entity_type: 'PROVIDER' | 'EMPLOYEE'
   entity_id: number
   entity_name: string
+  entity_cuit?: string
+  entity_cbu?: string
+  match_field: 'cbu' | 'cuit' | 'alias' | 'name'
   score: number
 }
 
@@ -159,6 +164,8 @@ export async function matchVoucherByName(args: {
   nombre_cliente?: string | null
   nombre_origen?: string | null
   nombre_destino?: string | null
+  cbu_destino?: string | null
+  cuit_destino?: string | null
   monto?: number | null
   tolerancia?: number
 }): Promise<MatchVoucherResult> {
@@ -170,6 +177,8 @@ export async function matchVoucherByName(args: {
       nombre_cliente: args.nombre_cliente ?? null,
       nombre_origen: args.nombre_origen ?? null,
       nombre_destino: args.nombre_destino ?? null,
+      cbu_destino: args.cbu_destino ?? null,
+      cuit_destino: args.cuit_destino ?? null,
       monto: args.monto ?? null,
       tolerancia: args.tolerancia ?? 50,
     }),
