@@ -13,7 +13,7 @@ import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
-import { processExpenseMessage, looksLikeExpense } from '@/lib/expenses'
+import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
@@ -912,6 +912,10 @@ async function processMessage(
   // Cargar estado previo de órdenes por voz (variantes pendientes, confirmación)
   const voiceCtx = await loadVoiceContext(conversation.id)
 
+  // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
+  const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
+  const hasPendingExpense = expenseCtx.stage === 'collecting' && !!expenseCtx.pendingExpense
+
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
@@ -1209,7 +1213,7 @@ async function processMessage(
   }
 
   // Voice order: text messages. Skip if expense already handled.
-  const isExpenseText = !flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText)
+  const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
   if (isExpenseText) {
     console.log('[expense] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
     bgTasks.push(

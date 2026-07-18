@@ -38,7 +38,6 @@ function todaysDate(): string {
 
 function parseDateFromExtracted(fecha: string | null): string {
   if (!fecha) return todaysDate()
-  // Soporta "15/03/2026" o "15-03-2026"
   const parts = fecha.split(/[\/\-]/)
   if (parts.length === 3) {
     const [d, m, y] = parts
@@ -48,9 +47,126 @@ function parseDateFromExtracted(fecha: string | null): string {
   return todaysDate()
 }
 
+async function createSaldoExpense(
+  parsed: ParsedExpense,
+  match: ExpenseFuzzyMatch,
+  result: ExpenseExecutionResult,
+  args: ProcessExpenseMessageArgs,
+  mediaUrl: string | null,
+) {
+  if (!parsed.saldo || parsed.saldo.length === 0 || !result.expenseId || !match.providerId) return
+  const saldoAmount = parsed.saldo.reduce((sum: number, s: PaymentSplit) => sum + s.amount, 0)
+  const compraCategory = await resolveExpenseCategory('Compra a proveedor')
+  if (!compraCategory.categoryId) return
+  const saldoParsed: ParsedExpense = {
+    amount: saldoAmount,
+    description: `Saldo pendiente${match.providerName ? ` de ${match.providerName}` : ''}`,
+    category: 'Compra a proveedor',
+    provider: parsed.provider,
+    employee: null,
+    payment_method: parsed.saldo.length === 1 ? parsed.saldo[0].payment_method : null,
+    payments: parsed.saldo,
+    reference: null,
+    date: parsed.date || new Date().toISOString().slice(0, 10),
+    isExpenseIntent: true,
+    raw: parsed.raw,
+  }
+  const saldoMatch: ExpenseFuzzyMatch = {
+    categoryId: compraCategory.categoryId,
+    categoryName: 'Compra a proveedor',
+    categoryWasCreated: compraCategory.created,
+    providerId: match.providerId,
+    providerName: match.providerName,
+    employeeId: null,
+    employeeName: null,
+  }
+  const saldoResult = await executeExpense(saldoParsed, saldoMatch, {
+    source: 'whatsapp',
+    createdByContactId: parseInt(args.contactId, 10) || null,
+    mediaUrl,
+    mediaId: args.mediaId || null,
+  })
+  if (saldoResult.expenseId) {
+    result.saldoResult = saldoResult
+  }
+}
+
+async function sendTextResponse(args: ProcessExpenseMessageArgs, text: string) {
+  try {
+    await engineSendText({
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+      text,
+    })
+  } catch (sendErr) {
+    console.error('[expense] send error:', sendErr)
+  }
+}
+
+function parseFloatSafe(reply: string): number | null {
+  const cleaned = reply.replace(/[^0-9,.]/g, '').replace(',', '.')
+  const num = parseFloat(cleaned)
+  return Number.isFinite(num) && num > 0 ? num : null
+}
+
+async function handleCollectingReply(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+): Promise<ProcessExpenseResult> {
+  const pending = { ...ctx.pendingExpense! } as ParsedExpense
+  const reply = (args.text || '').trim()
+
+  if (!reply) {
+    return { handled: true, text: 'No entendí. ¿Podés repetirlo?' }
+  }
+
+  if (ctx.missingField === 'amount') {
+    const num = parseFloatSafe(reply)
+    if (!num) {
+      await saveExpenseContext(args.db, args.conversationId, { ...ctx })
+      return { handled: true, text: 'Sigo sin entender el monto. Escribí solo el número (ej: 5000).' }
+    }
+    pending.amount = num
+  } else if (ctx.missingField === 'category') {
+    pending.category = reply
+  }
+
+  const match = await fuzzyMatchExpense(pending)
+
+  if (!match.categoryId) {
+    await saveExpenseContext(args.db, args.conversationId, { ...ctx, pendingExpense: pending, pendingMatch: match })
+    return { handled: true, text: 'No encontré esa categoría. ¿Podés intentar con otro nombre?' }
+  }
+
+  const result = await executeExpense(pending, match, {
+    source: 'whatsapp',
+    createdByContactId: parseInt(args.contactId, 10) || null,
+  })
+
+  if (result.error || !result.expenseId) {
+    await clearExpenseContext(args.db, args.conversationId)
+    return { handled: true, error: result.error, text: result.error || 'No se pudo guardar el gasto.' }
+  }
+
+  await createSaldoExpense(pending, match, result, args, null)
+
+  await clearExpenseContext(args.db, args.conversationId)
+
+  const text = buildExpenseConfirmation(result)
+  await sendTextResponse(args, text)
+  return { handled: true, expenseId: result.expenseId, text }
+}
+
 export async function processExpenseMessage(
   args: ProcessExpenseMessageArgs,
 ): Promise<ProcessExpenseResult> {
+  const ctx = await loadExpenseContext(args.db, args.conversationId)
+  if (ctx.stage === 'collecting' && ctx.pendingExpense && args.messageType === 'text') {
+    return handleCollectingReply(args, ctx)
+  }
+
   let parsed: ParsedExpense | null = null
   let mediaUrl: string | null = null
 
@@ -86,14 +202,33 @@ export async function processExpenseMessage(
       return { handled: false }
     }
 
+    // Multi-turn: si falta monto, guardar contexto y preguntar
     if (!parsed.amount || parsed.amount <= 0) {
-      return {
-        handled: true,
-        text: 'No detecté un monto válido. ¿Podés repetir el gasto con el monto?',
-      }
+      await saveExpenseContext(args.db, args.conversationId, {
+        stage: 'collecting',
+        pendingExpense: parsed,
+        missingField: 'amount',
+      })
+      const msg = 'No detecté el monto. ¿Cuánto fue?'
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
     }
 
     const match = await fuzzyMatchExpense(parsed)
+
+    // Multi-turn: si falta categoría, guardar contexto y preguntar
+    if (!match.categoryId) {
+      await saveExpenseContext(args.db, args.conversationId, {
+        stage: 'collecting',
+        pendingExpense: parsed,
+        pendingMatch: match,
+        missingField: 'category',
+      })
+      const msg = 'No entendí la categoría. ¿Para qué fue el gasto? (ej: luz, alquiler, insumos)'
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
+
     const result = await executeExpense(parsed, match, {
       source: 'whatsapp',
       createdByContactId: parseInt(args.contactId, 10) || null,
@@ -101,44 +236,7 @@ export async function processExpenseMessage(
       mediaId: args.mediaId || null,
     })
 
-    // Si hay saldo y el primer gasto fue exitoso, crear segundo expense (compra/deuda)
-    if (parsed.saldo && parsed.saldo.length > 0 && result.expenseId && match.providerId) {
-      const saldoAmount = parsed.saldo.reduce((sum, s) => sum + s.amount, 0)
-      const compraCategory = await resolveExpenseCategory('Compra a proveedor')
-      if (compraCategory.categoryId) {
-        const saldoParsed: ParsedExpense = {
-          amount: saldoAmount,
-          description: `Saldo pendiente${match.providerName ? ` de ${match.providerName}` : ''}`,
-          category: 'Compra a proveedor',
-          provider: parsed.provider,
-          employee: null,
-          payment_method: parsed.saldo.length === 1 ? parsed.saldo[0].payment_method : null,
-          payments: parsed.saldo,
-          reference: null,
-          date: parsed.date || new Date().toISOString().slice(0, 10),
-          isExpenseIntent: true,
-          raw: parsed.raw,
-        }
-        const saldoMatch: ExpenseFuzzyMatch = {
-          categoryId: compraCategory.categoryId,
-          categoryName: 'Compra a proveedor',
-          categoryWasCreated: compraCategory.created,
-          providerId: match.providerId,
-          providerName: match.providerName,
-          employeeId: null,
-          employeeName: null,
-        }
-        const saldoResult = await executeExpense(saldoParsed, saldoMatch, {
-          source: 'whatsapp',
-          createdByContactId: parseInt(args.contactId, 10) || null,
-          mediaUrl,
-          mediaId: args.mediaId || null,
-        })
-        if (saldoResult.expenseId) {
-          result.saldoResult = saldoResult
-        }
-      }
-    }
+    await createSaldoExpense(parsed, match, result, args, mediaUrl)
 
     // Auditoría
     try {
@@ -162,18 +260,7 @@ export async function processExpenseMessage(
     }
 
     const text = buildExpenseConfirmation(result)
-
-    try {
-      await engineSendText({
-        accountId: args.accountId,
-        userId: args.userId,
-        conversationId: args.conversationId,
-        contactId: args.contactId,
-        text,
-      })
-    } catch (sendErr) {
-      console.error('[expense] send error:', sendErr)
-    }
+    await sendTextResponse(args, text)
 
     return {
       handled: true,

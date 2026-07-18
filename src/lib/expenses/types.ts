@@ -47,6 +47,10 @@ export interface ExpenseContextState {
   pendingMatch?: ExpenseFuzzyMatch | null
   lastExpenseId?: number | null
   awaitingConfirmation?: boolean
+  stage?: ExpenseStage
+  missingField?: 'amount' | 'category' | null
 }
+
+export type ExpenseStage = 'idle' | 'collecting' | 'confirming'
 
 export type ExpenseMessageType = 'text' | 'audio' | 'image' | 'document'

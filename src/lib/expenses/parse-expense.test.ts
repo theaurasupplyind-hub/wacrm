@@ -126,6 +126,70 @@ describe('fuel expense', () => {
   })
 })
 
+describe('regex gaps — edge cases', () => {
+  it('parses "compré 50000 en insumos"', () => {
+    const result = parseExpense('compré 50000 en insumos')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(50000)
+    expect(result.category).toBe('insumos')
+  })
+
+  it('parses "pagué 350.75" (decimal con punto)', () => {
+    const result = parseExpense('pagué 350.75 en fletes')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(350.75)
+    expect(result.category).toBe('fletes')
+  })
+
+  it('parses debt with multi-word provider: "debemos 180000 a Puerto Maderas"', () => {
+    const result = parseExpense('debemos 180000 a Puerto Maderas')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(180000)
+    expect(result.provider).toBe('Puerto Maderas')
+  })
+
+  it('parses "gaste 8000 en flete" (gaste sin acento)', () => {
+    const result = parseExpense('gaste 8000 en flete')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(8000)
+    expect(result.category).toBe('flete')
+  })
+
+  it('parses "puse 20000 de nafta a la fiorino"', () => {
+    const result = parseExpense('puse 20000 de nafta a la fiorino')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(20000)
+    expect(result.category).toBe('nafta')
+  })
+
+  it('parses "deposite 150000 en el banco para insumos"', () => {
+    const result = parseExpense('deposite 150000 en insumos')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(150000)
+    expect(result.category).toBe('insumos')
+  })
+
+  it('does not extract tiny numbers as amount (días, cantidades chicas)', () => {
+    const result = parseExpense('el lunes 16 pague 85000 de alquiler')
+    expect(result.amount).toBe(85000)
+    expect(result.date).toBeTruthy()
+  })
+
+  it('extracts provider with "pagar a" pattern', () => {
+    const result = parseExpense('vamos a pagar a Distribuidora Sur 240000')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(240000)
+    expect(result.provider).toBe('Distribuidora Sur')
+  })
+
+  it('parses "transferí 32000 por internet"', () => {
+    const result = parseExpense('transferí 32000 por internet')
+    expect(result.isExpenseIntent).toBe(true)
+    expect(result.amount).toBe(32000)
+    expect(result.category).toBe('internet')
+  })
+})
+
 describe('real-world message with saldo', () => {
   it('parses payment and extracts saldo from same message', () => {
     const msg = 'Hoy le pagamos a la madera $965.167,69 por transferencia y 450.000 en efectivo. El saldo en transferencia es 4.000.000 y el saldo en efectivo es 1.261.792,27'

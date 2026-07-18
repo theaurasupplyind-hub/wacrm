@@ -9,7 +9,7 @@ const EXPENSE_INTENT_KEYWORDS = [
   'transferí', 'transferi', 'transfiera',
   'costo', 'costó', 'cuesto',
   'debemos', 'adeudamos', 'debo', 'deuda',
-  'pagamos', 'puse', 'puso',
+  'pagamos', 'pagar', 'puse', 'puso',
 ]
 
 const PAYMENT_METHODS: Record<string, string> = {
