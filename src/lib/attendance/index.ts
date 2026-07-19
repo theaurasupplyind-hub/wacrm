@@ -1,4 +1,4 @@
-import { searchEmployees, createAttendance, type AttendanceRecord } from '@/lib/facbal/client'
+import { searchEmployees, getEmployee, createAttendance, type AttendanceRecord } from '@/lib/facbal/client'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { parseAttendance, looksLikeAttendance } from './parse-attendance'
 
@@ -84,18 +84,34 @@ export async function processAttendanceMessage(
       return { handled: true, error: msg }
     }
 
+    const emp = await getEmployee(bestMatch.id)
+    const rawTime = parsed.time || '00:00'
+    let finalStatus = rawTime
+    let label = rawTime
+
+    if (emp?.entry_time && rawTime !== '00:00') {
+      const [eh, em] = emp.entry_time.split(':').map(Number)
+      const [th, tm] = rawTime.split(':').map(Number)
+      const diff = (th * 60 + tm) - (eh * 60 + em)
+      const threshold = emp.late_threshold ?? 5
+      if (diff > threshold) {
+        finalStatus = `TARDE-${rawTime}`
+        label = `⏰ ${rawTime} (tarde)`
+      }
+    }
+
     const record: AttendanceRecord = {
       employee_id: bestMatch.id,
       date: parsed.date,
-      status: parsed.time || '00:00',
+      status: finalStatus,
     }
     await createAttendance(record)
 
     const dateFormatted = formatDate(parsed.date)
-    const msg = `✅ Asistencia registrada:\n👤 ${bestMatch.name}\n🕐 ${parsed.time}\n📅 ${dateFormatted}`
+    const msg = `✅ Asistencia registrada:\n👤 ${bestMatch.name}\n🕐 ${label}\n📅 ${dateFormatted}`
     await sendTextResponse(args, msg)
 
-    return { handled: true, employeeName: bestMatch.name, time: parsed.time!, date: parsed.date }
+    return { handled: true, employeeName: bestMatch.name, time: label, date: parsed.date }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[attendance] process error:', msg)

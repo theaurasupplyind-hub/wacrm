@@ -609,6 +609,8 @@ export interface Employee {
   active: number
   job_type: string
   base_salary: number
+  entry_time?: string | null
+  late_threshold?: number
 }
 
 export interface AttendanceRecord {
@@ -682,6 +684,20 @@ export async function listEmployees(): Promise<Employee[]> {
   }
   const data = await res.json()
   return Array.isArray(data) ? (data as Employee[]) : []
+}
+
+export async function getEmployee(id: number): Promise<Employee | null> {
+  const url = `${apiUrl()}/employees/${id}`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    if (res.status === 404) return null
+    const detail = await res.text().catch(() => '')
+    throw new Error(`FacBal API error ${res.status} al obtener empleado${detail ? `: ${detail}` : ''}`)
+  }
+  return res.json() as Promise<Employee>
 }
 
 export async function searchEmployees(q: string): Promise<Employee[]> {
