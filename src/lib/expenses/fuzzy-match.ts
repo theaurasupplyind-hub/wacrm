@@ -24,13 +24,21 @@ function tokenScore(a: string, b: string): number {
   const nb = normalize(b)
   if (!na || !nb) return 0
   if (na === nb) return 1
-  if (na.startsWith(nb) || nb.startsWith(na)) return 0.95
+  if (na.startsWith(nb) || nb.startsWith(na)) {
+    const longer = na.length >= nb.length ? na : nb
+    const shorter = na.length >= nb.length ? nb : na
+    const longerTokens = longer.split(/\s+/).length
+    const shorterTokens = shorter.split(/\s+/).length
+    if (shorterTokens > 0 && longerTokens > shorterTokens * 1.5) {
+      return 0.6 + 0.35 * (shorterTokens / longerTokens)
+    }
+    return 0.95
+  }
   if (na.includes(nb) || nb.includes(na)) return 0.85
 
   const tokensA = na.split(' ')
   const tokensB = nb.split(' ')
 
-  // Intentar con tallo (sin plural español)
   const stem = (w: string) => w.endsWith('s') ? w.slice(0, -1) : w
   const matchToken = (ta: string, tb: string) =>
     ta === tb || stem(ta) === stem(tb) || ta.includes(tb) || tb.includes(ta)
@@ -38,7 +46,6 @@ function tokenScore(a: string, b: string): number {
   const common = tokensA.filter(t => tokensB.some(bt => matchToken(t, bt)))
   const score = common.length / Math.max(tokensA.length, tokensB.length)
 
-  // Si al menos 1 token matchea fuerte (includes), dar bonus
   const strongMatch = tokensA.some(t => tokensB.some(bt => t.includes(bt) || bt.includes(t)))
   if (strongMatch && score > 0) {
     return Math.min(score + 0.2, 0.95)
@@ -133,48 +140,80 @@ export async function resolveExpenseEntities(
   parsed: ParsedExpense,
 ): Promise<ExpenseFuzzyMatch> {
   const categories = await listExpenseCategories()
-  const category = await resolveExpenseCategory(parsed.category, categories)
 
   let providerId: number | null = null
   let providerName: string | null = null
   let employeeId: number | null = null
   let employeeName: string | null = null
 
+  const needsMatch = Boolean(parsed.provider || parsed.employee)
+  const providers = needsMatch ? await listProviders() : []
+  const employees = needsMatch ? await listEmployees() : []
+
+  // Cross-match parsed.provider against BOTH lists
   if (parsed.provider) {
-    providerName = parsed.provider
-    const providers = await listProviders()
-    let bestScore = 0
-    let best: Provider | null = null
+    let bestProvScore = 0
+    let bestProv: Provider | null = null
     for (const prov of providers) {
       const score = tokenScore(prov.name, parsed.provider)
-      if (score > bestScore) {
-        bestScore = score
-        best = prov
-      }
+      if (score > bestProvScore) { bestProvScore = score; bestProv = prov }
     }
-    if (best && bestScore >= 0.6) {
-      providerId = best.id
-      providerName = best.name
+
+    let bestEmpScore = 0
+    let bestEmp: Employee | null = null
+    for (const emp of employees) {
+      const score = tokenScore(emp.name, parsed.provider)
+      if (score > bestEmpScore) { bestEmpScore = score; bestEmp = emp }
+    }
+
+    if (bestProv && bestProvScore >= 0.6 && bestProvScore >= bestEmpScore) {
+      providerId = bestProv.id; providerName = bestProv.name
+    } else if (bestEmp && bestEmpScore >= 0.6) {
+      employeeId = bestEmp.id; employeeName = bestEmp.name
+    } else {
+      providerName = parsed.provider
     }
   }
 
+  // Cross-match parsed.employee against BOTH lists
   if (parsed.employee) {
-    employeeName = parsed.employee
-    const employees = await listEmployees()
-    let bestScore = 0
-    let best: Employee | null = null
+    let bestEmpScore = 0
+    let bestEmp: Employee | null = null
     for (const emp of employees) {
       const score = tokenScore(emp.name, parsed.employee)
-      if (score > bestScore) {
-        bestScore = score
-        best = emp
-      }
+      if (score > bestEmpScore) { bestEmpScore = score; bestEmp = emp }
     }
-    if (best && bestScore >= 0.6) {
-      employeeId = best.id
-      employeeName = best.name
+
+    let bestProvScore = 0
+    let bestProv: Provider | null = null
+    for (const prov of providers) {
+      const score = tokenScore(prov.name, parsed.employee)
+      if (score > bestProvScore) { bestProvScore = score; bestProv = prov }
+    }
+
+    if (bestEmp && bestEmpScore >= 0.6 && bestEmpScore >= bestProvScore) {
+      employeeId = bestEmp.id; employeeName = bestEmp.name
+    } else if (bestProv && bestProvScore >= 0.6) {
+      providerId = bestProv.id; providerName = bestProv.name
+    } else if (!employeeName) {
+      employeeName = parsed.employee
     }
   }
+
+  // Infer category based on resolved entity type when no explicit category
+  let categoryNameToUse = parsed.category
+  if (!categoryNameToUse) {
+    if (employeeId || employeeName) {
+      categoryNameToUse = 'Sueldos y salarios'
+    } else if (providerId || providerName) {
+      const normalized = normalize(parsed.raw || '')
+      categoryNameToUse = normalized.includes('debemos') || normalized.includes('adeudamos') || normalized.includes('deuda')
+        ? 'Compra a proveedor'
+        : 'Pago a proveedor'
+    }
+  }
+
+  const category = await resolveExpenseCategory(categoryNameToUse, categories)
 
   return {
     categoryId: category.categoryId,

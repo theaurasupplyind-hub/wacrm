@@ -404,20 +404,10 @@ export function parseExpense(text: string): ParsedExpense {
     description = category || 'Gasto'
   }
 
-  // Inferir categoría según contexto cuando no se detectó
-  let finalCategory = category
-  if (!finalCategory && provider) {
-    finalCategory = normalized.includes('debemos') || normalized.includes('adeudamos') || normalized.includes('deuda')
-      ? 'Compra a proveedor'
-      : 'Pago a proveedor'
-  } else if (!finalCategory && employee) {
-    finalCategory = 'Sueldos y salarios'
-  }
-
   return {
     amount,
     description: description.charAt(0).toUpperCase() + description.slice(1),
-    category: finalCategory,
+    category,
     provider,
     employee,
     payment_method,

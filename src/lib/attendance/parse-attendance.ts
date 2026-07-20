@@ -1,12 +1,35 @@
+export type AttendanceStatusType = 'arrival' | 'vacaciones' | 'licencia' | 'ausente'
+
 export interface ParsedAttendance {
   employeeName: string | null
   time: string | null
   date: string
   raw: string
   isAttendanceIntent: boolean
+  statusType: AttendanceStatusType
 }
 
-const ATTENDANCE_KEYWORDS = ['llego', 'llegó', 'llegue', 'llegada', 'llegadas']
+const ARRIVAL_KEYWORDS = ['llego', 'llegó', 'llegue', 'llegada', 'llegadas']
+
+const STATUS_KEYWORDS: Record<string, AttendanceStatusType> = {
+  vacaciones: 'vacaciones',
+  vacacion: 'vacaciones',
+  vaca: 'vacaciones',
+  licencia: 'licencia',
+  lic: 'licencia',
+  ausente: 'ausente',
+  aus: 'ausente',
+  falta: 'ausente',
+  falto: 'ausente',
+}
+
+const FILLER_WORDS = new Set([
+  'esta', 'está', 'estas', 'están',
+  'de', 'del',
+  'tiene', 'tienen', 'tenga', 'tengas',
+  'se', 'fue', 'son', 'va', 'van',
+  'ir', 'en', 'con', 'por', 'para', 'anda',
+])
 
 function normalize(text: string): string {
   return text
@@ -76,46 +99,84 @@ function extractEmployeeName(text: string, keywordPos: number): string | null {
   return tokens.join(' ') || null
 }
 
+function extractStatusEmployeeName(text: string, keywordPos: number): string | null {
+  const before = text.slice(0, keywordPos).trim()
+  if (!before) return null
+  const tokens = before.split(/\s+/)
+  const filtered = tokens.filter(t => !FILLER_WORDS.has(t.toLowerCase()))
+  return filtered.join(' ') || null
+}
+
 export function parseAttendance(text: string): ParsedAttendance {
   const raw = text.trim()
   if (!raw) {
-    return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false }
+    return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false, statusType: 'arrival' }
   }
 
   const normalized = normalize(raw)
-  const isAttendanceIntent = ATTENDANCE_KEYWORDS.some(k => normalized.includes(k))
-  if (!isAttendanceIntent) {
-    return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false }
+  const isArrival = ARRIVAL_KEYWORDS.some(k => normalized.includes(k))
+
+  const statusEntry = Object.entries(STATUS_KEYWORDS).find(([kw]) => normalized.includes(kw))
+  const isStatus = !!statusEntry
+
+  if (!isArrival && !isStatus) {
+    return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false, statusType: 'arrival' }
   }
 
   let remaining = raw
   let date: string | null = null
-  let parsedDate = extractDate(remaining)
+  const parsedDate = extractDate(remaining)
   date = parsedDate.date
   remaining = parsedDate.remaining
 
-  let time: string | null = null
-  let parsedTime = extractTime(remaining)
-  time = parsedTime.time
-  remaining = parsedTime.remaining
+  if (isArrival) {
+    let time: string | null = null
+    const parsedTime = extractTime(remaining)
+    time = parsedTime.time
+    remaining = parsedTime.remaining
 
-  const keywordRegex = /\b(llego|llegó|llegue|llegada|llegadas)\b/i
-  const kwMatch = remaining.match(keywordRegex)
-  let employeeName: string | null = null
-  if (kwMatch) {
-    employeeName = extractEmployeeName(remaining, kwMatch.index!)
+    const keywordRegex = /\b(llego|llegó|llegue|llegada|llegadas)\b/i
+    const kwMatch = remaining.match(keywordRegex)
+    let employeeName: string | null = null
+    if (kwMatch) {
+      employeeName = extractEmployeeName(remaining, kwMatch.index!)
+    }
+
+    return {
+      employeeName,
+      time: time || '00:00',
+      date: date || todayString(),
+      raw,
+      isAttendanceIntent: true,
+      statusType: 'arrival',
+    }
   }
 
-  return {
-    employeeName,
-    time: time || '00:00',
-    date: date || todayString(),
-    raw,
-    isAttendanceIntent,
+  if (isStatus) {
+    const [statusKeyword, statusType] = statusEntry!
+    const escaped = statusKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp('\\b' + escaped + '\\b', 'i')
+    const kwMatch = remaining.match(regex)
+    let employeeName: string | null = null
+    if (kwMatch) {
+      employeeName = extractStatusEmployeeName(remaining, kwMatch.index!)
+    }
+
+    return {
+      employeeName,
+      time: null,
+      date: date || todayString(),
+      raw,
+      isAttendanceIntent: true,
+      statusType,
+    }
   }
+
+  return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false, statusType: 'arrival' }
 }
 
 export function looksLikeAttendance(text: string): boolean {
   const normalized = normalize(text)
-  return ATTENDANCE_KEYWORDS.some(k => normalized.includes(k))
+  if (ARRIVAL_KEYWORDS.some(k => normalized.includes(k))) return true
+  return Object.keys(STATUS_KEYWORDS).some(k => normalized.includes(k))
 }
