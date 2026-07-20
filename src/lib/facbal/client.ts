@@ -642,7 +642,7 @@ export async function listProviders(): Promise<Provider[]> {
   const url = `${apiUrl()}/providers`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -658,7 +658,7 @@ export async function searchProviders(q: string): Promise<Provider[]> {
   const url = `${apiUrl()}/providers/search?q=${encodeURIComponent(q)}`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -674,7 +674,7 @@ export async function listEmployees(): Promise<Employee[]> {
   const url = `${apiUrl()}/employees`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -705,7 +705,7 @@ export async function searchEmployees(q: string): Promise<Employee[]> {
   const url = `${apiUrl()}/employees/search?q=${encodeURIComponent(q)}`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -721,7 +721,7 @@ export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
   const url = `${apiUrl()}/expense-categories`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -741,7 +741,7 @@ export async function createExpenseCategory(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -760,7 +760,7 @@ export async function createExpense(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
