@@ -697,7 +697,8 @@ export async function getEmployee(id: number): Promise<Employee | null> {
     const detail = await res.text().catch(() => '')
     throw new Error(`FacBal API error ${res.status} al obtener empleado${detail ? `: ${detail}` : ''}`)
   }
-  return res.json() as Promise<Employee>
+  const data = await res.json()
+  return (data?.employee ?? data) as Employee
 }
 
 export async function searchEmployees(q: string): Promise<Employee[]> {
