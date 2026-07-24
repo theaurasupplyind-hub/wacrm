@@ -1,3 +1,5 @@
+import { pdfToText } from './pdf-to-text'
+
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 const DEFAULT_MODEL = 'google/gemini-2.5-flash'
@@ -68,13 +70,28 @@ async function callOpenRouterMultimodal(args: {
         detail: 'high',
       },
     })
+  } else if (mimeType === 'application/pdf') {
+    const text = await pdfToText(base64)
+    if (text.length >= 20) {
+      parts.push({
+        type: 'text',
+        text: `Contenido del PDF:\n\n${text}`,
+      })
+    } else {
+      parts.push({
+        type: 'file',
+        file: {
+          file_data: base64,
+          file_name: 'documento.pdf',
+        },
+      })
+    }
   } else {
     parts.push({
       type: 'file',
       file: {
         file_data: base64,
-        file_name:
-          mimeType === 'application/pdf' ? 'documento.pdf' : 'archivo',
+        file_name: 'archivo',
       },
     })
   }

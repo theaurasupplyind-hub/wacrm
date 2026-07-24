@@ -1,4 +1,4 @@
-import { extractVoucherData } from '@/lib/ai/voucher-extraction'
+import { pdfToText } from '@/lib/ai/pdf-to-text'
 
 export interface ExtractedExpenseData {
   monto: number | null
@@ -84,12 +84,28 @@ async function callOpenRouterForExpense(args: {
       type: 'image_url',
       image_url: { url: `data:${args.mimeType};base64,${args.base64}`, detail: 'high' },
     })
+  } else if (args.mimeType === 'application/pdf') {
+    const text = await pdfToText(args.base64)
+    if (text.length >= 20) {
+      parts.push({
+        type: 'text',
+        text: `Contenido del PDF:\n\n${text}`,
+      })
+    } else {
+      parts.push({
+        type: 'file',
+        file: {
+          file_data: args.base64,
+          file_name: 'comprobante.pdf',
+        },
+      })
+    }
   } else {
     parts.push({
       type: 'file',
       file: {
         file_data: args.base64,
-        file_name: args.mimeType === 'application/pdf' ? 'comprobante.pdf' : 'archivo',
+        file_name: 'archivo',
       },
     })
   }
