@@ -61,6 +61,8 @@ const SECURITY_HEADERS = [
 ] as const;
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['@napi-rs/canvas'],
+
   /**
    * Cache-Control policy.
    *
