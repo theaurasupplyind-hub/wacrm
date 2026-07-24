@@ -25,12 +25,14 @@ export async function pdfToImages(
 
   for (let i = 1; i <= maxPages; i++) {
     const page = await doc.getPage(i)
-    const viewport = page.getViewport({ scale: 2.0 })
+    const viewport = page.getViewport({ scale: 5.0 })
 
     const canvas = createCanvas(viewport.width, viewport.height)
     const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = 'white'
+    ctx.fillRect(0, 0, viewport.width, viewport.height)
 
-    await page.render({ canvas: null, canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport }).promise
+    await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise
 
     const pngBuffer = canvas.toBuffer('image/png')
     pages.push({
