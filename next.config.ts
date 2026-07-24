@@ -61,8 +61,6 @@ const SECURITY_HEADERS = [
 ] as const;
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['pdfjs-dist'],
-
   /**
    * Cache-Control policy.
    *

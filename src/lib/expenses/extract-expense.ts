@@ -1,4 +1,4 @@
-import { pdfToText } from '@/lib/ai/pdf-to-text'
+import { pdfToImages } from '@/lib/ai/pdf-to-images'
 
 export interface ExtractedExpenseData {
   monto: number | null
@@ -85,12 +85,14 @@ async function callOpenRouterForExpense(args: {
       image_url: { url: `data:${args.mimeType};base64,${args.base64}`, detail: 'high' },
     })
   } else if (args.mimeType === 'application/pdf') {
-    const text = await pdfToText(args.base64)
-    if (text.length >= 20) {
-      parts.push({
-        type: 'text',
-        text: `Contenido del PDF:\n\n${text}`,
-      })
+    const images = await pdfToImages(args.base64)
+    if (images.length > 0) {
+      for (const img of images) {
+        parts.push({
+          type: 'image_url',
+          image_url: { url: `data:${img.mimeType};base64,${img.base64}`, detail: 'high' },
+        })
+      }
     } else {
       parts.push({
         type: 'file',

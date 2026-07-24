@@ -1,4 +1,4 @@
-import { pdfToText } from './pdf-to-text'
+import { pdfToImages } from './pdf-to-images'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -71,12 +71,17 @@ async function callOpenRouterMultimodal(args: {
       },
     })
   } else if (mimeType === 'application/pdf') {
-    const text = await pdfToText(base64)
-    if (text.length >= 20) {
-      parts.push({
-        type: 'text',
-        text: `Contenido del PDF:\n\n${text}`,
-      })
+    const images = await pdfToImages(base64)
+    if (images.length > 0) {
+      for (const img of images) {
+        parts.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${img.mimeType};base64,${img.base64}`,
+            detail: 'high',
+          },
+        })
+      }
     } else {
       parts.push({
         type: 'file',
