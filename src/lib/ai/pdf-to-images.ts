@@ -11,7 +11,11 @@ export async function pdfToImages(
   base64: string,
 ): Promise<{ base64: string; mimeType: string }[]> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-  pdfjs.GlobalWorkerOptions.workerSrc = ''
+  const pdfjsWorker = await import(
+    // @ts-expect-error -- pdf.worker.mjs has no types
+    'pdfjs-dist/legacy/build/pdf.worker.mjs'
+  )
+  ;(globalThis as Record<string, unknown>).pdfjsWorker = pdfjsWorker
 
   const binary = new Uint8Array(Buffer.from(base64, 'base64'))
   const doc = await pdfjs.getDocument({ data: binary }).promise
