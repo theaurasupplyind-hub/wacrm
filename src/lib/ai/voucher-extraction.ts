@@ -71,16 +71,23 @@ async function callOpenRouterMultimodal(args: {
       },
     })
   } else if (mimeType === 'application/pdf') {
-    const images = await pdfToImages(base64)
-    if (images.length > 0) {
-      for (const img of images) {
-        parts.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${img.mimeType};base64,${img.base64}`,
-            detail: 'high',
-          },
-        })
+    const pages = await pdfToImages(base64)
+    if (pages.length > 0) {
+      for (const p of pages) {
+        if (p.kind === 'text') {
+          parts.push({
+            type: 'text',
+            text: `Contenido del comprobante:\n\n${p.content}`,
+          })
+        } else {
+          parts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:${p.mimeType};base64,${p.base64}`,
+              detail: 'high',
+            },
+          })
+        }
       }
     } else {
       parts.push({
