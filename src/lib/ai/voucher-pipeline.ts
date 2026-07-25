@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { matchVoucher, type MatchStatus, findClientMatches } from './voucher-matching'
+import { matchVoucher, type MatchStatus, findClientMatches, montoDistance } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -352,7 +352,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let bestDestination: DestinationCandidate | null = null
   let candidates: MatchVoucherCandidate[] = []
   let destCandidates: DestinationCandidate[] = []
-  let mensajeRespuesta: string
+  let mensajeRespuesta = 'Error inesperado al procesar el comprobante.'
   let errorMessage: string | null = null
 
   try {
@@ -382,7 +382,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     //     If client total balance matches → multi_invoice.
     //     If no match → Phase 2.
     if (voucher.monto && voucher.monto > 0) {
-      console.log('[voucher] Phase 1: amount-only search (monto=%s)', voucher.monto)
+      console.log('[voucher-debug] === Phase 1: Amount-only search ===')
+      console.log('[voucher-debug]   monto=%s, tolerancia=%s', voucher.monto, Math.max(10_000, voucher.monto))
       try {
         const amountResult = await matchVoucherByName({
           nombre_cliente: null,
@@ -394,7 +395,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           tolerancia: Math.max(10_000, voucher.monto),
         })
         const amountCandidates = amountResult.invoice_candidates || []
-        console.log('[voucher] Phase 1: %d candidates', amountCandidates.length)
+        console.log('[voucher-debug] Phase 1 API: %d candidates', amountCandidates.length)
+        if (amountCandidates.length > 0) {
+          console.table(amountCandidates.map(c => ({
+            factura: c.numero_factura,
+            cliente: c.cliente_nombre,
+            saldo: c.saldo_pendiente,
+            score: c.score,
+          })))
+        }
 
         if (amountCandidates.length > 0) {
           const amountMatch = matchVoucher({
@@ -409,46 +418,57 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             bestDestination = amountMatch.bestDestination
             mensajeRespuesta = amountMatch.mensajeRespuesta
             candidates = amountMatch.candidatas
-            console.log('[voucher] Phase 1: matched by amount')
+            console.log('[voucher-debug] Phase 1 result: matched (invoice_id=%s)', amountMatch.matchedInvoiceId)
           } else if (amountMatch.status === 'multi_invoice') {
             matchStatus = 'multi_invoice'
             mensajeRespuesta = amountMatch.mensajeRespuesta
             candidates = amountMatch.candidatas
-            console.log('[voucher] Phase 1: multi_invoice by amount')
+            console.log('[voucher-debug] Phase 1 result: multi_invoice')
+            console.log('[voucher-debug] msg: %s', amountMatch.mensajeRespuesta)
           } else if (amountMatch.status === 'ambiguous') {
             matchStatus = 'ambiguous'
             mensajeRespuesta = amountMatch.mensajeRespuesta
             candidates = amountMatch.candidatas
-            console.log('[voucher] Phase 1: ambiguous by amount')
+            console.log('[voucher-debug] Phase 1 result: ambiguous')
           } else {
-            // no_match → try client-based grouping
-            console.log('[voucher] Phase 1: no match, trying client groups')
+            console.log('[voucher-debug] Phase 1 result: no_match → trying client groups')
             const clientMatches = findClientMatches(voucher.monto, amountCandidates)
             if (clientMatches.length > 0) {
               const bestClient = clientMatches[0]
               matchStatus = 'multi_invoice'
               candidates = bestClient.invoices
+              console.log('[voucher-debug] Phase 1 client match: %s (suma=%s, dif=%s)',
+                bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
+              console.table(bestClient.invoices.map(c => ({
+                factura: c.numero_factura,
+                saldo: c.saldo_pendiente,
+              })))
               mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
                 bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                 '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
               console.log('[voucher] Phase 1: client match found: %s', bestClient.clientName)
             } else {
+              console.log('[voucher-debug] Phase 1: no client groups matched')
               // Store candidates for Phase 3 fallback
               ;(globalThis as Record<string, unknown>)._voucherAmountCandidates = amountCandidates
             }
           }
+        } else {
+          console.log('[voucher-debug] Phase 1: API returned 0 candidates')
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
+        console.error('[voucher-debug] Phase 1 search FAILED:', msg)
         console.error('[voucher] Phase 1 search failed:', msg)
         errorMessage = [errorMessage, `Phase1: ${msg}`].filter(Boolean).join(' | ')
       }
     }
 
     // ── Phase 2: Name-based (second priority) ──
-    //     Only runs if Phase 1 found nothing and we have a name from AI
     if ((matchStatus === 'no_match' || matchStatus === 'ambiguous') && (voucher.nombre_cliente || voucher.nombre_origen)) {
-      console.log('[voucher] Phase 2: name-based search')
+      console.log('[voucher-debug] === Phase 2: Name-based search ===')
+      console.log('[voucher-debug]   nombre_cliente="%s" nombre_origen="%s" monto=%s tolerancia=50',
+        voucher.nombre_cliente, voucher.nombre_origen, voucher.monto)
       try {
         const nameResult = await matchVoucherByName({
           nombre_cliente: voucher.nombre_cliente,
@@ -461,7 +481,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         })
         const nameCandidates = nameResult.invoice_candidates || []
         const nameDestCandidates = nameResult.destination_candidates || []
-        console.log('[voucher] Phase 2: %d candidates', nameCandidates.length)
+        console.log('[voucher-debug] Phase 2 API: %d candidates', nameCandidates.length)
+        if (nameCandidates.length > 0) {
+          console.table(nameCandidates.map(c => ({
+            factura: c.numero_factura,
+            cliente: c.cliente_nombre,
+            saldo: c.saldo_pendiente,
+            score: c.score,
+          })))
+        }
 
         if (nameCandidates.length > 0) {
           const nameMatch = matchVoucher({
@@ -476,42 +504,71 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             bestDestination = nameMatch.bestDestination || bestDestination
             mensajeRespuesta = nameMatch.mensajeRespuesta
             candidates = nameMatch.candidatas
-            console.log('[voucher] Phase 2: result=%s', nameMatch.status)
+            console.log('[voucher-debug] Phase 2 result: %s (invoice_id=%s)', nameMatch.status, nameMatch.matchedInvoiceId)
           } else if (voucher.monto && voucher.monto > 0) {
+            console.log('[voucher-debug] Phase 2: no_match → trying client groups')
             const clientMatches = findClientMatches(voucher.monto, nameCandidates)
             if (clientMatches.length > 0) {
               const bestClient = clientMatches[0]
               matchStatus = 'multi_invoice'
               candidates = bestClient.invoices
+              console.log('[voucher-debug] Phase 2 client match: %s (suma=%s, dif=%s)',
+                bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
+              console.table(bestClient.invoices.map(c => ({
+                factura: c.numero_factura,
+                saldo: c.saldo_pendiente,
+              })))
               mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
                 bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                 '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
               console.log('[voucher] Phase 2: client match found: %s', bestClient.clientName)
+            } else {
+              console.log('[voucher-debug] Phase 2: no client groups matched')
             }
           }
+        } else {
+          console.log('[voucher-debug] Phase 2: API returned 0 candidates')
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
+        console.error('[voucher-debug] Phase 2 search FAILED:', msg)
         console.error('[voucher] Phase 2 search failed:', msg)
         errorMessage = [errorMessage, `Phase2: ${msg}`].filter(Boolean).join(' | ')
       }
     }
 
     // ── Phase 3: Ask user (last resort) ──
-    //     Show all candidates from Phase 1 and let user choose
     if (matchStatus === 'no_match') {
+      console.log('[voucher-debug] === Phase 3: Ask user ===')
       const amountCands = ((globalThis as Record<string, unknown>)._voucherAmountCandidates || []) as MatchVoucherCandidate[]
       delete (globalThis as Record<string, unknown>)._voucherAmountCandidates
 
       if (amountCands.length > 0) {
         candidates = amountCands
         matchStatus = 'ambiguous'
+        console.log('[voucher-debug] Phase 3: showing %d candidates to user', amountCands.length)
+        console.table(amountCands.map(c => ({
+          factura: c.numero_factura,
+          cliente: c.cliente_nombre,
+          saldo: c.saldo_pendiente,
+        })))
         mensajeRespuesta = 'No pudimos identificar a qué factura corresponde tu pago. ¿Cuál de estas facturas querés pagar?\n\n' +
           amountCands.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
           '\n\nRespondé con el número de factura o el nombre del cliente.'
         console.log('[voucher] Phase 3: showing %d candidates to user', amountCands.length)
+      } else {
+        console.log('[voucher-debug] Phase 3: no stored candidates')
       }
     }
+
+    console.log('[voucher-debug] === FINAL RESULT ===')
+    console.log('[voucher-debug]   matchStatus=%s', matchStatus)
+    console.log('[voucher-debug]   matchedInvoiceId=%s', matchedInvoiceId)
+    console.log('[voucher-debug]   matchedInvoiceNumero=%s', matchedInvoiceNumero)
+    console.log('[voucher-debug]   matchedClienteNombre=%s', matchedClienteNombre)
+    console.log('[voucher-debug]   matchedSaldoPendiente=%s', matchedSaldoPendiente)
+    console.log('[voucher-debug]   errorMessage=%s', errorMessage)
+    console.log('[voucher-debug]   mensajeRespuesta: %s', mensajeRespuesta)
 
     const matchedInfo = pickBestMatch(candidates)
     if (matchedInfo) {

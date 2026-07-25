@@ -19,7 +19,7 @@ function formatMonto(n: number): string {
   return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function montoDistance(monto: number, saldo: number): number {
+export function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
@@ -62,7 +62,19 @@ export function matchVoucher(args: {
     ? destinationCandidates.reduce((a, b) => (a.score >= b.score ? a : b))
     : null
 
+  console.log('[voucher-debug] === matchVoucher START ===')
+  console.log('[voucher-debug]   candidates=%d, nombreOrigen="%s", monto=%s', candidates.length, nombreOrigen, monto)
+  if (candidates.length > 0) {
+    console.table(candidates.map(c => ({
+      factura: c.numero_factura,
+      cliente: c.cliente_nombre,
+      saldo: c.saldo_pendiente,
+      score: c.score,
+    })))
+  }
+
   if (candidates.length === 0) {
+    console.log('[voucher-debug] → no_match (no candidates)')
     const msg = nombreOrigen
       ? `Buscamos facturas para "${nombreOrigen}" pero no encontramos ninguna pendiente. Un agente revisará tu comprobante.`
       : 'No encontramos facturas pendientes. Un agente lo revisará.'
@@ -70,13 +82,17 @@ export function matchVoucher(args: {
   }
 
   if (!monto || monto <= 0) {
+    console.log('[voucher-debug] --- no monto, scoring only by name ---')
     const byName = candidates.filter((c) => c.score >= NAME_MATCH_THRESHOLD).sort((a, b) => b.score - a.score)
     if (byName.length === 0) {
+      console.log('[voucher-debug] → no_match (no name match without monto)')
       return { status: 'no_match', mensajeRespuesta: 'No pudimos leer el monto del comprobante ni identificar al cliente.', matchedInvoiceId: null, candidatas: [], bestDestination: bestDest }
     }
     if (byName.length === 1) {
+      console.log('[voucher-debug] → matched by name (monto unknown, factura=%s)', byName[0].numero_factura)
       return buildMatched(byName[0], nombreOrigen, monto, bestDest)
     }
+    console.log('[voucher-debug] → ambiguous by name (monto unknown)')
     return buildAmbiguous(byName, nombreOrigen, monto)
   }
 
@@ -88,19 +104,46 @@ export function matchVoucher(args: {
       return da !== db ? da - db : b.score - a.score
     })
 
+  console.log('[voucher-debug] --- byMonto filter (monto=%s <= saldo + %s) ---', monto, MONTO_TOLERANCIA)
+  if (byMonto.length > 0) {
+    console.table(byMonto.map(c => ({
+      factura: c.numero_factura,
+      cliente: c.cliente_nombre,
+      saldo: c.saldo_pendiente,
+      dist: montoDistance(monto, c.saldo_pendiente),
+      score: c.score,
+    })))
+  } else {
+    const rejected = candidates.filter(c => monto > c.saldo_pendiente + MONTO_TOLERANCIA)
+    console.log('[voucher-debug]   byMonto: 0 candidates')
+    if (rejected.length > 0) {
+      console.table(rejected.map(c => ({
+        factura: c.numero_factura,
+        cliente: c.cliente_nombre,
+        saldo: c.saldo_pendiente,
+        rechazo: `monto (${monto}) > saldo+${MONTO_TOLERANCIA} (${c.saldo_pendiente + MONTO_TOLERANCIA})`,
+      })))
+    }
+  }
+
   if (byMonto.length === 0) {
+    console.log('[voucher-debug] → no_match (byMonto empty)')
     const msg = `Recibimos tu comprobante por ${formatMonto(monto)} pero no encontramos ninguna factura pendiente que coincida. Un agente lo revisará.`
     return { status: 'no_match', mensajeRespuesta: msg, matchedInvoiceId: null, candidatas: [], bestDestination: bestDest }
   }
 
   if (byMonto.length === 1) {
     const best = byMonto[0]
+    console.log('[voucher-debug] byMonto.length=1, dist=%s, factura=%s', montoDistance(monto, best.saldo_pendiente), best.numero_factura)
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
+      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
       const others = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (others.length > 0) {
+        console.log('[voucher-debug] → multi_invoice')
         return buildMultiInvoice([best, ...others], best.cliente_nombre || 'Cliente', monto)
       }
     }
+    console.log('[voucher-debug] → matched')
     return buildMatched(best, nombreOrigen, monto, bestDest)
   }
 
@@ -108,22 +151,43 @@ export function matchVoucher(args: {
   const next = byMonto[1]
   const bestDist = montoDistance(monto, best.saldo_pendiente)
   const nextDist = montoDistance(monto, next.saldo_pendiente)
+  const gap = nextDist - bestDist
 
-  if (bestDist === 0 || nextDist - bestDist >= MONTO_GAP_MIN) {
+  console.log('[voucher-debug] --- disambiguation ---')
+  console.log('[voucher-debug]   best=%s (cliente="%s", saldo=%s, dist=%s)', best.numero_factura, best.cliente_nombre, best.saldo_pendiente, bestDist)
+  console.log('[voucher-debug]   next=%s (cliente="%s", saldo=%s, dist=%s)', next.numero_factura, next.cliente_nombre, next.saldo_pendiente, nextDist)
+  console.log('[voucher-debug]   bestDist=%s, nextDist=%s, gap=%s', bestDist, nextDist, gap)
+  console.log('[voucher-debug]   bestDist===0? %s | gap>=%s? %s', bestDist === 0 ? 'YES' : 'NO', MONTO_GAP_MIN, gap >= MONTO_GAP_MIN ? 'YES' : 'NO')
+
+  if (bestDist === 0 || gap >= MONTO_GAP_MIN) {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
+      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
       const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (overCandidates.length > 0) {
+        console.log('[voucher-debug] → multi_invoice')
         return buildMultiInvoice([best, ...overCandidates], best.cliente_nombre || 'Cliente', monto)
       }
     }
+    console.log('[voucher-debug] → matched (gap/zero rule)')
     return buildMatched(best, nombreOrigen, monto, bestDest)
   }
 
+  console.log('[voucher-debug] --- byName filter (score >= %s) ---', NAME_MATCH_THRESHOLD)
+  console.table(byMonto.map(c => ({
+    factura: c.numero_factura,
+    cliente: c.cliente_nombre,
+    saldo: c.saldo_pendiente,
+    dist: montoDistance(monto, c.saldo_pendiente),
+    score: c.score,
+    pasaNombre: c.score >= NAME_MATCH_THRESHOLD ? 'SI' : 'NO',
+  })))
   const byName = byMonto.filter((c) => c.score >= NAME_MATCH_THRESHOLD).sort((a, b) => b.score - a.score)
   if (byName.length === 1) {
+    console.log('[voucher-debug] byName.length=1 → matched (factura=%s, score=%s)', byName[0].numero_factura, byName[0].score)
     return buildMatched(byName[0], nombreOrigen, monto, bestDest)
   }
 
+  console.log('[voucher-debug] byName.length=%d → ambiguous', byName.length)
   return buildAmbiguous(byMonto, nombreOrigen, monto)
 }
 
