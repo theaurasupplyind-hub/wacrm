@@ -477,6 +477,17 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             mensajeRespuesta = nameMatch.mensajeRespuesta
             candidates = nameMatch.candidatas
             console.log('[voucher] Phase 2: result=%s', nameMatch.status)
+          } else if (voucher.monto && voucher.monto > 0) {
+            const clientMatches = findClientMatches(voucher.monto, nameCandidates)
+            if (clientMatches.length > 0) {
+              const bestClient = clientMatches[0]
+              matchStatus = 'multi_invoice'
+              candidates = bestClient.invoices
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+                '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+              console.log('[voucher] Phase 2: client match found: %s', bestClient.clientName)
+            }
           }
         }
       } catch (err) {
