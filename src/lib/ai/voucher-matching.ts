@@ -109,7 +109,7 @@ export function matchVoucher(args: {
   const bestDist = montoDistance(monto, best.saldo_pendiente)
   const nextDist = montoDistance(monto, next.saldo_pendiente)
 
-  if (nextDist - bestDist >= MONTO_GAP_MIN) {
+  if (bestDist === 0 || nextDist - bestDist >= MONTO_GAP_MIN) {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
       const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (overCandidates.length > 0) {

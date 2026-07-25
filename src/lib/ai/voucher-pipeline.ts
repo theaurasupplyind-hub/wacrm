@@ -447,7 +447,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     // ── Phase 2: Name-based (second priority) ──
     //     Only runs if Phase 1 found nothing and we have a name from AI
-    if (matchStatus === 'no_match' && (voucher.nombre_cliente || voucher.nombre_origen)) {
+    if ((matchStatus === 'no_match' || matchStatus === 'ambiguous') && (voucher.nombre_cliente || voucher.nombre_origen)) {
       console.log('[voucher] Phase 2: name-based search')
       try {
         const nameResult = await matchVoucherByName({
