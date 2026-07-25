@@ -387,9 +387,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     //     If exact amount matches 1 invoice → matched.
     //     If client total balance matches → multi_invoice.
     //     If no match → Phase 2.
-    if (voucher.monto && voucher.monto > 0) {
+        if (voucher.monto && voucher.monto > 0) {
       console.log('[voucher-debug] === Phase 1: Amount-only search ===')
       console.log('[voucher-debug]   monto=%s, tolerancia=%s', voucher.monto, Math.max(10_000, voucher.monto))
+      const p1steps: Record<string, unknown>[] = []
       try {
         const amountResult = await matchVoucherByName({
           nombre_cliente: null,
@@ -419,6 +420,47 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             destinationCandidates: [],
           })
 
+          const byMontoCands = amountCandidates
+            .filter(c => voucher.monto! <= c.saldo_pendiente + 50)
+            .map(c => ({
+              factura: c.numero_factura,
+              cliente: c.cliente_nombre,
+              saldo: c.saldo_pendiente,
+              dist: montoDistance(voucher.monto!, c.saldo_pendiente),
+              score: c.score,
+            }))
+            .sort((a, b) => a.dist !== b.dist ? a.dist - b.dist : b.score - a.score)
+
+          const best = byMontoCands[0]
+          const next = byMontoCands[1]
+
+          p1steps.push({
+            step: 'Exact match',
+            input: phase1ApiResult,
+            filters: {
+              byMonto: {
+                rule: 'monto <= saldo + 50',
+                passed: byMontoCands,
+                total: amountCandidates.length,
+                passedCount: byMontoCands.length,
+              },
+            },
+            disambiguation: !best ? undefined : {
+              bestFactura: best.factura,
+              bestCliente: best.cliente,
+              bestSaldo: best.saldo,
+              bestDist: best.dist,
+              nextDist: next?.dist,
+              gap: next ? next.dist - best.dist : undefined,
+              multipleExact: best.dist === 0 && next?.dist === 0,
+              nameScore: best.score,
+              namePassed: best.score >= 0.5,
+              decision: amountMatch.status === 'matched' ? 'autoMatched' : amountMatch.status === 'ambiguous' ? 'ambiguous' : 'no_match',
+              decisionReason: amountMatch.mensajeRespuesta.substring(0, 100),
+            },
+            result: { status: amountMatch.status, matchedInvoiceId: amountMatch.matchedInvoiceId },
+          })
+
           if (amountMatch.status === 'matched') {
             matchStatus = 'matched'
             matchedInvoiceId = amountMatch.matchedInvoiceId
@@ -432,16 +474,31 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             candidates = amountMatch.candidatas
             console.log('[voucher-debug] Phase 1 result: multi_invoice')
             console.log('[voucher-debug] msg: %s', amountMatch.mensajeRespuesta)
-          } else if (amountMatch.status === 'ambiguous') {
-            // Try to resolve via exact sum of client invoices
-            console.log('[voucher-debug] Phase 1: ambiguous → trying exact sum matches')
+          } else {
+            // Step 2: Exact sum check (for both ambiguous and no_match)
             const exactSums = findExactClientSumMatches(voucher.monto, amountCandidates)
+            p1steps.push({
+              step: 'Exact sum',
+              input: phase1ApiResult,
+              filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) == monto' },
+              result: {
+                total: exactSums.length,
+                groups: exactSums.map(s => ({
+                  clientName: s.clientName,
+                  total: s.total,
+                  invoices: s.invoices.map(i => ({ factura: i.numero_factura, saldo: i.saldo_pendiente })),
+                })),
+              },
+            })
+
             if (exactSums.length === 1) {
               const bestSum = exactSums[0]
               matchStatus = 'multi_invoice'
               candidates = bestSum.invoices
-              console.log('[voucher-debug] Phase 1: exact sum resolved ambiguity: %s (suma=%s)',
-                bestSum.clientName, bestSum.total)
+              p1steps[p1steps.length - 1] = Object.assign({}, p1steps[p1steps.length - 1], {
+                disambiguation: { decision: 'exactSumMatch', clientName: bestSum.clientName },
+                result: { status: 'multi_invoice' },
+              })
               mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de ${bestSum.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
                 bestSum.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                 '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
@@ -452,49 +509,38 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de varios clientes. ¿Cuál es correcto?\n\n${lineas.join('\n')}\n\nRespondé con el nombre del cliente.`
               candidates = exactSums.flatMap(s => s.invoices)
               console.log('[voucher-debug] Phase 1: multiple exact sums: %d', exactSums.length)
-            } else {
+            } else if (amountMatch.status === 'ambiguous') {
+              // No exact sum, keep ambiguous from matchVoucher
               matchStatus = 'ambiguous'
               mensajeRespuesta = amountMatch.mensajeRespuesta
               candidates = amountMatch.candidatas
               console.log('[voucher-debug] Phase 1: no exact sum → keeping ambiguous')
-            }
-          } else {
-            console.log('[voucher-debug] Phase 1 result: no_match → trying exact sum matches')
-            const exactSums = findExactClientSumMatches(voucher.monto, amountCandidates)
-            if (exactSums.length === 1) {
-              const bestSum = exactSums[0]
-              matchStatus = 'multi_invoice'
-              candidates = bestSum.invoices
-              console.log('[voucher-debug] Phase 1: exact sum match: %s (suma=%s)',
-                bestSum.clientName, bestSum.total)
-              console.table(bestSum.invoices.map(c => ({
-                factura: c.numero_factura,
-                saldo: c.saldo_pendiente,
-              })))
-              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de ${bestSum.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
-                bestSum.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
-                '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
-              console.log('[voucher] Phase 1: exact sum match found: %s', bestSum.clientName)
-            } else if (exactSums.length > 1) {
-              const lineas = exactSums.map((s, i) => `${i + 1}. ${s.clientName} — Saldo total: ${formatMonto(s.total)}`)
-              matchStatus = 'ambiguous'
-              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de varios clientes. ¿Cuál es correcto?\n\n${lineas.join('\n')}\n\nRespondé con el nombre del cliente.`
-              candidates = exactSums.flatMap(s => s.invoices)
-              console.log('[voucher-debug] Phase 1: multiple exact sums: %d', exactSums.length)
             } else {
-              // No exact sum → try close match (tolerancia) or store for Phase 3
+              // no_match, try close match (Step 3)
               console.log('[voucher-debug] Phase 1: no exact sum → trying close client groups')
               const clientMatches = findClientMatches(voucher.monto, amountCandidates)
+              p1steps.push({
+                step: 'Close match',
+                input: phase1ApiResult,
+                filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) ≈ monto ± 50', tolerance: 50 },
+                result: {
+                  total: clientMatches.length,
+                  groups: clientMatches.map(s => ({
+                    clientName: s.clientName,
+                    total: s.total,
+                    invoices: s.invoices.map(i => ({ factura: i.numero_factura, saldo: i.saldo_pendiente })),
+                  })),
+                },
+              })
+
               if (clientMatches.length > 0) {
                 const bestClient = clientMatches[0]
                 matchStatus = 'multi_invoice'
                 candidates = bestClient.invoices
-                console.log('[voucher-debug] Phase 1 close match: %s (suma=%s, dif=%s)',
-                  bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
-                console.table(bestClient.invoices.map(c => ({
-                  factura: c.numero_factura,
-                  saldo: c.saldo_pendiente,
-                })))
+                p1steps[p1steps.length - 1] = Object.assign({}, p1steps[p1steps.length - 1], {
+                  disambiguation: { decision: 'closeMatch', clientName: bestClient.clientName, diff: montoDistance(voucher.monto, bestClient.total) },
+                  result: { status: 'multi_invoice' },
+                })
                 mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
                   bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                   '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
@@ -512,6 +558,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         debugInfo.phase1 = {
           apiCall: { monto: voucher.monto, tolerancia: Math.max(10_000, voucher.monto) },
           apiResult: phase1ApiResult,
+          steps: p1steps,
           result: { status: amountCandidates.length > 0 ? matchStatus : 'no_match', matchedInvoiceId },
         }
       } catch (err) {
@@ -527,6 +574,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       console.log('[voucher-debug] === Phase 2: Name-based search ===')
       console.log('[voucher-debug]   nombre_cliente="%s" nombre_origen="%s" monto=%s tolerancia=50',
         voucher.nombre_cliente, voucher.nombre_origen, voucher.monto)
+      const p2steps: Record<string, unknown>[] = []
       try {
         const nameResult = await matchVoucherByName({
           nombre_cliente: voucher.nombre_cliente,
@@ -557,6 +605,24 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             destinationCandidates: nameDestCandidates,
           })
 
+          const byMontoCands = nameCandidates
+            .filter(c => (voucher.monto ?? 0) <= c.saldo_pendiente + 50)
+            .map(c => ({
+              factura: c.numero_factura,
+              cliente: c.cliente_nombre,
+              saldo: c.saldo_pendiente,
+              dist: montoDistance(voucher.monto ?? 0, c.saldo_pendiente),
+              score: c.score,
+            }))
+            .sort((a, b) => a.dist !== b.dist ? a.dist - b.dist : b.score - a.score)
+
+          p2steps.push({
+            step: 'Exact match',
+            input: phase2ApiResult,
+            filters: { byMonto: { passed: byMontoCands, total: nameCandidates.length, passedCount: byMontoCands.length } },
+            result: { status: nameMatch.status, matchedInvoiceId: nameMatch.matchedInvoiceId },
+          })
+
           if (nameMatch.status !== 'no_match') {
             matchStatus = nameMatch.status
             matchedInvoiceId = nameMatch.matchedInvoiceId
@@ -567,6 +633,20 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           } else if (voucher.monto && voucher.monto > 0) {
             console.log('[voucher-debug] Phase 2: no_match → trying exact sum matches')
             const exactSums = findExactClientSumMatches(voucher.monto, nameCandidates)
+            p2steps.push({
+              step: 'Exact sum',
+              input: phase2ApiResult,
+              filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) == monto' },
+              result: {
+                total: exactSums.length,
+                groups: exactSums.map(s => ({
+                  clientName: s.clientName,
+                  total: s.total,
+                  invoices: s.invoices.map(i => ({ factura: i.numero_factura, saldo: i.saldo_pendiente })),
+                })),
+              },
+            })
+
             if (exactSums.length === 1) {
               const bestSum = exactSums[0]
               matchStatus = 'multi_invoice'
@@ -586,6 +666,20 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             } else {
               console.log('[voucher-debug] Phase 2: no exact sum → trying close client groups')
               const clientMatches = findClientMatches(voucher.monto, nameCandidates)
+              p2steps.push({
+                step: 'Close match',
+                input: phase2ApiResult,
+                filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) ≈ monto ± 50', tolerance: 50 },
+                result: {
+                  total: clientMatches.length,
+                  groups: clientMatches.map(s => ({
+                    clientName: s.clientName,
+                    total: s.total,
+                    invoices: s.invoices.map(i => ({ factura: i.numero_factura, saldo: i.saldo_pendiente })),
+                  })),
+                },
+              })
+
               if (clientMatches.length > 0) {
                 const bestClient = clientMatches[0]
                 matchStatus = 'multi_invoice'
@@ -617,6 +711,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             tolerancia: 50,
           },
           apiResult: phase2ApiResult,
+          steps: p2steps,
           result: { status: nameCandidates.length > 0 ? matchStatus : 'no_match', matchedInvoiceId },
         }
       } catch (err) {
