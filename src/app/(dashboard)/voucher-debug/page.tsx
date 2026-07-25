@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Search, Check, X, AlertTriangle, ChevronDown, ChevronRight, Bug } from 'lucide-react'
+import { Search, Check, X, AlertTriangle, ChevronDown, ChevronRight, Bug, Users } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 
 interface PhaseInfo {
@@ -47,6 +47,15 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+function StepDot({ done, children }: { done: boolean; children: React.ReactNode }) {
+  return (
+    <span className={`inline-flex items-center gap-1 ${done ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${done ? 'bg-primary' : 'bg-muted-foreground/30'}`} />
+      {children}
+    </span>
+  )
+}
+
 function PhaseBlock({ phase, label }: { phase: PhaseInfo | null; label: string }) {
   const [open, setOpen] = useState(false)
   if (!phase) return null
@@ -65,6 +74,14 @@ function PhaseBlock({ phase, label }: { phase: PhaseInfo | null; label: string }
       </button>
       {open && (
         <div className="px-4 py-3 space-y-3 text-sm">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground border-b pb-2 mb-1">
+            <StepDot done>1. Exact match</StepDot>
+            <span className="text-muted-foreground/30">→</span>
+            <StepDot done={phase.result?.status === 'matched' || phase.result?.status === 'multi_invoice' || phase.result?.status === 'ambiguous'}>2. Exact sum</StepDot>
+            <span className="text-muted-foreground/30">→</span>
+            <StepDot done={phase.result?.status === 'multi_invoice' || phase.result?.status === 'ambiguous'}>3. Close match</StepDot>
+          </div>
+
           <div>
             <span className="font-medium">API Call:</span>{' '}
             <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
@@ -228,8 +245,11 @@ export default function VoucherDebugPage() {
                     <PhaseBlock phase={ext.debug_info.phase2} label="Phase 2 — Name-based" />
                     {ext.debug_info.phase3 && (
                       <div className="border rounded-lg overflow-hidden">
-                        <div className="bg-muted/50 px-4 py-2 text-sm font-medium">
-                          Phase 3 — Ask user ({ext.debug_info.phase3.candidatesShown} candidates)
+                        <div className="bg-muted/50 px-4 py-2 text-sm font-medium flex items-center gap-2">
+                          <span>Phase 3 — Ask user</span>
+                          <span className="text-muted-foreground font-normal">
+                            ({ext.debug_info.phase3.candidatesShown} candidates, {new Set(ext.debug_info.phase3.candidates.map(c => c.cliente)).size} clients)
+                          </span>
                         </div>
                         {ext.debug_info.phase3.candidates.length > 0 && (
                           <div className="px-4 py-3">

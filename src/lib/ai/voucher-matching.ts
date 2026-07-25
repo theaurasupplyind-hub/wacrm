@@ -49,6 +49,30 @@ export function findClientMatches(
   return results.sort((a, b) => montoDistance(monto, a.total) - montoDistance(monto, b.total))
 }
 
+export function findExactClientSumMatches(
+  monto: number,
+  candidates: MatchVoucherCandidate[],
+): { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] {
+  const groups = new Map<string, MatchVoucherCandidate[]>()
+  for (const c of candidates) {
+    const key = c.cliente_nombre?.trim().toLowerCase() || 'sin nombre'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(c)
+  }
+  const results: { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] = []
+  for (const [_, invoices] of groups) {
+    const total = invoices.reduce((s, inv) => s + inv.saldo_pendiente, 0)
+    if (montoDistance(monto, total) === 0) {
+      results.push({
+        clientName: invoices[0].cliente_nombre || 'Sin nombre',
+        invoices,
+        total,
+      })
+    }
+  }
+  return results.sort((a, b) => montoDistance(monto, a.total) - montoDistance(monto, b.total))
+}
+
 export function matchVoucher(args: {
   voucher: VoucherData
   candidates: MatchVoucherCandidate[]
@@ -159,7 +183,28 @@ export function matchVoucher(args: {
   console.log('[voucher-debug]   bestDist=%s, nextDist=%s, gap=%s', bestDist, nextDist, gap)
   console.log('[voucher-debug]   bestDist===0? %s | gap>=%s? %s', bestDist === 0 ? 'YES' : 'NO', MONTO_GAP_MIN, gap >= MONTO_GAP_MIN ? 'YES' : 'NO')
 
-  if (bestDist === 0 || gap >= MONTO_GAP_MIN) {
+  if (bestDist === 0) {
+    console.log('[voucher-debug]   bestDist === 0 → exact match')
+    if (byMonto.length > 1 && montoDistance(monto, byMonto[1].saldo_pendiente) === 0) {
+      console.log('[voucher-debug]   multiple exact matches → disambiguate by name')
+    } else {
+      if (best.score >= NAME_MATCH_THRESHOLD) {
+        if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
+          console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
+          const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
+          if (overCandidates.length > 0) {
+            console.log('[voucher-debug] → multi_invoice')
+            return buildMultiInvoice([best, ...overCandidates], best.cliente_nombre || 'Cliente', monto)
+          }
+        }
+        console.log('[voucher-debug] → matched (exact + name OK)')
+        return buildMatched(best, nombreOrigen, monto, bestDest)
+      }
+      console.log('[voucher-debug]   name mismatch (score=%s < %s) → asking user', best.score, NAME_MATCH_THRESHOLD)
+      console.log('[voucher-debug] → name_mismatch')
+      return buildNameMismatch(best, nombreOrigen, monto, bestDest)
+    }
+  } else if (gap >= MONTO_GAP_MIN) {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
       console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
       const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
@@ -199,6 +244,13 @@ function buildMatched(best: MatchVoucherCandidate, nombreOrigen: string | null, 
     ? `Gracias ${nombreOrigen}. Tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} corresponde a ${best.cliente_nombre} — Factura ${best.numero_factura} (saldo: ${formatMonto(best.saldo_pendiente)}).${saldoRestante}${destMsg} Lo estamos procesando.`
     : `Registramos tu pago de ${formatMonto(monto ?? best.saldo_pendiente)} para ${best.cliente_nombre} — Factura ${best.numero_factura}.${saldoRestante}${destMsg} Lo estamos procesando.`
   return { status: 'matched', mensajeRespuesta: msg, matchedInvoiceId: best.invoice_id, candidatas: [best], bestDestination: bestDest }
+}
+
+function buildNameMismatch(best: MatchVoucherCandidate, nombreOrigen: string | null, monto: number | null, bestDest: DestinationCandidate | null): MatchResult {
+  const msg = nombreOrigen
+    ? `El pago de ${formatMonto(monto ?? best.saldo_pendiente)} coincide exactamente con la factura ${best.numero_factura} de ${best.cliente_nombre}, pero el nombre del remitente es "${nombreOrigen}". ¿Es correcto?\n\nRespondé "sí" para confirmar o decinos el nombre correcto.`
+    : `El pago de ${formatMonto(monto ?? best.saldo_pendiente)} coincide exactamente con la factura ${best.numero_factura} de ${best.cliente_nombre}. ¿Es correcto?\n\nRespondé "sí" para confirmar.`
+  return { status: 'ambiguous', mensajeRespuesta: msg, matchedInvoiceId: null, candidatas: [best], bestDestination: bestDest }
 }
 
 function buildAmbiguous(byScore: MatchVoucherCandidate[], nombreOrigen: string | null, monto: number | null): MatchResult {

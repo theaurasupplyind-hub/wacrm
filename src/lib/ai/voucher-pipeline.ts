@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { matchVoucher, type MatchStatus, findClientMatches, montoDistance } from './voucher-matching'
+import { matchVoucher, type MatchStatus, findClientMatches, findExactClientSumMatches, montoDistance } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -433,31 +433,76 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             console.log('[voucher-debug] Phase 1 result: multi_invoice')
             console.log('[voucher-debug] msg: %s', amountMatch.mensajeRespuesta)
           } else if (amountMatch.status === 'ambiguous') {
-            matchStatus = 'ambiguous'
-            mensajeRespuesta = amountMatch.mensajeRespuesta
-            candidates = amountMatch.candidatas
-            console.log('[voucher-debug] Phase 1 result: ambiguous')
-          } else {
-            console.log('[voucher-debug] Phase 1 result: no_match → trying client groups')
-            const clientMatches = findClientMatches(voucher.monto, amountCandidates)
-            if (clientMatches.length > 0) {
-              const bestClient = clientMatches[0]
+            // Try to resolve via exact sum of client invoices
+            console.log('[voucher-debug] Phase 1: ambiguous → trying exact sum matches')
+            const exactSums = findExactClientSumMatches(voucher.monto, amountCandidates)
+            if (exactSums.length === 1) {
+              const bestSum = exactSums[0]
               matchStatus = 'multi_invoice'
-              candidates = bestClient.invoices
-              console.log('[voucher-debug] Phase 1 client match: %s (suma=%s, dif=%s)',
-                bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
-              console.table(bestClient.invoices.map(c => ({
+              candidates = bestSum.invoices
+              console.log('[voucher-debug] Phase 1: exact sum resolved ambiguity: %s (suma=%s)',
+                bestSum.clientName, bestSum.total)
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de ${bestSum.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                bestSum.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+                '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+              console.log('[voucher] Phase 1: exact sum match found: %s', bestSum.clientName)
+            } else if (exactSums.length > 1) {
+              const lineas = exactSums.map((s, i) => `${i + 1}. ${s.clientName} — Saldo total: ${formatMonto(s.total)}`)
+              matchStatus = 'ambiguous'
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de varios clientes. ¿Cuál es correcto?\n\n${lineas.join('\n')}\n\nRespondé con el nombre del cliente.`
+              candidates = exactSums.flatMap(s => s.invoices)
+              console.log('[voucher-debug] Phase 1: multiple exact sums: %d', exactSums.length)
+            } else {
+              matchStatus = 'ambiguous'
+              mensajeRespuesta = amountMatch.mensajeRespuesta
+              candidates = amountMatch.candidatas
+              console.log('[voucher-debug] Phase 1: no exact sum → keeping ambiguous')
+            }
+          } else {
+            console.log('[voucher-debug] Phase 1 result: no_match → trying exact sum matches')
+            const exactSums = findExactClientSumMatches(voucher.monto, amountCandidates)
+            if (exactSums.length === 1) {
+              const bestSum = exactSums[0]
+              matchStatus = 'multi_invoice'
+              candidates = bestSum.invoices
+              console.log('[voucher-debug] Phase 1: exact sum match: %s (suma=%s)',
+                bestSum.clientName, bestSum.total)
+              console.table(bestSum.invoices.map(c => ({
                 factura: c.numero_factura,
                 saldo: c.saldo_pendiente,
               })))
-              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
-                bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de ${bestSum.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                bestSum.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                 '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
-              console.log('[voucher] Phase 1: client match found: %s', bestClient.clientName)
+              console.log('[voucher] Phase 1: exact sum match found: %s', bestSum.clientName)
+            } else if (exactSums.length > 1) {
+              const lineas = exactSums.map((s, i) => `${i + 1}. ${s.clientName} — Saldo total: ${formatMonto(s.total)}`)
+              matchStatus = 'ambiguous'
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de varios clientes. ¿Cuál es correcto?\n\n${lineas.join('\n')}\n\nRespondé con el nombre del cliente.`
+              candidates = exactSums.flatMap(s => s.invoices)
+              console.log('[voucher-debug] Phase 1: multiple exact sums: %d', exactSums.length)
             } else {
-              console.log('[voucher-debug] Phase 1: no client groups matched')
-              // Store candidates for Phase 3 fallback
-              ;(globalThis as Record<string, unknown>)._voucherAmountCandidates = amountCandidates
+              // No exact sum → try close match (tolerancia) or store for Phase 3
+              console.log('[voucher-debug] Phase 1: no exact sum → trying close client groups')
+              const clientMatches = findClientMatches(voucher.monto, amountCandidates)
+              if (clientMatches.length > 0) {
+                const bestClient = clientMatches[0]
+                matchStatus = 'multi_invoice'
+                candidates = bestClient.invoices
+                console.log('[voucher-debug] Phase 1 close match: %s (suma=%s, dif=%s)',
+                  bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
+                console.table(bestClient.invoices.map(c => ({
+                  factura: c.numero_factura,
+                  saldo: c.saldo_pendiente,
+                })))
+                mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                  bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+                  '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+                console.log('[voucher] Phase 1: close match found: %s', bestClient.clientName)
+              } else {
+                console.log('[voucher-debug] Phase 1: no matches found → store for Phase 3')
+                ;(globalThis as Record<string, unknown>)._voucherAmountCandidates = amountCandidates
+              }
             }
           }
         } else {
@@ -520,24 +565,44 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             candidates = nameMatch.candidatas
             console.log('[voucher-debug] Phase 2 result: %s (invoice_id=%s)', nameMatch.status, nameMatch.matchedInvoiceId)
           } else if (voucher.monto && voucher.monto > 0) {
-            console.log('[voucher-debug] Phase 2: no_match → trying client groups')
-            const clientMatches = findClientMatches(voucher.monto, nameCandidates)
-            if (clientMatches.length > 0) {
-              const bestClient = clientMatches[0]
+            console.log('[voucher-debug] Phase 2: no_match → trying exact sum matches')
+            const exactSums = findExactClientSumMatches(voucher.monto, nameCandidates)
+            if (exactSums.length === 1) {
+              const bestSum = exactSums[0]
               matchStatus = 'multi_invoice'
-              candidates = bestClient.invoices
-              console.log('[voucher-debug] Phase 2 client match: %s (suma=%s, dif=%s)',
-                bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
-              console.table(bestClient.invoices.map(c => ({
-                factura: c.numero_factura,
-                saldo: c.saldo_pendiente,
-              })))
-              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
-                bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+              candidates = bestSum.invoices
+              console.log('[voucher-debug] Phase 2: exact sum match: %s (suma=%s)',
+                bestSum.clientName, bestSum.total)
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de ${bestSum.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                bestSum.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
                 '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
-              console.log('[voucher] Phase 2: client match found: %s', bestClient.clientName)
+              console.log('[voucher] Phase 2: exact sum match found: %s', bestSum.clientName)
+            } else if (exactSums.length > 1) {
+              const lineas = exactSums.map((s, i) => `${i + 1}. ${s.clientName} — Saldo total: ${formatMonto(s.total)}`)
+              matchStatus = 'ambiguous'
+              mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide exactamente con el saldo total de varios clientes. ¿Cuál es correcto?\n\n${lineas.join('\n')}\n\nRespondé con el nombre del cliente.`
+              candidates = exactSums.flatMap(s => s.invoices)
+              console.log('[voucher-debug] Phase 2: multiple exact sums: %d', exactSums.length)
             } else {
-              console.log('[voucher-debug] Phase 2: no client groups matched')
+              console.log('[voucher-debug] Phase 2: no exact sum → trying close client groups')
+              const clientMatches = findClientMatches(voucher.monto, nameCandidates)
+              if (clientMatches.length > 0) {
+                const bestClient = clientMatches[0]
+                matchStatus = 'multi_invoice'
+                candidates = bestClient.invoices
+                console.log('[voucher-debug] Phase 2 close match: %s (suma=%s, dif=%s)',
+                  bestClient.clientName, bestClient.total, montoDistance(voucher.monto, bestClient.total))
+                console.table(bestClient.invoices.map(c => ({
+                  factura: c.numero_factura,
+                  saldo: c.saldo_pendiente,
+                })))
+                mensajeRespuesta = `Tu pago de ${formatMonto(voucher.monto)} coincide con el saldo total de ${bestClient.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+                  bestClient.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+                  '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+                console.log('[voucher] Phase 2: close match found: %s', bestClient.clientName)
+              } else {
+                console.log('[voucher-debug] Phase 2: no matches found')
+              }
             }
           }
         } else {
@@ -572,15 +637,19 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         candidates = amountCands
         matchStatus = 'ambiguous'
         console.log('[voucher-debug] Phase 3: showing %d candidates to user', amountCands.length)
+        const clientesUnicos = new Set(amountCands.map(c => c.cliente_nombre)).size
         console.table(amountCands.map(c => ({
           factura: c.numero_factura,
           cliente: c.cliente_nombre,
           saldo: c.saldo_pendiente,
         })))
-        mensajeRespuesta = 'No pudimos identificar a qué factura corresponde tu pago. ¿Cuál de estas facturas querés pagar?\n\n' +
+        const intro = voucher.monto && voucher.monto > 0
+          ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Hay ${clientesUnicos} clientes posibles con facturas cercanas a ese monto.\n\n`
+          : 'No pudimos leer el monto del comprobante. Estas son las facturas pendientes:\n\n'
+        mensajeRespuesta = intro +
           amountCands.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
-          '\n\nRespondé con el número de factura o el nombre del cliente.'
-        console.log('[voucher] Phase 3: showing %d candidates to user', amountCands.length)
+          '\n\nRespondé con el número de factura o el nombre completo del cliente.'
+        console.log('[voucher] Phase 3: showing %d candidates (%d clients) to user', amountCands.length, clientesUnicos)
       } else {
         console.log('[voucher-debug] Phase 3: no stored candidates')
       }
