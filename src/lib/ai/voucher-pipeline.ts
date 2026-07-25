@@ -105,8 +105,13 @@ function interpretMultiInvoiceResponse(
 ): MatchVoucherCandidate[] {
   const cleaned = text.trim().toLowerCase()
 
-  // "todas" or "todos" → all candidates
-  if (/^tod[ao]s?$/.test(cleaned)) {
+  // "si", "sí", "confirmar", "ok" → all candidates
+  if (/^(si|sí|confirmo?|ok|dale|adelante|todos|todas)$/i.test(cleaned)) {
+    return [...candidates]
+  }
+
+  // "todas", "si", "confirmar" → all candidates
+  if (/^(tod[ao]s?|s[ií]|confirmo?|ok|dale|adelante)$/i.test(cleaned)) {
     return [...candidates]
   }
 

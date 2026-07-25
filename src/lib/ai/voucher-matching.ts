@@ -23,55 +23,30 @@ function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
-function findAmountCombinations(
+function findClientMatches(
   monto: number,
   candidates: MatchVoucherCandidate[],
-): MatchVoucherCandidate[][] {
-  const sorted = [...candidates].sort((a, b) => b.saldo_pendiente - a.saldo_pendiente)
-  const combos: MatchVoucherCandidate[][] = []
-
-  const seen = new Set<string>()
-
-  function key(invs: MatchVoucherCandidate[]): string {
-    return invs.map((i) => i.invoice_id).sort().join(',')
+): { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] {
+  const groups = new Map<string, MatchVoucherCandidate[]>()
+  for (const c of candidates) {
+    const key = c.cliente_nombre?.trim().toLowerCase() || 'sin nombre'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(c)
   }
 
-  function add(c: MatchVoucherCandidate[]) {
-    const k = key(c)
-    if (!seen.has(k)) {
-      seen.add(k)
-      combos.push(c)
+  const results: { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] = []
+  for (const [_, invoices] of groups) {
+    const total = invoices.reduce((s, inv) => s + inv.saldo_pendiente, 0)
+    if (montoDistance(monto, total) <= MONTO_TOLERANCIA) {
+      results.push({
+        clientName: invoices[0].cliente_nombre || 'Sin nombre',
+        invoices,
+        total,
+      })
     }
   }
 
-  for (let i = 0; i < sorted.length; i++) {
-    const a = sorted[i]
-    if (montoDistance(monto, a.saldo_pendiente) <= MONTO_TOLERANCIA) {
-      add([a])
-    }
-
-    for (let j = i + 1; j < sorted.length; j++) {
-      const b = sorted[j]
-      const sum2 = a.saldo_pendiente + b.saldo_pendiente
-      if (montoDistance(monto, sum2) <= MONTO_TOLERANCIA) {
-        add([a, b])
-      }
-
-      for (let k = j + 1; k < sorted.length; k++) {
-        const c = sorted[k]
-        const sum3 = sum2 + c.saldo_pendiente
-        if (montoDistance(monto, sum3) <= MONTO_TOLERANCIA) {
-          add([a, b, c])
-        }
-      }
-    }
-  }
-
-  return combos.sort((a, b) => {
-    const da = Math.abs(monto - a.reduce((s, i) => s + i.saldo_pendiente, 0))
-    const db = Math.abs(monto - b.reduce((s, i) => s + i.saldo_pendiente, 0))
-    return da - db
-  })
+  return results.sort((a, b) => montoDistance(monto, a.total) - montoDistance(monto, b.total))
 }
 
 export function matchVoucher(args: {
@@ -114,22 +89,10 @@ export function matchVoucher(args: {
     })
 
   if (byMonto.length === 0) {
-    const combos = findAmountCombinations(monto, candidates)
-    if (combos.length > 0) {
-      const bestCombo = combos[0]
-      const formatted = combos.slice(0, 3).map((combo, ci) => {
-        const parts = combo.map((inv) => `${inv.cliente_nombre} — ${inv.numero_factura} (${formatMonto(inv.saldo_pendiente)})`).join(' + ')
-        const total = combo.reduce((s, inv) => s + inv.saldo_pendiente, 0)
-        return `Opción ${ci + 1}: ${parts} = ${formatMonto(total)}`
-      })
-      const msg = `Tu pago de ${formatMonto(monto)} puede corresponder a varias combinaciones de facturas:\n\n${formatted.join('\n')}\n\nRespondé el número de opción (ej: 1) o decí los números de factura separados por coma.`
-      return {
-        status: 'multi_invoice',
-        mensajeRespuesta: msg,
-        matchedInvoiceId: null,
-        candidatas: bestCombo,
-        bestDestination: bestDest,
-      }
+    const clientMatches = findClientMatches(monto, candidates)
+    if (clientMatches.length > 0) {
+      const best = clientMatches[0]
+      return buildMultiInvoice(best.invoices, best.clientName, monto)
     }
     const msg = `Recibimos tu comprobante por ${formatMonto(monto)} pero no encontramos ninguna factura pendiente que coincida. Un agente lo revisará.`
     return { status: 'no_match', mensajeRespuesta: msg, matchedInvoiceId: null, candidatas: [], bestDestination: bestDest }
@@ -140,7 +103,7 @@ export function matchVoucher(args: {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
       const others = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (others.length > 0) {
-        return buildMultiInvoice([best, ...others], nombreOrigen, monto)
+        return buildMultiInvoice([best, ...others], best.cliente_nombre || 'Cliente', monto)
       }
     }
     return buildMatched(best, nombreOrigen, monto, bestDest)
@@ -155,7 +118,7 @@ export function matchVoucher(args: {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
       const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (overCandidates.length > 0) {
-        return buildMultiInvoice([best, ...overCandidates], nombreOrigen, monto)
+        return buildMultiInvoice([best, ...overCandidates], best.cliente_nombre || 'Cliente', monto)
       }
     }
     return buildMatched(best, nombreOrigen, monto, bestDest)
@@ -189,12 +152,12 @@ function buildAmbiguous(byScore: MatchVoucherCandidate[], nombreOrigen: string |
   return { status: 'ambiguous', mensajeRespuesta: intro + '\n\n' + lineas.join('\n') + '\n\nRespondé con el número de factura o el nombre completo.', matchedInvoiceId: null, candidatas: byScore, bestDestination: null }
 }
 
-function buildMultiInvoice(byScore: MatchVoucherCandidate[], nombreOrigen: string | null, monto: number): MatchResult {
+function buildMultiInvoice(byScore: MatchVoucherCandidate[], clientName: string, monto: number): MatchResult {
   const lineas = byScore.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`)
-  const intro = `Tu pago de ${formatMonto(monto)} puede cubrir varias facturas. ¿Cuáles querés pagar? Respondé los números separados por coma (ej: 1,2) o decí "todas".`
+  const intro = `Tu pago de ${formatMonto(monto)} coincide con el saldo total de ${clientName}. ¿Confirmás que querés pagar estas facturas?\n\n${lineas.join('\n')}\n\nRespondé "si", "confirmar" o los números de factura separados por coma.`
   return {
     status: 'multi_invoice',
-    mensajeRespuesta: intro + '\n\n' + lineas.join('\n'),
+    mensajeRespuesta: intro,
     matchedInvoiceId: null,
     candidatas: byScore,
     bestDestination: null,
