@@ -23,6 +23,57 @@ function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
+function findAmountCombinations(
+  monto: number,
+  candidates: MatchVoucherCandidate[],
+): MatchVoucherCandidate[][] {
+  const sorted = [...candidates].sort((a, b) => b.saldo_pendiente - a.saldo_pendiente)
+  const combos: MatchVoucherCandidate[][] = []
+
+  const seen = new Set<string>()
+
+  function key(invs: MatchVoucherCandidate[]): string {
+    return invs.map((i) => i.invoice_id).sort().join(',')
+  }
+
+  function add(c: MatchVoucherCandidate[]) {
+    const k = key(c)
+    if (!seen.has(k)) {
+      seen.add(k)
+      combos.push(c)
+    }
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i]
+    if (montoDistance(monto, a.saldo_pendiente) <= MONTO_TOLERANCIA) {
+      add([a])
+    }
+
+    for (let j = i + 1; j < sorted.length; j++) {
+      const b = sorted[j]
+      const sum2 = a.saldo_pendiente + b.saldo_pendiente
+      if (montoDistance(monto, sum2) <= MONTO_TOLERANCIA) {
+        add([a, b])
+      }
+
+      for (let k = j + 1; k < sorted.length; k++) {
+        const c = sorted[k]
+        const sum3 = sum2 + c.saldo_pendiente
+        if (montoDistance(monto, sum3) <= MONTO_TOLERANCIA) {
+          add([a, b, c])
+        }
+      }
+    }
+  }
+
+  return combos.sort((a, b) => {
+    const da = Math.abs(monto - a.reduce((s, i) => s + i.saldo_pendiente, 0))
+    const db = Math.abs(monto - b.reduce((s, i) => s + i.saldo_pendiente, 0))
+    return da - db
+  })
+}
+
 export function matchVoucher(args: {
   voucher: VoucherData
   candidates: MatchVoucherCandidate[]
@@ -63,11 +114,21 @@ export function matchVoucher(args: {
     })
 
   if (byMonto.length === 0) {
-    const others = candidates.filter((c) => c.score > NAME_MATCH_THRESHOLD / 2)
-    if (others.length >= 2) {
-      const saldoTotal = others.reduce((s, c) => s + c.saldo_pendiente, 0)
-      if (monto >= others[0].saldo_pendiente * 0.3) {
-        return buildMultiInvoice(others, nombreOrigen, monto)
+    const combos = findAmountCombinations(monto, candidates)
+    if (combos.length > 0) {
+      const bestCombo = combos[0]
+      const formatted = combos.slice(0, 3).map((combo, ci) => {
+        const parts = combo.map((inv) => `${inv.cliente_nombre} — ${inv.numero_factura} (${formatMonto(inv.saldo_pendiente)})`).join(' + ')
+        const total = combo.reduce((s, inv) => s + inv.saldo_pendiente, 0)
+        return `Opción ${ci + 1}: ${parts} = ${formatMonto(total)}`
+      })
+      const msg = `Tu pago de ${formatMonto(monto)} puede corresponder a varias combinaciones de facturas:\n\n${formatted.join('\n')}\n\nRespondé el número de opción (ej: 1) o decí los números de factura separados por coma.`
+      return {
+        status: 'multi_invoice',
+        mensajeRespuesta: msg,
+        matchedInvoiceId: null,
+        candidatas: bestCombo,
+        bestDestination: bestDest,
       }
     }
     const msg = `Recibimos tu comprobante por ${formatMonto(monto)} pero no encontramos ninguna factura pendiente que coincida. Un agente lo revisará.`
@@ -77,7 +138,7 @@ export function matchVoucher(args: {
   if (byMonto.length === 1) {
     const best = byMonto[0]
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
-      const others = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.score > NAME_MATCH_THRESHOLD / 2)
+      const others = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (others.length > 0) {
         return buildMultiInvoice([best, ...others], nombreOrigen, monto)
       }
@@ -92,7 +153,7 @@ export function matchVoucher(args: {
 
   if (nextDist - bestDist >= MONTO_GAP_MIN) {
     if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
-      const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.score > NAME_MATCH_THRESHOLD / 2)
+      const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (overCandidates.length > 0) {
         return buildMultiInvoice([best, ...overCandidates], nombreOrigen, monto)
       }

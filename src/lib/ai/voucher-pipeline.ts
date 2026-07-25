@@ -387,6 +387,32 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       candidates = result.invoice_candidates || []
       destCandidates = result.destination_candidates || []
       console.log('[voucher] matchVoucherByName: %d invoice candidates, %d destination candidates', candidates.length, destCandidates.length)
+
+      // If name-based matching returned few/no candidates, try amount-only search
+      if (candidates.length < 2 && voucher.monto && voucher.monto > 0) {
+        console.log('[voucher] Few candidates by name, trying amount-only search')
+        try {
+          const amountResult = await matchVoucherByName({
+            nombre_cliente: null,
+            nombre_origen: null,
+            nombre_destino: null,
+            cbu_destino: null,
+            cuit_destino: null,
+            monto: voucher.monto,
+            tolerancia: 999_999_999,
+          })
+          const amountCandidates = amountResult.invoice_candidates || []
+          for (const ac of amountCandidates) {
+            if (!candidates.some((ex) => ex.invoice_id === ac.invoice_id)) {
+              candidates.push(ac)
+            }
+          }
+          console.log('[voucher] Amount-only search added %d new candidates (total=%d)', amountCandidates.length, candidates.length)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error('[voucher] Amount-only search failed:', msg)
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[voucher] MATCH_API failed:', msg)
