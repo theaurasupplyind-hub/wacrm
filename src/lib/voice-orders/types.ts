@@ -3,6 +3,14 @@ export interface VoiceOrderItem {
   cantidad: number
 }
 
+export interface ParsedOrderItem {
+  categoria: string | null
+  medida: string | null
+  variante: string | null
+  cantidad: number
+  descripcion_original: string
+}
+
 export interface ResolvedItem {
   descripcion: string
   cantidad: number
@@ -16,11 +24,21 @@ export interface ResolvedItem {
   variantes_disponibles?: string[]
 }
 
+export type ParsedOrderType = 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion' | 'respuesta_cancelacion'
+export type Confidence = 'alta' | 'baja'
+
 export interface ParsedOrder {
-  tipo: 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion' | 'respuesta_cancelacion'
+  tipo: ParsedOrderType
+  confianza: Confidence
   cliente_nombre: string | null
   items: VoiceOrderItem[]
-  variante_respuesta?: string
+  entidades: ParsedOrderItem[]
+  variante_respuesta: string | null
+}
+
+export interface IntentClassification {
+  tipo: 'pedido' | 'gasto' | 'voucher' | 'asistencia' | 'factura' | 'otro'
+  confianza: Confidence
 }
 
 export interface PricedItem {

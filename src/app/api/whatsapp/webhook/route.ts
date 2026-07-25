@@ -12,7 +12,8 @@ import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
-import type { VoiceOrderResult } from '@/lib/voice-orders/types'
+import type { VoiceOrderResult, IntentClassification } from '@/lib/voice-orders/types'
+import { classifyIntent } from '@/lib/ai/intent-classifier'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
 import { processAttendanceMessage, looksLikeAttendance } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
@@ -1247,94 +1248,116 @@ async function processMessage(
     })
   }
 
-  // Voice order: text messages. Skip if expense already handled.
-  const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
-  if (isExpenseText) {
-    console.log('[expense] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+  // ── INTENT CLASSIFIER: decide qué handler procesa el texto ──
+  let classifiedIntent: IntentClassification | null = null
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    try {
+      classifiedIntent = await classifyIntent(inboundText)
+    } catch (err) {
+      console.error('[intent] classifier error:', err)
+    }
+  }
+
+  const intentOk = classifiedIntent && classifiedIntent.confianza === 'alta'
+  const intentTipo = classifiedIntent?.tipo
+
+  if (classifiedIntent) {
+    console.log('[intent] tipo=%s confianza=%s text=%s', intentTipo, classifiedIntent.confianza, inboundText.slice(0, 80))
+  }
+
+  // Primary dispatch: elige UN handler según la intención clasificada
+  if (intentOk && intentTipo === 'gasto') {
+    console.log('[expense] intent dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       (async () => {
         try {
           await handleExpenseMessage({
-            messageType: 'text',
-            text: inboundText,
-            accessToken,
-            senderPhone: message.from,
-            senderName: contact.profile.name,
-            accountId,
-            userId: configOwnerUserId,
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
+            messageType: 'text', text: inboundText, accessToken,
+            senderPhone: message.from, senderName: contact.profile.name,
+            accountId, userId: configOwnerUserId,
+            conversationId: conversation.id, contactId: contactRecord.id,
           })
-        } catch (err) {
-          console.error('[expense] Text error:', err)
-        }
+        } catch (err) { console.error('[expense] Text error:', err) }
       })()
     )
-  }
-
-  // Attendance: text messages with arrival intent
-  const isAttendanceText = !flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText && looksLikeAttendance(inboundText)
-  if (isAttendanceText) {
-    console.log('[attendance] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+  } else if (intentOk && intentTipo === 'asistencia') {
+    console.log('[attendance] intent dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       (async () => {
         try {
           await handleAttendanceMessage({
-            text: inboundText,
-            accountId,
-            userId: configOwnerUserId,
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
+            text: inboundText, accountId, userId: configOwnerUserId,
+            conversationId: conversation.id, contactId: contactRecord.id,
           })
-        } catch (err) {
-          console.error('[attendance] Text error:', err)
-        }
+        } catch (err) { console.error('[attendance] Text error:', err) }
       })()
     )
+  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura')) {
+    console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
+    bgTasks.push(
+      handleVoiceText({
+        text: inboundText, senderPhone: message.from, senderName: contact.profile.name,
+        voiceContext: voiceCtx, accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+      }).catch((err) => console.error('[voice] Text error:', err))
+    )
+  } else {
+    // ── FALLBACK: intent bajo/otro/clasificador falló → regex gates ──
+    const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
+    if (isExpenseText) {
+      console.log('[expense] fallback dispatch -> conversation=%s', conversation.id)
+      bgTasks.push(
+        (async () => {
+          try {
+            await handleExpenseMessage({
+              messageType: 'text', text: inboundText, accessToken,
+              senderPhone: message.from, senderName: contact.profile.name,
+              accountId, userId: configOwnerUserId,
+              conversationId: conversation.id, contactId: contactRecord.id,
+            })
+          } catch (err) { console.error('[expense] Text error:', err) }
+        })()
+      )
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeAttendance(inboundText)) {
+      console.log('[attendance] fallback dispatch -> conversation=%s', conversation.id)
+      bgTasks.push(
+        (async () => {
+          try {
+            await handleAttendanceMessage({
+              text: inboundText, accountId, userId: configOwnerUserId,
+              conversationId: conversation.id, contactId: contactRecord.id,
+            })
+          } catch (err) { console.error('[attendance] Text error:', err) }
+        })()
+      )
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+      console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
+      bgTasks.push(
+        handleVoiceText({
+          text: inboundText, senderPhone: message.from, senderName: contact.profile.name,
+          voiceContext: voiceCtx, accountId, userId: configOwnerUserId,
+          conversationId: conversation.id, contactId: contactRecord.id,
+        }).catch((err) => console.error('[voice] Text error:', err))
+      )
+    }
   }
 
-  // Voucher context: text reply to ambiguous voucher (debe ir antes que Voice Orders)
+  // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent ──
   if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
-    console.log('[voucher] text dispatch (context reply) -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    console.log('[voucher] text dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       processVoucherMessage({
-        message: {
-          id: message.id,
-          from: message.from,
-          type: 'text',
-          text: inboundText,
-        },
-        accessToken,
-        accountId,
-        userId: configOwnerUserId,
-        contactId: contactRecord.id,
-        conversationId: conversation.id,
+        message: { id: message.id, from: message.from, type: 'text', text: inboundText },
+        accessToken, accountId, userId: configOwnerUserId,
+        contactId: contactRecord.id, conversationId: conversation.id,
       }).catch((err) => console.error('[voucher] Text context error:', err))
     )
   } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
-    // No pending voucher context yet — store as pending text in case an image arrives soon
-    // The pipeline will auto-consume this if it creates an ambiguous context within 60s
-    console.log('[voucher] storing pending text -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
+    console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
     bgTasks.push(
       pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
         console.error('[voucher] pushPendingText error:', err),
-      ),
-    )
-  }
-
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !isExpenseText && !isAttendanceText) {
-    console.log('[voice] text dispatch -> conversation=%s text=%s', conversation.id, inboundText.slice(0, 80))
-    bgTasks.push(
-      handleVoiceText({
-        text: inboundText,
-        senderPhone: message.from,
-        senderName: contact.profile.name,
-        voiceContext: voiceCtx,
-        accountId,
-        userId: configOwnerUserId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-      }).catch((err) => console.error('[voice] Text error:', err))
+      )
     )
   }
 
