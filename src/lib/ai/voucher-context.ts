@@ -8,6 +8,7 @@ export interface PendingVoucherItem {
   bestDestination: DestinationCandidate | null
   mediaBase64: string
   mediaMimeType: string
+  multiInvoice?: boolean
 }
 
 export interface PendingTextItem {

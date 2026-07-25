@@ -42,6 +42,10 @@ function mediaTimeout(): Promise<never> {
   )
 }
 
+function formatMonto(n: number): string {
+  return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
 async function notify(args: {
   accountId: string
   userId: string
@@ -95,6 +99,38 @@ function interpretUserResponse(
   return null
 }
 
+function interpretMultiInvoiceResponse(
+  text: string,
+  candidates: MatchVoucherCandidate[],
+): MatchVoucherCandidate[] {
+  const cleaned = text.trim().toLowerCase()
+
+  // "todas" or "todos" → all candidates
+  if (/^tod[ao]s?$/.test(cleaned)) {
+    return [...candidates]
+  }
+
+  // Try parsing numbers separated by commas, spaces, "y", "e"
+  const numbers = cleaned.match(/\d+/g)
+  if (numbers) {
+    const indices = numbers.map(Number).filter((n) => n >= 1 && n <= candidates.length)
+    if (indices.length > 0) {
+      return indices.map((i) => candidates[i - 1])
+    }
+  }
+
+  // Try matching by invoice numbers
+  const matched: MatchVoucherCandidate[] = []
+  for (const c of candidates) {
+    if (c.numero_factura.toLowerCase().includes(cleaned) || cleaned.includes(c.numero_factura.toLowerCase())) {
+      matched.push(c)
+    }
+  }
+  if (matched.length > 0) return matched
+
+  return []
+}
+
 export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   const { message, accessToken, accountId, userId, contactId, conversationId } = args
   const normalizedPhone = message.from
@@ -127,7 +163,60 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   const pendingItem = ctx.pending.length > 0 ? ctx.pending[0] : null
   if (pendingItem && (message.type === 'text' || message.text)) {
     const userText = message.text || ''
-    console.log('[voucher] User reply to clarification: "%s" (pending msg=%s)', userText, pendingItem.sourceMessageId)
+    console.log('[voucher] User reply to clarification: "%s" (pending msg=%s multiInvoice=%s)', userText, pendingItem.sourceMessageId, pendingItem.multiInvoice)
+
+    if (pendingItem.multiInvoice) {
+      const selected = interpretMultiInvoiceResponse(userText, pendingItem.candidates)
+      if (selected.length > 0) {
+        await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
+        const fechaPago = pendingItem.extraction.fecha || new Date().toISOString().slice(0, 10)
+        const paidList: string[] = []
+        let errors: string[] = []
+        let remaining = pendingItem.extraction.monto ?? 0
+
+        for (const inv of selected) {
+          const pago = Math.min(remaining, inv.saldo_pendiente)
+          if (pago <= 0) continue
+
+          try {
+            await registrarPago({
+              invoiceId: inv.invoice_id,
+              monto: pago,
+              fecha: fechaPago,
+              entityType: pendingItem.bestDestination?.entity_type ?? null,
+              entityId: pendingItem.bestDestination?.entity_id ?? null,
+            })
+            paidList.push(`${inv.cliente_nombre} — Factura ${inv.numero_factura}: ${formatMonto(pago)}`)
+            remaining -= pago
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            errors.push(`${inv.numero_factura}: ${msg}`)
+          }
+        }
+
+        if (paidList.length > 0) {
+          let reply = `Se registraron los pagos:\n${paidList.join('\n')}`
+          if (remaining > 0) {
+            reply += `\n\nQuedó un saldo de ${formatMonto(remaining)} sin asignar. Un agente lo revisará.`
+          }
+          if (errors.length > 0) {
+            reply += `\n\nErrores al registrar:\n${errors.join('\n')}`
+          }
+          await notify({ ...sendCtx, text: reply })
+        } else {
+          await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago. Un agente lo revisará.' })
+        }
+      } else {
+        const lines = pendingItem.candidates.map(
+          (c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
+        )
+        await notify({
+          ...sendCtx,
+          text: 'No entendimos tu respuesta. Respondé con los números separados por coma (ej: 1,2) o decí "todas".\n\n' + lines.join('\n'),
+        })
+      }
+      return
+    }
     const chosen = interpretUserResponse(userText, pendingItem.candidates)
     if (chosen) {
       await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
@@ -331,7 +420,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   // STEP 5 — Stage to backend_gal for ALL statuses (matched, ambiguous, no_match)
   // so they appear in the FacGal review panel. Only ambiguous also saves context
   // for multi-turn follow-up.
-  async function stageVoucher(stageStatus: MatchStatus, reviewStatus?: string): Promise<void> {
+  async function stageVoucher(stageStatus: 'matched' | 'ambiguous' | 'no_match', reviewStatus?: string): Promise<void> {
     try {
       const payload = {
         source_message_id: message.id,
@@ -378,7 +467,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   if (matchStatus === 'matched') {
     await stageVoucher('matched', 'completed')
   } else {
-    await stageVoucher(matchStatus)
+    const stageStatus: 'matched' | 'ambiguous' | 'no_match' =
+      matchStatus === 'multi_invoice' ? 'ambiguous' : matchStatus
+    await stageVoucher(stageStatus)
   }
 
   // If matched, register the actual payment
@@ -399,6 +490,73 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       errorMessage = [errorMessage, `Payment: ${msg}`].filter(Boolean).join(' | ')
       // The review is staged as 'completed' but payment failed — let user know
       mensajeRespuesta = 'Registramos el comprobante pero hubo un error al crear el pago. Un agente lo revisará.'
+    }
+  }
+
+  if (matchStatus === 'multi_invoice') {
+    await addPendingVoucher(db, conversationId, {
+      sourceMessageId: message.id,
+      extraction: {
+        monto: extractedAmount,
+        fecha: extractedDate,
+        referencia: extractedReference,
+        banco: extractedBank,
+        nombre_cliente: extractedNombreCliente,
+        nombre_origen: extractedNombreOrigen,
+        nombre_destino: extractedNombreDestino,
+        cbu_destino: extractedCbuDestino,
+        cuit_destino: extractedCuitDestino,
+      },
+      candidates,
+      bestDestination,
+      mediaBase64,
+      mediaMimeType: mimeType,
+      multiInvoice: true,
+    })
+    console.log('[voucher] multi_invoice: pushed to pending array, awaiting user selection')
+
+    try {
+      const pendingText = await consumePendingText(db, conversationId)
+      if (pendingText) {
+        console.log('[voucher] multi_invoice: auto-consuming pending text: "%s"', pendingText)
+        const autoSelected = interpretMultiInvoiceResponse(pendingText, candidates)
+        if (autoSelected.length > 0) {
+          await removePendingVoucher(db, conversationId, message.id)
+          const fechaPago = extractedDate || new Date().toISOString().slice(0, 10)
+          let remaining = extractedAmount ?? 0
+          const paidList: string[] = []
+
+          for (const inv of autoSelected) {
+            const pago = Math.min(remaining, inv.saldo_pendiente)
+            if (pago <= 0) continue
+            try {
+              await registrarPago({
+                invoiceId: inv.invoice_id,
+                monto: pago,
+                fecha: fechaPago,
+                entityType: bestDestination?.entity_type ?? null,
+                entityId: bestDestination?.entity_id ?? null,
+              })
+              paidList.push(`${inv.cliente_nombre} — Factura ${inv.numero_factura}: $${pago.toLocaleString('es-AR')}`)
+              remaining -= pago
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              console.error('[voucher] multi_invoice auto payment failed:', msg)
+            }
+          }
+
+          if (paidList.length > 0) {
+            let reply = `Se registraron los pagos:\n${paidList.join('\n')}`
+            if (remaining > 0) {
+              reply += `\n\nQuedó un saldo de $${remaining.toLocaleString('es-AR')} sin asignar. Un agente lo revisará.`
+            }
+            mensajeRespuesta = reply
+            matchStatus = 'matched'
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[voucher] multi_invoice auto-consume error:', err)
     }
   }
 
