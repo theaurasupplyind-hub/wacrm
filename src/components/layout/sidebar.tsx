@@ -101,7 +101,7 @@ const navItems: NavItem[] = [
   { href: "/automations", label: "Automations", icon: Zap },
   { href: "/flows", label: "Flows", icon: Workflow, beta: true },
   { href: "/agents", label: "AI Agents", icon: Bot },
-  { href: "/chatbot-debug", label: "Chatbot Debug", icon: Bug },
+  { href: "/voucher-debug", label: "Voucher Debug", icon: Bug },
   { href: "/bot-beta", label: "Bot Beta", icon: FlaskConical, beta: true },
 ];
 

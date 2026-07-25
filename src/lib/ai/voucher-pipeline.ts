@@ -354,6 +354,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let destCandidates: DestinationCandidate[] = []
   let mensajeRespuesta = 'Error inesperado al procesar el comprobante.'
   let errorMessage: string | null = null
+  const debugInfo: Record<string, unknown> = {
+    phase1: null,
+    phase2: null,
+    phase3: null,
+    final: null,
+  }
 
   try {
     console.log('[voucher] Calling OpenRouter model=%s', process.env.VOUCHER_AI_MODEL || 'google/gemini-2.5-flash')
@@ -396,13 +402,14 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         })
         const amountCandidates = amountResult.invoice_candidates || []
         console.log('[voucher-debug] Phase 1 API: %d candidates', amountCandidates.length)
+        const phase1ApiResult = amountCandidates.map(c => ({
+          factura: c.numero_factura,
+          cliente: c.cliente_nombre,
+          saldo: c.saldo_pendiente,
+          score: c.score,
+        }))
         if (amountCandidates.length > 0) {
-          console.table(amountCandidates.map(c => ({
-            factura: c.numero_factura,
-            cliente: c.cliente_nombre,
-            saldo: c.saldo_pendiente,
-            score: c.score,
-          })))
+          console.table(phase1ApiResult)
         }
 
         if (amountCandidates.length > 0) {
@@ -456,6 +463,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         } else {
           console.log('[voucher-debug] Phase 1: API returned 0 candidates')
         }
+
+        debugInfo.phase1 = {
+          apiCall: { monto: voucher.monto, tolerancia: Math.max(10_000, voucher.monto) },
+          apiResult: phase1ApiResult,
+          result: { status: amountCandidates.length > 0 ? matchStatus : 'no_match', matchedInvoiceId },
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[voucher-debug] Phase 1 search FAILED:', msg)
@@ -482,13 +495,14 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const nameCandidates = nameResult.invoice_candidates || []
         const nameDestCandidates = nameResult.destination_candidates || []
         console.log('[voucher-debug] Phase 2 API: %d candidates', nameCandidates.length)
+        const phase2ApiResult = nameCandidates.map(c => ({
+          factura: c.numero_factura,
+          cliente: c.cliente_nombre,
+          saldo: c.saldo_pendiente,
+          score: c.score,
+        }))
         if (nameCandidates.length > 0) {
-          console.table(nameCandidates.map(c => ({
-            factura: c.numero_factura,
-            cliente: c.cliente_nombre,
-            saldo: c.saldo_pendiente,
-            score: c.score,
-          })))
+          console.table(phase2ApiResult)
         }
 
         if (nameCandidates.length > 0) {
@@ -529,6 +543,17 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         } else {
           console.log('[voucher-debug] Phase 2: API returned 0 candidates')
         }
+
+        debugInfo.phase2 = {
+          apiCall: {
+            nombre_origen: voucher.nombre_origen,
+            nombre_cliente: voucher.nombre_cliente,
+            monto: voucher.monto,
+            tolerancia: 50,
+          },
+          apiResult: phase2ApiResult,
+          result: { status: nameCandidates.length > 0 ? matchStatus : 'no_match', matchedInvoiceId },
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[voucher-debug] Phase 2 search FAILED:', msg)
@@ -559,6 +584,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       } else {
         console.log('[voucher-debug] Phase 3: no stored candidates')
       }
+
+      debugInfo.phase3 = {
+        candidatesShown: amountCands.length,
+        candidates: amountCands.map(c => ({
+          factura: c.numero_factura,
+          cliente: c.cliente_nombre,
+          saldo: c.saldo_pendiente,
+        })),
+      }
     }
 
     console.log('[voucher-debug] === FINAL RESULT ===')
@@ -569,6 +603,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     console.log('[voucher-debug]   matchedSaldoPendiente=%s', matchedSaldoPendiente)
     console.log('[voucher-debug]   errorMessage=%s', errorMessage)
     console.log('[voucher-debug]   mensajeRespuesta: %s', mensajeRespuesta)
+
+    debugInfo.final = {
+      matchStatus,
+      matchedInvoiceId,
+      matchedInvoiceNumero,
+      matchedClienteNombre,
+      matchedSaldoPendiente,
+      errorMessage,
+    }
 
     const matchedInfo = pickBestMatch(candidates)
     if (matchedInfo) {
@@ -818,6 +861,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     matchStatus,
     matchedInvoiceId,
     errorMessage,
+    debugInfo,
   })
 
   // STEP 6 — Final response
@@ -843,6 +887,7 @@ async function saveAttempt(args: {
   extractedBank?: string | null
   matchedInvoiceId?: number | null
   errorMessage?: string | null
+  debugInfo?: Record<string, unknown>
 }): Promise<void> {
   try {
     console.log('[voucher] Saving attempt: status=%s error=%s', args.matchStatus, args.errorMessage || 'none')
@@ -856,6 +901,7 @@ async function saveAttempt(args: {
       match_status: args.matchStatus,
       matched_invoice_id: args.matchedInvoiceId ?? null,
       error_message: args.errorMessage ?? null,
+      debug_info: args.debugInfo ?? null,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
