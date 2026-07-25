@@ -23,7 +23,7 @@ function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
-function findClientMatches(
+export function findClientMatches(
   monto: number,
   candidates: MatchVoucherCandidate[],
 ): { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] {
@@ -89,11 +89,6 @@ export function matchVoucher(args: {
     })
 
   if (byMonto.length === 0) {
-    const clientMatches = findClientMatches(monto, candidates)
-    if (clientMatches.length > 0) {
-      const best = clientMatches[0]
-      return buildMultiInvoice(best.invoices, best.clientName, monto)
-    }
     const msg = `Recibimos tu comprobante por ${formatMonto(monto)} pero no encontramos ninguna factura pendiente que coincida. Un agente lo revisará.`
     return { status: 'no_match', mensajeRespuesta: msg, matchedInvoiceId: null, candidatas: [], bestDestination: bestDest }
   }

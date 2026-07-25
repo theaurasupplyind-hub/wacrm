@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { matchVoucher, type MatchStatus } from './voucher-matching'
+import { matchVoucher, type MatchStatus, findClientMatches } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -392,32 +392,6 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       candidates = result.invoice_candidates || []
       destCandidates = result.destination_candidates || []
       console.log('[voucher] matchVoucherByName: %d invoice candidates, %d destination candidates', candidates.length, destCandidates.length)
-
-      // If name-based matching returned few/no candidates, try amount-only search
-      if (candidates.length < 2 && voucher.monto && voucher.monto > 0) {
-        console.log('[voucher] Few candidates by name, trying amount-only search')
-        try {
-          const amountResult = await matchVoucherByName({
-            nombre_cliente: null,
-            nombre_origen: null,
-            nombre_destino: null,
-            cbu_destino: null,
-            cuit_destino: null,
-            monto: voucher.monto,
-            tolerancia: 999_999_999,
-          })
-          const amountCandidates = amountResult.invoice_candidates || []
-          for (const ac of amountCandidates) {
-            if (!candidates.some((ex) => ex.invoice_id === ac.invoice_id)) {
-              candidates.push(ac)
-            }
-          }
-          console.log('[voucher] Amount-only search added %d new candidates (total=%d)', amountCandidates.length, candidates.length)
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error('[voucher] Amount-only search failed:', msg)
-        }
-      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[voucher] MATCH_API failed:', msg)
@@ -446,6 +420,42 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     matchStatus = 'no_match'
     mensajeRespuesta =
       'Gracias por tu comprobante. No pudimos leerlo automáticamente. Un agente lo revisará y te confirmará el pago.'
+  }
+
+  // STEP 4b — If name-based matching failed, try amount-only + client-based matching
+  if (matchStatus === 'no_match' && extractedAmount && extractedAmount > 0) {
+    console.log('[voucher] Name match failed, trying amount-only client search')
+    try {
+      const amountResult = await matchVoucherByName({
+        nombre_cliente: null,
+        nombre_origen: null,
+        nombre_destino: null,
+        cbu_destino: null,
+        cuit_destino: null,
+        monto: extractedAmount,
+        tolerancia: Math.max(10_000, extractedAmount),
+      })
+      const amountCandidates = amountResult.invoice_candidates || []
+      console.log('[voucher] Amount-only search returned %d candidates', amountCandidates.length)
+
+      if (amountCandidates.length > 0) {
+        const clientMatches = findClientMatches(extractedAmount, amountCandidates)
+        if (clientMatches.length > 0) {
+          const best = clientMatches[0]
+          matchStatus = 'multi_invoice'
+          candidates = best.invoices
+          mensajeRespuesta = `Tu pago de ${formatMonto(extractedAmount)} coincide con el saldo total de ${best.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+            best.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+            '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+          console.log('[voucher] Client match found: %s', best.clientName)
+        } else {
+          console.log('[voucher] No client match found by amount')
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[voucher] Amount-only search failed:', msg)
+    }
   }
 
   // STEP 5 — Stage to backend_gal for ALL statuses (matched, ambiguous, no_match)
