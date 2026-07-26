@@ -9,7 +9,7 @@ import {
   createVoucherReview,
   registrarPago,
 } from '../facbal/client'
-import type { MatchVoucherCandidate } from '../facbal/client'
+import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
 const MEDIA_TIMEOUT_MS = 15_000
 
@@ -37,6 +37,16 @@ function mediaTimeout(): Promise<never> {
 
 function formatMonto(n: number): string {
   return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function toArgentineDate(isoDate: string | null | undefined): string {
+  if (!isoDate) return new Date().toLocaleDateString('es-AR')
+  const parts = isoDate.split('-')
+  if (parts.length === 3) {
+    const [y, m, d] = parts
+    return `${parseInt(d)}/${parseInt(m)}/${y}`
+  }
+  return isoDate
 }
 
 async function notify(args: {
@@ -162,7 +172,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       const selected = interpretMultiInvoiceResponse(userText, pendingItem.candidates)
       if (selected.length > 0) {
         await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
-        const fechaPago = pendingItem.extraction.fecha || new Date().toISOString().slice(0, 10)
+        const fechaPago = toArgentineDate(pendingItem.extraction.fecha)
         const paidList: string[] = []
         const errors: string[] = []
         let remaining = pendingItem.extraction.monto ?? 0
@@ -176,8 +186,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               invoiceId: inv.invoice_id,
               monto: pago,
               fecha: fechaPago,
-              entityType: null,
-              entityId: null,
+              entityType: pendingItem.bestDestination?.entity_type ?? undefined,
+              entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
             paidList.push(`${inv.cliente_nombre} — Factura ${inv.numero_factura}: ${formatMonto(pago)}`)
             remaining -= pago
@@ -234,9 +244,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           matched_invoice_numero: chosen.numero_factura,
           matched_cliente_nombre: chosen.cliente_nombre,
           matched_saldo_pendiente: chosen.saldo_pendiente,
-          entity_type: null,
-          entity_id: null,
-          entity_name: null,
+          entity_type: pendingItem.bestDestination?.entity_type ?? null,
+          entity_id: pendingItem.bestDestination?.entity_id ?? null,
+          entity_name: pendingItem.bestDestination?.entity_name ?? null,
           candidatas: pendingItem.candidates.map((c) => ({
             invoice_id: c.invoice_id,
             numero_factura: c.numero_factura,
@@ -253,13 +263,13 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
         if (montoPago > 0) {
           try {
-            const fechaPago = pendingItem.extraction.fecha || new Date().toISOString().slice(0, 10)
+            const fechaPago = toArgentineDate(pendingItem.extraction.fecha)
             await registrarPago({
               invoiceId: chosen.invoice_id,
               monto: montoPago,
               fecha: fechaPago,
-              entityType: null,
-              entityId: null,
+              entityType: pendingItem.bestDestination?.entity_type ?? undefined,
+              entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
             console.log('[voucher] Payment registered after clarification: invoice=%s amount=%s', chosen.invoice_id, montoPago)
           } catch (err) {
@@ -356,6 +366,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   let matchedClienteNombre: string | null = null
   let matchedSaldoPendiente: number | null = null
   let candidates: MatchVoucherCandidate[] = []
+  const allDestinationCandidates: DestinationCandidate[] = []
+  let bestDest: DestinationCandidate | null = null
   let mensajeRespuesta = 'Error inesperado al procesar el comprobante.'
   let errorMessage: string | null = null
   const debugInfo: Record<string, unknown> = {
@@ -428,7 +440,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           timeoutMs: 60_000,
         })
         amountCandidatesP1 = amountResult.invoice_candidates || []
-        console.log('[voucher-debug] Phase 1 API: %d candidates', amountCandidatesP1.length)
+        if (amountResult.destination_candidates?.length) {
+          allDestinationCandidates.push(...amountResult.destination_candidates)
+        }
+        console.log('[voucher-debug] Phase 1 API: %d candidates, %d destinations', amountCandidatesP1.length, amountResult.destination_candidates?.length || 0)
         const phase1ApiResult = amountCandidatesP1.map(c => ({
           factura: c.numero_factura,
           cliente: c.cliente_nombre,
@@ -491,6 +506,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         })
         const allCandidates = (p2Result.invoice_candidates || [])
           .filter(c => c.saldo_pendiente < voucher.monto!)
+        if (p2Result.destination_candidates?.length) {
+          allDestinationCandidates.push(...p2Result.destination_candidates)
+        }
         console.log('[voucher-debug] Phase 2 API: %d total candidates, %d with saldo < monto', (p2Result.invoice_candidates || []).length, allCandidates.length)
         const p2ApiResult = allCandidates.map(c => ({
           factura: c.numero_factura,
@@ -547,7 +565,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           tolerancia: 50,
         })
         const nameCandidates = nameResult.invoice_candidates || []
-        console.log('[voucher-debug] Phase 3 API: %d candidates', nameCandidates.length)
+        if (nameResult.destination_candidates?.length) {
+          allDestinationCandidates.push(...nameResult.destination_candidates)
+        }
+        console.log('[voucher-debug] Phase 3 API: %d candidates, %d destinations', nameCandidates.length, nameResult.destination_candidates?.length || 0)
         const phase3ApiResult = nameCandidates.map(c => ({
           factura: c.numero_factura,
           cliente: c.cliente_nombre,
@@ -612,7 +633,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           tolerancia: wideTolerancia,
         })
         phase4Cands = wideResult.invoice_candidates || []
-        console.log('[voucher-debug] Phase 4: wide search returned %d candidates', phase4Cands.length)
+        if (wideResult.destination_candidates?.length) {
+          allDestinationCandidates.push(...wideResult.destination_candidates)
+        }
+        console.log('[voucher-debug] Phase 4: wide search returned %d candidates, %d destinations', phase4Cands.length, wideResult.destination_candidates?.length || 0)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[voucher-debug] Phase 4 wide search failed:', msg)
@@ -729,6 +753,22 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       errorMessage,
     }
 
+    bestDest = allDestinationCandidates.length > 0
+      ? allDestinationCandidates.reduce((a, b) => a.score >= b.score ? a : b)
+      : null
+    if (bestDest) {
+      debugInfo.final_destination = {
+        entity_type: bestDest.entity_type,
+        entity_id: bestDest.entity_id,
+        entity_name: bestDest.entity_name,
+        match_field: bestDest.match_field,
+        score: bestDest.score,
+      }
+    }
+    console.log('[voucher-debug]   destinationCandidates=%d bestDest=%s',
+      allDestinationCandidates.length,
+      bestDest ? `${bestDest.entity_type}:${bestDest.entity_id} (${bestDest.entity_name}, score=${bestDest.score})` : 'none')
+
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[voucher] EXTRACTION failed:', msg)
@@ -762,9 +802,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         matched_invoice_numero: matchedInvoiceNumero,
         matched_cliente_nombre: matchedClienteNombre,
         matched_saldo_pendiente: matchedSaldoPendiente,
-        entity_type: null,
-        entity_id: null,
-        entity_name: null,
+        entity_type: bestDest?.entity_type ?? null,
+        entity_id: bestDest?.entity_id ?? null,
+        entity_name: bestDest?.entity_name ?? null,
         candidatas: candidates.map((c) => ({
           invoice_id: c.invoice_id,
           numero_factura: c.numero_factura,
@@ -796,13 +836,13 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   // If matched, register the actual payment
   if (matchStatus === 'matched' && matchedInvoiceId !== null && extractedAmount !== null && extractedAmount > 0) {
     try {
-      const fechaPago = extractedDate || new Date().toISOString().slice(0, 10)
+      const fechaPago = toArgentineDate(extractedDate)
       await registrarPago({
         invoiceId: matchedInvoiceId,
         monto: extractedAmount,
         fecha: fechaPago,
-        entityType: null,
-        entityId: null,
+        entityType: bestDest?.entity_type ?? undefined,
+        entityId: bestDest?.entity_id ?? undefined,
       })
       console.log('[voucher] Payment registered OK invoice=%s amount=%s', matchedInvoiceId, extractedAmount)
     } catch (err) {
@@ -829,7 +869,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         cuit_destino: extractedCuitDestino,
       },
       candidates,
-      bestDestination: null,
+      bestDestination: bestDest,
       mediaBase64,
       mediaMimeType: mimeType,
       multiInvoice: true,
@@ -843,7 +883,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const autoSelected = interpretMultiInvoiceResponse(pendingText, candidates)
         if (autoSelected.length > 0) {
           await removePendingVoucher(db, conversationId, message.id)
-          const fechaPago = extractedDate || new Date().toISOString().slice(0, 10)
+          const fechaPago = toArgentineDate(extractedDate)
           let remaining = extractedAmount ?? 0
           const paidList: string[] = []
 
@@ -855,8 +895,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
                 invoiceId: inv.invoice_id,
                 monto: pago,
                 fecha: fechaPago,
-                entityType: null,
-                entityId: null,
+                entityType: bestDest?.entity_type ?? undefined,
+                entityId: bestDest?.entity_id ?? undefined,
               })
               paidList.push(`${inv.cliente_nombre} — Factura ${inv.numero_factura}: $${pago.toLocaleString('es-AR')}`)
               remaining -= pago
@@ -897,7 +937,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         cuit_destino: extractedCuitDestino,
       },
       candidates,
-      bestDestination: null,
+      bestDestination: bestDest,
       mediaBase64,
       mediaMimeType: mimeType,
     })
@@ -930,9 +970,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             matched_invoice_numero: autoChosen.numero_factura,
             matched_cliente_nombre: autoChosen.cliente_nombre,
             matched_saldo_pendiente: autoChosen.saldo_pendiente,
-            entity_type: null,
-            entity_id: null,
-            entity_name: null,
+            entity_type: bestDest?.entity_type ?? null,
+            entity_id: bestDest?.entity_id ?? null,
+            entity_name: bestDest?.entity_name ?? null,
             candidatas: candidates.map((c) => ({
               invoice_id: c.invoice_id,
               numero_factura: c.numero_factura,
@@ -949,13 +989,13 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           const montoAuto = extractedAmount ?? autoChosen.saldo_pendiente
           if (montoAuto > 0) {
             try {
-              const fechaAuto = extractedDate || new Date().toISOString().slice(0, 10)
+              const fechaAuto = toArgentineDate(extractedDate)
               await registrarPago({
                 invoiceId: autoChosen.invoice_id,
                 monto: montoAuto,
                 fecha: fechaAuto,
-                entityType: null,
-                entityId: null,
+                entityType: bestDest?.entity_type ?? undefined,
+                entityId: bestDest?.entity_id ?? undefined,
               })
               console.log('[voucher] Payment auto-registered: invoice=%s amount=%s', autoChosen.invoice_id, montoAuto)
             } catch (err) {

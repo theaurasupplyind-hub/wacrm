@@ -8,10 +8,10 @@
 
 ## Objetivo
 
-Endurecer el pipeline de comprobantes de pago para:
+Endurecer el pipeline de comprobantes de pago para que:
 
 1. **Ninguna fase confirme por sí sola** — solo acumulan candidatos en el pool.
-2. **La decisión evalúa el pool completo** (Fases 1–3, con Fase 4 como fallback cuando el pool queda vacío).
+2. **Un motor de decisión central** resuelva `matched` / `multi_invoice` / `ambiguous` / `no_match`, usando el nombre extraído por IA para desempatar cuando el monto no alcanza.
 3. **Todos los caminos de confirmación registren el pago** de forma consistente.
 4. **Se eliminen bugs y código legacy** que contradigan el diseño actual.
 5. **Se reduzca el ruido** procesando solo comprobantes probables.
@@ -22,29 +22,24 @@ Endurecer el pipeline de comprobantes de pago para:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  FASES 1–3                                                   │
-│  Solo agregan entradas al candidatePool.                     │
-│  Nunca setean matchStatus ni llaman registrarPago().         │
+│  FASES 1–3 (y 4 como fallback)                              │
+│  Solo agregan entradas al candidatePool.                    │
+│  Nunca setean matchStatus ni llaman registrarPago().        │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  DECISIÓN (inline en pipeline.ts)                            │
-│  Evalúa el pool completo. Único lugar que asigna            │
-│  matchStatus.                                                │
+│  MOTOR DE DECISIÓN (nuevo/refactorizado)                    │
+│  Evalúa el pool completo + nombre extraído + scores.       │
+│  Único lugar que asigna matchStatus.                       │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  POST-DECISIÓN                                              │
 │  stageVoucher → registrarPago (si aplica) → WhatsApp reply  │
 └─────────────────────────────────────────────────────────────┘
-
-Si el pool queda vacío → Fase 4 (wide search) → siempre muestra
-opciones al usuario (nunca auto-match).
 ```
 
-**Regla clave:** Ninguna fase auto-confirma. Si el pool tiene 1 entry `single`
-sin validar nombre, la decisión valida que no haya contradicción de nombre
-antes de setear `matched`.
+**Regla clave:** La Fase 1 **nunca** auto-confirma. Si hoy el código hace `matched` cuando el pool tiene 1 entrada `single` sin validar nombre, eso se mueve al motor de decisión con las reglas de desempate descritas en `invoice.md`.
 
 ---
 
@@ -52,51 +47,94 @@ antes de setear `matched`.
 
 | Área | Hoy | Objetivo |
 |------|-----|----------|
-| Fases 1–3 | Acumulan pool ✅ | Mantener |
-| Decisión post-pool | 1 `single` → `matched` sin validar nombre ❌ | Validar si hay nombre contradictorio → `ambiguous` si no pasa |
-| `pickBestMatch()` | Sobrescribe `matchedInvoiceId` post-decisión ❌ | Eliminar — la decisión ya eligió |
-| Clarificación `ambiguous` | Sin `registrarPago()` tras confirmación ❌ | Llamar `registrarPago()` igual que en `multi_invoice` |
-| Clarificación `multi_invoice` | `registrarPago()` ✅ | Mantener |
+| Fases 1–3 | Acumulan pool ✅ | Mantener — verificar que ninguna fase setee status |
+| Decisión post-pool | 1 `single` → `matched` sin validar nombre||
+| Desempate mismo monto | 2+ entries → `ambiguous` siempre | Si nombre desempata a 1 → `matched` |
+| `pickBestMatch()` | Sobrescribe invoice matched en todos los casos ❌ | Eliminar o usar solo cuando decisión = `matched` con 1 candidato |
+| Clarificación `ambiguous` | Solo staging, sin `registrarPago()` ❌ | Registrar pago tras confirmación del usuario |
+| Clarificación `multi_invoice` | `registrarPago()` ✅ | Mantener — unificar con ambiguous |
 | Disparo del pipeline | Toda imagen/documento ❌ | Heurística + contexto pendiente |
 | `matchVoucher()` legacy | ~200 líneas sin uso ❌ | Eliminar |
-| DB `multi_invoice` | Normalizado a `ambiguous` al guardar ❌ | Persistir como `multi_invoice` |
+| DB `match_status` | `multi_invoice` → guardado como `ambiguous` ❌ | Migración para distinguir |
+| Documentación | `BOT_ARCHITECTURE.md` desactualizado ❌ | Actualizado en este plan |
 
 ---
 
-## Bloque 1 — Decision logic fixes (pipeline.ts)
+## Bloque A — Motor de decisión central
 
-**Archivo:** `src/lib/ai/voucher-pipeline.ts`
+**Archivo principal:** `src/lib/ai/voucher-pipeline.ts` (extraer a función `resolvePoolDecision()`)
+**Helpers:** `src/lib/ai/voucher-matching.ts`
 
-### 1.1 — Eliminar `pickBestMatch()` post-decisión
+### A.1 — Nueva función `resolvePoolDecision()`
 
+Entrada:
+- `candidatePool: PoolEntry[]`
+- `voucher: VoucherData` (monto, nombre_origen, nombre_cliente, etc.)
+- `nameThreshold` (= `NAME_MATCH_THRESHOLD`, 0.5)
+
+Salida:
 ```typescript
-// ELIMINAR (L723–729):
-const matchedInfo = pickBestMatch(candidates)
-if (matchedInfo) {
-  matchedInvoiceId = matchedInfo.invoiceId
-  ...
+interface PoolDecision {
+  status: 'matched' | 'multi_invoice' | 'ambiguous' | 'no_match'
+  selectedEntry?: PoolEntry          // para matched / multi_invoice
+  selectedInvoice?: MatchVoucherCandidate  // para matched single
+  candidates: MatchVoucherCandidate[]    // para ambiguous / staging
+  mensajeRespuesta: string
+  reason: string                       // para debug_info
 }
 ```
 
-`pickBestMatch()` corre después de que la decisión ya seteó `matchStatus`.
-Sobrescribe `matchedInvoiceId` con el candidato de mayor score, ignorando
-si la decisión fue `ambiguous` o `multi_invoice`. Es un bug.
-Solución: eliminarlo. La decisión ya eligió el `matchedInvoiceId` correcto.
+### A.2 — Reglas de decisión (ver detalle en `invoice.md`)
 
-También eliminar la función `pickBestMatch()` (L64–73).
+| Pool | Regla |
+|------|-------|
+| 0 entries | Delegar a Fase 4 (wide search) |
+| 1 entry `single` | Validar score de nombre → `matched` o `ambiguous` (name_mismatch) |
+| 1 entry `sum` | Validar score de nombre del cliente del grupo → `multi_invoice` o `ambiguous` |
+| 2+ entries | Filtrar por score de nombre; si queda 1 → `matched`/`multi_invoice`; si no → `ambiguous` |
 
-### 1.2 — No sobrescribir `matchedInvoiceId` post-decisión
+### A.3 — Scoring de nombre en decisión
 
-La decisión (L658–692) ya asigna `matchedInvoiceId`, `matchedInvoiceNumero`,
-etc. correctamente. Después de eso, ningún código debe sobreescribirlos.
+Para cada entry del pool, calcular `nameScore` usando:
+1. El `score` que devolvió FacBal (si la entry vino de Fase 3), **o**
+2. Una función local `scoreNameMatch(extractedName, clienteNombre)` cuando la entry vino de Fase 1/2 (sin nombre en la API call).
 
-### 1.3 — Unificar `registrarPago()` en clarificación `ambiguous`
+Prioridad de nombres extraídos: `nombre_origen` > `nombre_cliente`.
+
+### A.4 — Casos de desempate por nombre
+
+| Escenario | Comportamiento esperado |
+|-----------|------------------------|
+| $1000 = MARIA + JUAN, nombre = "Maria Garcia" | 1 pasa score → `matched` MARIA |
+| $1000 = MARIA + JUAN, sin nombre extraído | `ambiguous` — listar ambas |
+| $1000 = MARIA + JUAN, nombre = "Pedro Lopez" | `ambiguous` — ninguno pasa |
+| $1000 solo MARIA, nombre = "Pedro Lopez" | `ambiguous` — name_mismatch, preguntar confirmación |
+| $1000 solo MARIA, nombre = "Maria Garcia" | `matched` |
+| $1000 solo MARIA, sin nombre | `matched` (monto único, sin contradicción) |
+
+---
+
+## Bloque B — Correcciones al pipeline
+
+**Archivo:** `src/lib/ai/voucher-pipeline.ts`
+
+### B.1 — Eliminar `pickBestMatch()` post-decisión
+
+```typescript
+// ELIMINAR (líneas ~723-729):
+const matchedInfo = pickBestMatch(candidates)
+if (matchedInfo) { matchedInvoiceId = ... }
+```
+
+Solo setear `matchedInvoiceId` desde el resultado de `resolvePoolDecision()`.
+
+### B.2 — Unificar registro de pagos tras clarificación
 
 Hoy:
 - `multi_invoice` + confirmación → `registrarPago()` ✅
 - `ambiguous` + elección de factura → solo `createVoucherReview()` ❌
 
-Objetivo: ambos caminos llaman `registrarPago()` tras confirmación explícita.
+Objetivo: ambos caminos llaman `registrarPago()` tras confirmación explícita del usuario.
 
 Flujo unificado post-confirmación:
 ```
@@ -105,76 +143,21 @@ Flujo unificado post-confirmación:
 3. WhatsApp: "Registramos tu pago para [cliente] — Factura [número]."
 ```
 
-### 1.4 — Validar nombre en decisión "1 single → matched"
+### B.3 — Verificar que fases no confirmen
 
-El bloque de decisión (L658–670) asigna `matched` cuando hay 1 entry `single`,
-pero no verifica el nombre extraído. Si el nombre extraído contradice al
-cliente de la factura, debería ir a `ambiguous` (name_mismatch).
+Auditar Fases 1–3 y confirmar que solo llaman `tryAddToPool()`. Si alguna asigna `matchStatus`, mover esa lógica al motor de decisión.
 
-Regla: si `nombre_origen` o `nombre_cliente` fueron extraídos, comparar
-contra `entry.clientName`. Si no hay match de nombre → `ambiguous` con
-pregunta de confirmación. Si no se extrajo nombre → `matched` (no hay
-contradicción).
+### B.4 — Fase 2: corregir doc vs. código
+
+`invoice.md` decía que Fase 2 reusa candidatos de Fase 1; el código hace otra llamada API con `tolerancia = monto`. Documentar el comportamiento real en `invoice.md` (ya actualizado).
 
 ---
 
-## Bloque 2 — Limpieza de código legacy
-
-**Archivo:** `src/lib/ai/voucher-matching.ts`
-
-### 2.1 — Eliminar `matchVoucher()` y helpers exclusivos
-
-`matchVoucher()` no tiene callers en el código actual. El pipeline usa
-la decisión inline. Se eliminan:
-
-| Función | Motivo |
-|---------|--------|
-| `matchVoucher()` | Sin uso |
-| `buildMatched()` | Solo usada por `matchVoucher` |
-| `buildAmbiguous()` | Solo usada por `matchVoucher` |
-| `buildMultiInvoice()` | Solo usada por `matchVoucher` |
-| `buildNameMismatch()` | Solo usada por `matchVoucher` |
-| `findClientMatches()` | Sin uso |
-| `MatchResult` interface | Solo usada por `matchVoucher` |
-
-Funciones a **mantener**:
-- `montoDistance()`
-- `getMontoTolerancia()`, `getMontoGapMin()`
-- `findExactClientSumMatches()`
-- `NAME_MATCH_THRESHOLD`
-- `MatchStatus` type
-
-### 2.2 — Actualizar imports en pipeline
-
-Quitar imports de funciones eliminadas (ninguna se importa actualmente
-desde pipeline.ts, solo `findExactClientSumMatches`, `montoDistance`,
-`NAME_MATCH_THRESHOLD` y `MatchStatus`).
-
----
-
-## Bloque 3 — Migración de base de datos
-
-**Archivo nuevo:** `supabase/migrations/042_voucher_match_status_multi_invoice.sql`
-
-```sql
-ALTER TABLE voucher_extractions
-  DROP CONSTRAINT IF EXISTS voucher_extractions_match_status_check;
-
-ALTER TABLE voucher_extractions
-  ADD CONSTRAINT voucher_extractions_match_status_check
-  CHECK (match_status IN ('matched', 'ambiguous', 'no_match', 'multi_invoice'));
-```
-
-**Pipeline.ts:** cambiar `saveAttempt()` (L962) para persistir
-`multi_invoice` sin normalizar a `ambiguous`.
-
----
-
-## Bloque 4 — Filtrado del disparo del pipeline
+## Bloque C — Filtrado del disparo del pipeline
 
 **Archivo:** `src/app/api/whatsapp/webhook/route.ts`
 
-### 4.1 — Cuándo disparar `processVoucherMessage`
+### C.1 — Cuándo disparar `processVoucherMessage`
 
 | Condición | Disparar |
 |-----------|----------|
@@ -183,64 +166,119 @@ ALTER TABLE voucher_extractions
 | Imagen/documento sin caption ni contexto | ❌ (no disparar) |
 | Texto + `hasPendingVoucher` | ✅ (ya existe) |
 
-Keywords (case-insensitive): `comprobante`, `transferencia`, `pago`,
-`deposito`, `depósito`, `recibo`, `voucher`, `factura`, `mercado pago`, `mp`.
+Keywords sugeridas (case-insensitive): `comprobante`, `transferencia`, `pago`, `deposito`, `depósito`, `recibo`, `voucher`, `factura`, `mercado pago`, `mp`.
 
-### 4.2 — Convivencia con Expense Bot
+### C.2 — Convivencia con Expense Bot
 
 Si caption matchea `looksLikeExpense()` → Expense Bot, no Voucher.
 Si matchea keywords de pago → Voucher, no Expense.
-Si ambos o ninguno → no disparar automáticamente.
+Si ambos o ninguno → no disparar automáticamente; opcionalmente preguntar al usuario.
+
+### C.3 — Intent classifier (opcional, fase 2 del bloque)
+
+Evaluar usar `classifyIntent()` como señal adicional, pero no como único gate (latencia + costo).
 
 ---
 
-## Bloque 5 — Debug UI
+## Bloque D — Limpieza de código legacy
+
+**Archivo:** `src/lib/ai/voucher-matching.ts`
+
+### D.1 — Eliminar `matchVoucher()` y helpers exclusivos
+
+Funciones a eliminar (solo usadas por `matchVoucher()`):
+- `matchVoucher()`
+- `buildMatched()`, `buildAmbiguous()`, `buildMultiInvoice()`, `buildNameMismatch()`
+- `findClientMatches()` (si no se usa en Fase 4)
+
+Funciones a **mantener**:
+- `montoDistance()`
+- `findExactClientSumMatches()`
+- `NAME_MATCH_THRESHOLD`
+- Nueva: `scoreNameMatch()` (si se implementa scoring local)
+
+### D.2 — Actualizar imports en pipeline
+
+Quitar imports de funciones eliminadas.
+
+---
+
+## Bloque E — Migración de base de datos
+
+**Archivo nuevo:** `supabase/migrations/042_voucher_match_status_multi_invoice.sql`
+
+```sql
+-- Ampliar CHECK constraint para incluir multi_invoice
+ALTER TABLE voucher_extractions
+  DROP CONSTRAINT IF EXISTS voucher_extractions_match_status_check;
+
+ALTER TABLE voucher_extractions
+  ADD CONSTRAINT voucher_extractions_match_status_check
+  CHECK (match_status IN ('matched', 'ambiguous', 'no_match', 'multi_invoice'));
+```
+
+Actualizar `saveAttempt()` en pipeline para persistir `multi_invoice` sin normalizar a `ambiguous`.
+
+---
+
+## Bloque F — Debug UI
 
 **Archivo:** `src/app/(dashboard)/voucher-debug/page.tsx`
 
-- Asegurar que `debugInfo.final` refleje el resultado post-decisión (hoy
-  se setea antes de `pickBestMatch()`, que ya no va a existir)
-- Mostrar en timeline si el mensaje pasó el gate de keywords (Bloque 4)
+### F.1 — Mostrar motor de decisión
+
+Agregar sección `decision` en timeline:
+- Pool entries con type, clientName, total, nameScore
+- Regla aplicada (`single_unique`, `name_disambiguation`, `name_mismatch`, etc.)
+- Status final y reason
+
+### F.2 — Indicar filtro de disparo
+
+En logs/metadata: si el mensaje pasó o no el gate de keywords (cuando se implemente Bloque C).
 
 ---
 
 ## Orden de implementación
 
-| # | Bloque | Prioridad |
-|---|--------|-----------|
-| 1 | Bloque 2 — Limpieza legacy | 🔴 Alta |
-| 2 | Bloque 1 — Decision fixes | 🔴 Alta |
-| 3 | Bloque 3 — Migración DB | 🔴 Alta |
-| 4 | Bloque 5 — Debug UI | 🟡 Media |
-| 5 | Bloque 4 — Filtrado disparo | 🟢 Baja |
+| # | Bloque | Prioridad | Dependencias |
+|---|--------|-----------|--------------|
+| 1 | A — Motor de decisión | 🔴 Alta | Ninguna |
+| 2 | B — Fixes pipeline | 🔴 Alta | A |
+| 3 | D — Limpieza legacy | 🟡 Media | A, B |
+| 4 | E — Migración DB | 🟡 Media | B |
+| 5 | F — Debug UI | 🟡 Media | A |
+| 6 | C — Filtrado disparo | 🟢 Baja | B |
 
 ---
 
 ## Criterios de aceptación
 
-- [ ] `pickBestMatch()` eliminado; `matchedInvoiceId` viene solo de la decisión
-- [ ] `matchVoucher()` y sus helpers eliminados; no hay imports rotos
-- [ ] `multi_invoice` persistido correctamente en DB (CHECK constraint actualizada)
+- [ ] Fases 1–3 solo agregan al pool; ninguna asigna `matchStatus`
+- [ ] 2 facturas mismo monto + nombre que desempata → `matched` automático
+- [ ] 2 facturas mismo monto + sin nombre → `ambiguous` con lista
 - [ ] 1 factura exacta + nombre contradictorio → `ambiguous` (pregunta confirmación)
 - [ ] Usuario confirma factura en `ambiguous` → `registrarPago()` + mensaje de éxito
 - [ ] Usuario confirma en `multi_invoice` → mismo flujo unificado
+- [ ] `pickBestMatch()` eliminado; `matchedInvoiceId` viene solo de la decisión
+- [ ] `matchVoucher()` eliminado; tests/debug no lo referencian
+- [ ] `multi_invoice` persistido correctamente en DB
 - [ ] Imagen sin caption ni contexto voucher → no dispara pipeline
-- [ ] Imagen con caption de pago + sin contexto → dispara pipeline
+- [ ] `debug_info.decision` muestra regla aplicada y scores de nombre
 - [ ] Documentación (`invoice.md`, `BOT_ARCHITECTURE.md`, este plan) alineada con código
 
 ---
 
-## Archivos a modificar
+## Archivos a modificar (implementación futura)
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/lib/ai/voucher-pipeline.ts` | Eliminar `pickBestMatch()`, fix nombre en decisión, unificar `registrarPago()` en ambiguous, no normalizar `multi_invoice` |
-| `src/lib/ai/voucher-matching.ts` | Eliminar `matchVoucher()` y helpers sin uso |
-| `src/app/api/whatsapp/webhook/route.ts` | Gate de disparo (Bloque 4) |
-| `src/app/(dashboard)/voucher-debug/page.tsx` | Timeline sincronizado |
-| `supabase/migrations/042_*.sql` | CHECK constraint + `multi_invoice` |
-| `invoice.md` | Spec de matching ✅ se actualiza en paralelo |
-| `BOT_ARCHITECTURE.md` | Sección voucher ✅ se actualiza en paralelo |
+| `src/lib/ai/voucher-pipeline.ts` | Motor de decisión, fixes B.1–B.3 |
+| `src/lib/ai/voucher-matching.ts` | Limpieza + `scoreNameMatch()` |
+| `src/app/api/whatsapp/webhook/route.ts` | Gate de disparo (Bloque C) |
+| `src/app/(dashboard)/voucher-debug/page.tsx` | Timeline de decisión |
+| `supabase/migrations/042_*.sql` | CHECK constraint |
+| `invoice.md` | Spec de matching ✅ actualizado |
+| `BOT_ARCHITECTURE.md` | Arquitectura voucher ✅ actualizado |
 
 ---
 
@@ -249,4 +287,4 @@ Si ambos o ninguno → no disparar automáticamente.
 | Fecha | Cambio |
 |-------|--------|
 | Jul 2026 | Plan inicial de redesign (pool + 4 fases) — parcialmente implementado |
-| Jul 2026 | Revisión post-audit: corrección de plan, eliminación de `pickBestMatch`, `matchVoucher`, fix `multi_invoice` |
+| Jul 2026 | Revisión post-audit: motor de decisión, desempate por nombre, fixes pipeline, filtrado disparo |
