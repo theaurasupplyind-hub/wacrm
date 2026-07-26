@@ -29,13 +29,6 @@ interface PipelineArgs {
   conversationId: string
 }
 
-interface MatchInvoiceInfo {
-  invoiceId: number
-  numero: string
-  clienteNombre: string
-  saldoPendiente: number
-}
-
 function mediaTimeout(): Promise<never> {
   return new Promise((_, reject) =>
     setTimeout(() => reject(new Error('Media download timed out after 15s')), MEDIA_TIMEOUT_MS),
@@ -58,17 +51,6 @@ async function notify(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[voucher] notify failed:', msg)
-  }
-}
-
-function pickBestMatch(candidates: MatchVoucherCandidate[]): MatchInvoiceInfo | null {
-  if (candidates.length === 0) return null
-  const best = candidates.reduce((a, b) => (a.score >= b.score ? a : b))
-  return {
-    invoiceId: best.invoice_id,
-    numero: best.numero_factura,
-    clienteNombre: best.cliente_nombre,
-    saldoPendiente: best.saldo_pendiente,
   }
 }
 
@@ -182,7 +164,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
         const fechaPago = pendingItem.extraction.fecha || new Date().toISOString().slice(0, 10)
         const paidList: string[] = []
-        let errors: string[] = []
+        const errors: string[] = []
         let remaining = pendingItem.extraction.monto ?? 0
 
         for (const inv of selected) {
@@ -267,6 +249,24 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
         await createVoucherReview(payload)
         console.log('[voucher] Staged for review after user clarification')
+
+        const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
+        if (montoPago > 0) {
+          try {
+            const fechaPago = pendingItem.extraction.fecha || new Date().toISOString().slice(0, 10)
+            await registrarPago({
+              invoiceId: chosen.invoice_id,
+              monto: montoPago,
+              fecha: fechaPago,
+              entityType: null,
+              entityId: null,
+            })
+            console.log('[voucher] Payment registered after clarification: invoice=%s amount=%s', chosen.invoice_id, montoPago)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error('[voucher] PAYMENT after clarification failed:', msg)
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[voucher] STAGING after clarification failed:', msg)
@@ -274,7 +274,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
       await notify({
         ...sendCtx,
-        text: `Gracias. Confirmamos tu pago para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}. Un agente lo está verificando y pronto lo procesará.`,
+        text: `Gracias. Registramos tu pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)} para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`,
       })
     } else {
       const lines = pendingItem.candidates.map(
@@ -658,16 +658,25 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     } else if (candidatePool.length === 1) {
       const entry = candidatePool[0]
       if (entry.type === 'single') {
-        matchStatus = 'matched'
-        matchedInvoiceId = entry.invoices[0].invoice_id
-        matchedInvoiceNumero = entry.invoices[0].numero_factura
-        matchedClienteNombre = entry.invoices[0].cliente_nombre
-        matchedSaldoPendiente = entry.invoices[0].saldo_pendiente
-        candidates = entry.invoices
-        mensajeRespuesta = entry.invoices[0].cliente_nombre
-          ? `Gracias. Tu pago de ${formatMonto(entry.total)} corresponde a ${entry.invoices[0].cliente_nombre} — Factura ${entry.invoices[0].numero_factura}. Lo estamos procesando.`
-          : `Registramos tu pago de ${formatMonto(entry.total)} para la Factura ${entry.invoices[0].numero_factura}. Lo estamos procesando.`
-        console.log('[voucher-debug] Decision: matched (single exact, invoice=%s)', entry.invoices[0].numero_factura)
+        const bestInvoice = entry.invoices[0]
+        const nombreExtraido = voucher.nombre_origen?.trim() || voucher.nombre_cliente?.trim() || null
+        if (nombreExtraido && bestInvoice.score < NAME_MATCH_THRESHOLD) {
+          matchStatus = 'ambiguous'
+          candidates = entry.invoices
+          mensajeRespuesta = `El pago de ${formatMonto(entry.total)} coincide exactamente con la factura ${bestInvoice.numero_factura} de ${bestInvoice.cliente_nombre}, pero el nombre del remitente es "${nombreExtraido}". \n\n¿Es correcto? Respondé "sí" para confirmar.`
+          console.log('[voucher-debug] Decision: ambiguous (name_mismatch, invoice=%s, nombre="%s", score=%s)', bestInvoice.numero_factura, nombreExtraido, bestInvoice.score)
+        } else {
+          matchStatus = 'matched'
+          matchedInvoiceId = bestInvoice.invoice_id
+          matchedInvoiceNumero = bestInvoice.numero_factura
+          matchedClienteNombre = bestInvoice.cliente_nombre
+          matchedSaldoPendiente = bestInvoice.saldo_pendiente
+          candidates = entry.invoices
+          mensajeRespuesta = bestInvoice.cliente_nombre
+            ? `Gracias. Tu pago de ${formatMonto(entry.total)} corresponde a ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}. Lo estamos procesando.`
+            : `Registramos tu pago de ${formatMonto(entry.total)} para la Factura ${bestInvoice.numero_factura}. Lo estamos procesando.`
+          console.log('[voucher-debug] Decision: matched (single exact, invoice=%s)', bestInvoice.numero_factura)
+        }
       } else {
         matchStatus = 'multi_invoice'
         candidates = entry.invoices
@@ -720,13 +729,6 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       errorMessage,
     }
 
-    const matchedInfo = pickBestMatch(candidates)
-    if (matchedInfo) {
-      matchedInvoiceId = matchedInfo.invoiceId
-      matchedInvoiceNumero = matchedInfo.numero
-      matchedClienteNombre = matchedInfo.clienteNombre
-      matchedSaldoPendiente = matchedInfo.saldoPendiente
-    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[voucher] EXTRACTION failed:', msg)
@@ -943,7 +945,26 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           }
           await createVoucherReview(payload)
           console.log('[voucher] Auto-resolved by pending text')
-          mensajeRespuesta = `Gracias. Tu pago para ${autoChosen.cliente_nombre} — Factura ${autoChosen.numero_factura} se está procesando.`
+
+          const montoAuto = extractedAmount ?? autoChosen.saldo_pendiente
+          if (montoAuto > 0) {
+            try {
+              const fechaAuto = extractedDate || new Date().toISOString().slice(0, 10)
+              await registrarPago({
+                invoiceId: autoChosen.invoice_id,
+                monto: montoAuto,
+                fecha: fechaAuto,
+                entityType: null,
+                entityId: null,
+              })
+              console.log('[voucher] Payment auto-registered: invoice=%s amount=%s', autoChosen.invoice_id, montoAuto)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              console.error('[voucher] Auto payment failed:', msg)
+            }
+          }
+
+          mensajeRespuesta = `Gracias. Registramos tu pago de ${formatMonto(montoAuto)} para ${autoChosen.cliente_nombre} — Factura ${autoChosen.numero_factura}.`
           matchStatus = 'matched'
         } else {
           // Pending text didn't match, keep ambiguous state
@@ -958,8 +979,6 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     await removePendingVoucher(db, conversationId, message.id)
   }
 
-  // Normalize multi_invoice for DB (CHECK constraint only allows matched/ambiguous/no_match)
-  const saveStatus: MatchStatus = matchStatus === 'multi_invoice' ? 'ambiguous' : matchStatus
   await saveAttempt({
     messageId: message.id,
     contactId,
@@ -967,7 +986,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     extractedDate,
     extractedReference,
     extractedBank,
-    matchStatus: saveStatus,
+    matchStatus,
     matchedInvoiceId,
     errorMessage,
     debugInfo,
