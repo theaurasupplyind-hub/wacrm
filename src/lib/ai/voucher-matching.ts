@@ -1,7 +1,7 @@
 import type { VoucherData } from './voucher-extraction'
 import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
-const NAME_MATCH_THRESHOLD = 0.5
+export const NAME_MATCH_THRESHOLD = 0.5
 
 export function getMontoTolerancia(monto: number): number {
   return Math.max(50, monto * 0.03)
