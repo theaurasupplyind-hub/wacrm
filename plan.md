@@ -1,6 +1,6 @@
 # Plan de mejoras — Reconocimiento de Vouchers
 
-> **Estado:** Planificado — sin implementar aún (Jul 2026)
+> **Estado:** En progreso — mayoría implementado (Jul 2026)
 > **Spec de matching:** ver [`invoice.md`](./invoice.md)
 > **Arquitectura general:** ver [`BOT_ARCHITECTURE.md`](./BOT_ARCHITECTURE.md) §3
 
@@ -272,13 +272,65 @@ En logs/metadata: si el mensaje pasó o no el gate de keywords (cuando se implem
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/lib/ai/voucher-pipeline.ts` | Motor de decisión, fixes B.1–B.3 |
-| `src/lib/ai/voucher-matching.ts` | Limpieza + `scoreNameMatch()` |
-| `src/app/api/whatsapp/webhook/route.ts` | Gate de disparo (Bloque C) |
-| `src/app/(dashboard)/voucher-debug/page.tsx` | Timeline de decisión |
-| `supabase/migrations/042_*.sql` | CHECK constraint |
-| `invoice.md` | Spec de matching ✅ actualizado |
-| `BOT_ARCHITECTURE.md` | Arquitectura voucher ✅ actualizado |
+| `src/lib/ai/voucher-pipeline.ts` | ✅ Decisión + entity linking + fecha + pickBestMatch removido |
+| `src/lib/ai/voucher-matching.ts` | ✅ Limpieza (matchVoucher + helpers legacy) |
+| `src/lib/ai/voucher-context.ts` | ✅ RPC atómicos para pending vouchers |
+| `src/app/api/whatsapp/webhook/route.ts` | Gate de disparo (pendiente) |
+| `src/app/(dashboard)/voucher-debug/page.tsx` | Timeline de decisión (pendiente) |
+| `supabase/migrations/042_*.sql` | ✅ CHECK multi_invoice |
+| `supabase/migrations/043_*.sql` | ✅ Funciones atómicas voucher_append/remove |
+| `invoice.md` | ✅ Spec de matching actualizado |
+| `BOT_ARCHITECTURE.md` | ✅ Arquitectura voucher actualizada |
+
+---
+
+## Vinculación de entidad (proveedor/empleado) ✅ Implementado
+
+Los `destination_candidates` que devuelve `matchVoucherByName()` (entity_type, entity_id, entity_name) ahora se capturan en todas las fases y se pasan a `registrarPago()` y `createVoucherReview()`.
+
+**Cambios en `pipeline.ts`:**
+- `allDestinationCandidates[]` acumula destinations de Fases 1-4
+- `bestDest` = candidato de mayor score (reduce en el pool acumulado)
+- Los 6 call sites de `registrarPago()` envían `entityType`/`entityId` desde `bestDest`
+- Los 3 payloads de `createVoucherReview()` incluyen `entity_type`/`entity_id`/`entity_name`
+- `pendingItem.bestDestination` se preserva en multi-turn para confirmaciones posteriores
+
+**Formato de fecha:** `normalizeDate()` convierte cualquier formato a `YYYY-MM-DD` (ISO) compatible con `<input type="date">`.
+
+**Fix frontend (galv2-tauri):** `dateToInput()` en `FichaSemanal.svelte` normaliza fechas en formato argentino (`DD/MM/YYYY`) al cargar el modal de edición.
+
+---
+
+## Race condition: vouchers simultáneos mismo chat ✅ Implementado
+
+Cuando WhatsApp envía múltiples imágenes en un mismo webhook, los bgTasks corren **concurrentes** al final. Si 2+ vouchers para la misma conversación terminan como `ambiguous`/`multi_invoice`, el `addPendingVoucher()` original (read-modify-write) causaba que el segundo pisara al primero.
+
+**Solución:** Funciones PL/pgSQL atómicas (`043_voucher_atomic_pending.sql`):
+- `voucher_append_pending(conv_id, new_item)` — jsonb concatenación atómica
+- `voucher_remove_pending(conv_id, msg_id)` — filtrado atómico por sourceMessageId
+- `voucher-context.ts` usa `db.rpc(...)` en vez de load→push→save
+
+---
+
+## UX: múltiples vouchers pendientes
+
+Cuando un usuario envía varios comprobantes a la vez y todos requieren clarificación, el bot envía un mensaje por cada uno. El usuario debe responder **"sí" repetidamente** — cada respuesta procesa un pendiente en orden FIFO. El bot confirma cuál se registró en cada paso.
+
+```
+Usuario envía 3 imágenes
+Bot: "Comprobante 1: ¿Confirma pago para María García?"
+Bot: "Comprobante 2: ¿Confirma pago para Juan Pérez?"
+Bot: "Comprobante 3: ¿Confirma pago para Carlos López?"
+
+Usuario: "sí"
+Bot: "Registramos tu pago para María García."  ← procesó el 1°
+Usuario: "sí"
+Bot: "Registramos tu pago para Juan Pérez."    ← procesó el 2°
+Usuario: "sí"
+Bot: "Registramos tu pago para Carlos López."  ← procesó el 3°
+```
+
+**Regla simple para el usuario:** responder siempre al último mensaje del bot y repetir "sí" hasta que no queden más pendientes. Si necesita clarificar un comprobante específico, incluir el número de factura o nombre del cliente.
 
 ---
 
@@ -288,3 +340,5 @@ En logs/metadata: si el mensaje pasó o no el gate de keywords (cuando se implem
 |-------|--------|
 | Jul 2026 | Plan inicial de redesign (pool + 4 fases) — parcialmente implementado |
 | Jul 2026 | Revisión post-audit: motor de decisión, desempate por nombre, fixes pipeline, filtrado disparo |
+| Jul 2026 | Implementado: limpieza matchVoucher, eliminado pickBestMatch, multi_invoice persistido, name_mismatch |
+| Jul 2026 | Implementado: entity linking (bestDest → registrarPago/createVoucherReview), fecha ISO, race condition fix (RPC atómico) |

@@ -92,9 +92,14 @@ export async function addPendingVoucher(
   conversationId: string,
   item: PendingVoucherItem,
 ): Promise<void> {
-  const ctx = await loadVoucherContext(db, conversationId)
-  ctx.pending.push(item)
-  await saveVoucherContext(db, conversationId, ctx)
+  try {
+    await db.rpc('voucher_append_pending', {
+      conv_id: conversationId,
+      new_item: item as unknown as Record<string, unknown>,
+    })
+  } catch (err) {
+    console.error('[voucher] add pending error:', err)
+  }
 }
 
 export async function removePendingVoucher(
@@ -102,9 +107,14 @@ export async function removePendingVoucher(
   conversationId: string,
   sourceMessageId: string,
 ): Promise<void> {
-  const ctx = await loadVoucherContext(db, conversationId)
-  ctx.pending = ctx.pending.filter((p) => p.sourceMessageId !== sourceMessageId)
-  await saveVoucherContext(db, conversationId, ctx)
+  try {
+    await db.rpc('voucher_remove_pending', {
+      conv_id: conversationId,
+      msg_id: sourceMessageId,
+    })
+  } catch (err) {
+    console.error('[voucher] remove pending error:', err)
+  }
 }
 
 export async function pushPendingText(
