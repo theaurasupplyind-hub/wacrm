@@ -419,6 +419,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           cuit_destino: null,
           monto: voucher.monto,
           tolerancia: 50,
+          timeoutMs: 60_000,
         })
         amountCandidatesP1 = amountResult.invoice_candidates || []
         console.log('[voucher-debug] Phase 1 API: %d candidates', amountCandidatesP1.length)

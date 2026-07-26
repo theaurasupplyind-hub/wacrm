@@ -177,6 +177,7 @@ export async function matchVoucherByName(args: {
   cuit_destino?: string | null
   monto?: number | null
   tolerancia?: number
+  timeoutMs?: number
 }): Promise<MatchVoucherResult> {
   const url = `${apiUrl()}/invoices/match-voucher`
   const res = await fetch(url, {
@@ -191,7 +192,7 @@ export async function matchVoucherByName(args: {
       monto: args.monto ?? null,
       tolerancia: args.tolerancia ?? 50,
     }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(args.timeoutMs ?? 20_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
