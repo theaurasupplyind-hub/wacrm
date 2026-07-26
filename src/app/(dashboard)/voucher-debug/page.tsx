@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Search, Check, X, AlertTriangle, ChevronDown, ChevronRight, Bug, Users, ArrowRight, RotateCcw, DollarSign } from 'lucide-react'
+import { Search, Check, X, AlertTriangle, ChevronDown, ChevronRight, Bug, Users, ArrowRight, DollarSign, User, Layers, HelpCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 
 interface CandidateInfo {
@@ -14,17 +14,27 @@ interface CandidateInfo {
 
 interface StepInfo {
   step: string
-  input: CandidateInfo[]
+  input?: CandidateInfo[]
   filters?: Record<string, unknown>
-  disambiguation?: Record<string, unknown>
-  result: { status: string; matchedInvoiceId?: number | null }
+  result: Record<string, unknown>
 }
 
-interface PhaseInfo {
+interface PhaseBaseInfo {
   apiCall: Record<string, unknown>
-  apiResult: CandidateInfo[]
+  apiResult?: CandidateInfo[]
   steps?: StepInfo[]
-  result: { status: string; matchedInvoiceId: number | null }
+  result: Record<string, unknown>
+}
+
+interface DecisionInfo {
+  poolSize: number
+  entries: { type: string; clientName: string; total: number; invoiceCount: number }[]
+  finalStatus: string
+}
+
+interface Phase4Info {
+  wideSearch: { tolerancia: number; candidates: number; timeout: boolean }
+  result: { status: string; candidatesShown: number }
 }
 
 interface Extraction {
@@ -39,9 +49,11 @@ interface Extraction {
   error_message: string | null
   created_at: string
   debug_info: {
-    phase1: PhaseInfo | null
-    phase2: PhaseInfo | null
-    phase3: { candidatesShown: number; candidates: CandidateInfo[] } | null
+    phase1: PhaseBaseInfo | null
+    phase2: PhaseBaseInfo | null
+    phase3: PhaseBaseInfo | null
+    decision: DecisionInfo | null
+    phase4: Phase4Info | null
     final: {
       matchStatus: string
       matchedInvoiceId: number | null
@@ -65,7 +77,7 @@ function StatusBadge({ status, small }: { status: string; small?: boolean }) {
 }
 
 function CandidateTable({ candidates, showScore, showDist }: { candidates: CandidateInfo[]; showScore?: boolean; showDist?: boolean }) {
-  if (candidates.length === 0) return <p className="text-xs text-muted-foreground">Sin candidatos</p>
+  if (!candidates || candidates.length === 0) return <p className="text-xs text-muted-foreground">Sin candidatos</p>
   return (
     <table className="w-full text-xs border-collapse">
       <thead>
@@ -93,108 +105,90 @@ function CandidateTable({ candidates, showScore, showDist }: { candidates: Candi
 }
 
 function StepIcon({ step }: { step: string }) {
-  if (step === 'Exact match') return <DollarSign className="h-3.5 w-3.5 text-blue-500" />
-  if (step === 'Exact sum') return <DollarSign className="h-3.5 w-3.5 text-green-500" />
-  if (step === 'Close match') return <Users className="h-3.5 w-3.5 text-amber-500" />
+  if (step === 'Exact amount') return <DollarSign className="h-3.5 w-3.5 text-blue-500" />
+  if (step === 'Exact sum') return <Layers className="h-3.5 w-3.5 text-green-500" />
+  if (step === 'Name match') return <User className="h-3.5 w-3.5 text-purple-500" />
   return <ArrowRight className="h-3.5 w-3.5" />
+}
+
+function GroupsDisplay({ groups }: { groups: { clientName: string; total: number; invoices: { factura: string; saldo: number }[] }[] }) {
+  if (!groups || groups.length === 0) return null
+  return (
+    <div>
+      {groups.map((g, i) => (
+        <div key={i} className="mt-1 p-2 rounded bg-muted/30">
+          <div className="font-medium mb-1">{g.clientName} — Total: ${g.total.toFixed(2)}</div>
+          {g.invoices.map((inv, j) => (
+            <div key={j} className="text-muted-foreground pl-3 text-[11px]">
+              {inv.factura}: ${inv.saldo.toFixed(2)}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function StepBlock({ step }: { step: StepInfo }) {
   const [open, setOpen] = useState(false)
-  const status = step.result?.status || 'unknown'
-  const resolved = status === 'matched' || status === 'multi_invoice'
+  const result = step.result || {}
+  const hasInput = step.input && step.input.length > 0
+  const hasGroups = Array.isArray(result.groups) && result.groups.length > 0
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${resolved ? 'border-green-200 dark:border-green-900' : ''}`}>
+    <div className="border rounded-lg overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
-        className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium hover:bg-muted/50 ${resolved ? 'bg-green-50 dark:bg-green-950/20' : 'bg-muted/30'}`}
+        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium hover:bg-muted/50 bg-muted/30"
       >
         <div className="flex items-center gap-2 min-w-0">
           <StepIcon step={step.step} />
           <span className="truncate">{step.step}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {status === 'multi_invoice' && <span className="text-[10px] text-green-600">✓ Resuelto</span>}
-          {status === 'matched' && <span className="text-[10px] text-green-600">✓ Matched</span>}
-          {status === 'no_match' && !resolved && <span className="text-[10px] text-muted-foreground">Sin match →</span>}
-          {resolved && !open && <ChevronRight className="h-3 w-3" />}
-          {open && <ChevronDown className="h-3 w-3" />}
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </div>
       </button>
 
       {open && (
         <div className="px-3 py-2 space-y-2 text-xs">
-          <div>
-            <span className="font-medium text-muted-foreground">Input ({step.input.length} candidates):</span>
-            <CandidateTable candidates={step.input} showScore />
-          </div>
-
-          {!!step.filters?.byMonto && (
+          {hasInput && (
             <div>
-              <span className="font-medium text-muted-foreground">
-                Filter: {String((step.filters.byMonto as Record<string, unknown>).rule || 'byMonto')}
-              </span>
-              <span className="text-muted-foreground ml-1">
-                ({Number((step.filters.byMonto as Record<string, unknown>).passedCount) || 0} of {Number((step.filters.byMonto as Record<string, unknown>).total) || 0} passed)
-              </span>
-              <CandidateTable candidates={(step.filters.byMonto as Record<string, unknown>).passed as CandidateInfo[]} showDist showScore />
+              <span className="font-medium text-muted-foreground">Input ({step.input!.length} candidates):</span>
+              <CandidateTable candidates={step.input!} showScore />
             </div>
           )}
 
-          {!!step.filters?.groupBy && (
-            <div>
-              <span className="font-medium text-muted-foreground">
-                Group: {String(step.filters.groupBy)} — {String(step.filters.operator)}
-              </span>
-              {!!step.filters.tolerance && <span className="text-muted-foreground"> (tolerance {String(step.filters.tolerance)})</span>}
-              {!!((step.result as Record<string, unknown>).groups) && ((step.result as Record<string, unknown>).groups as { clientName: string; total: number; invoices: { factura: string; saldo: number }[] }[]).map((g, i) => (
-                <div key={i} className="mt-1 p-2 rounded bg-muted/30">
-                  <div className="font-medium mb-1">{g.clientName} — Total: ${g.total.toFixed(2)}</div>
-                  {g.invoices.map((inv, j) => (
-                    <div key={j} className="text-muted-foreground pl-3 text-[11px]">
-                      {inv.factura}: ${inv.saldo.toFixed(2)}
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
+          {hasGroups && <GroupsDisplay groups={result.groups as { clientName: string; total: number; invoices: { factura: string; saldo: number }[] }[]} />}
 
-          {step.disambiguation && (
-            <div>
-              <span className="font-medium text-muted-foreground">Disambiguation:</span>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 mt-0.5 text-muted-foreground">
-                {Object.entries(step.disambiguation).map(([key, val]) => {
-                  let display = typeof val === 'boolean' ? (val ? '✓' : '✗') : String(val ?? '')
-                  if (display === '[object Object]') display = JSON.stringify(val)
-                  return (
-                    <div key={key} className="flex items-center gap-1">
-                      <span className="text-[11px]">{key}:</span>
-                      <span className="font-mono text-[11px] truncate max-w-[120px]">{display}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+          {result.apiCandidates !== undefined && (
+            <div className="text-muted-foreground">API candidates: <span className="font-medium text-foreground">{String(result.apiCandidates)}</span></div>
           )}
-
-          <div className={`pt-1 border-t text-xs font-medium ${resolved ? 'text-green-600' : status === 'no_match' ? 'text-muted-foreground' : 'text-amber-600'}`}>
-            Result: {status}
-            {step.result?.matchedInvoiceId && <span> (invoice #{step.result.matchedInvoiceId})</span>}
-          </div>
+          {result.exactMatches !== undefined && (
+            <div className="text-muted-foreground">Exact matches: <span className="font-medium text-green-600">{String(result.exactMatches)}</span></div>
+          )}
+          {result.exactWithName !== undefined && (
+            <div className="text-muted-foreground">Exact + name: <span className="font-medium text-green-600">{String(result.exactWithName)}</span></div>
+          )}
+          {result.totalGroups !== undefined && (
+            <div className="text-muted-foreground">Sum groups: <span className="font-medium">{String(result.totalGroups)}</span></div>
+          )}
+          {result.addedToPool !== undefined && (
+            <div className="text-muted-foreground">Added to pool: <span className="font-medium text-green-600">{String(result.addedToPool)}</span></div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-function PhaseTimeline({ phase, label }: { phase: PhaseInfo | null; label: string }) {
+function PhaseTimeline({ phase, label }: { phase: PhaseBaseInfo | null; label: string }) {
   const [open, setOpen] = useState(false)
   if (!phase) return null
 
   const hasSteps = phase.steps && phase.steps.length > 0
-  const resolved = phase.result?.status === 'matched' || phase.result?.status === 'multi_invoice'
+  const poolAdded = typeof phase.result?.poolAdded === 'number' ? phase.result.poolAdded : 0
+  const resolved = poolAdded > 0
 
   return (
     <div className="border rounded-xl overflow-hidden">
@@ -207,7 +201,7 @@ function PhaseTimeline({ phase, label }: { phase: PhaseInfo | null; label: strin
           {hasSteps && <span className="text-xs text-muted-foreground">({phase.steps!.length} steps)</span>}
         </div>
         <div className="flex items-center gap-2">
-          <StatusBadge status={phase.result?.status || 'unknown'} />
+          {poolAdded > 0 ? <StatusBadge status="matched" small /> : <span className="text-xs text-muted-foreground">0 added</span>}
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </div>
       </button>
@@ -219,7 +213,7 @@ function PhaseTimeline({ phase, label }: { phase: PhaseInfo | null; label: strin
             <code className="text-[11px] bg-muted px-1.5 py-0.5 rounded">{JSON.stringify(phase.apiCall)}</code>
           </div>
 
-          {phase.apiResult.length > 0 && (
+          {phase.apiResult && phase.apiResult.length > 0 && (
             <div>
               <span className="text-xs text-muted-foreground">API Result ({phase.apiResult.length} candidates):</span>
               <CandidateTable candidates={phase.apiResult} showScore />
@@ -240,13 +234,19 @@ function PhaseTimeline({ phase, label }: { phase: PhaseInfo | null; label: strin
           )}
 
           <div className={`text-xs font-medium pt-1 border-t ${resolved ? 'text-green-600' : 'text-muted-foreground'}`}>
-            Final: {phase.result?.status}
-            {phase.result?.matchedInvoiceId && <span> (invoice #{phase.result.matchedInvoiceId})</span>}
+            Added to pool: {poolAdded}
+            {phase.result?.apiCandidates !== undefined && <span> (from {String(phase.result.apiCandidates)} API candidates)</span>}
           </div>
         </div>
       )}
     </div>
   )
+}
+
+function PoolEntryBadge({ type }: { type: string }) {
+  if (type === 'single') return <span className="text-[10px] text-blue-600 bg-blue-100 dark:bg-blue-950 px-1.5 py-0.5 rounded font-medium">single</span>
+  if (type === 'sum') return <span className="text-[10px] text-green-600 bg-green-100 dark:bg-green-950 px-1.5 py-0.5 rounded font-medium">sum</span>
+  return null
 }
 
 export default function VoucherDebugPage() {
@@ -351,27 +351,52 @@ export default function VoucherDebugPage() {
                   <div className="space-y-3">
                     <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Matching Flow</h3>
 
-                    {ext.debug_info.phase1 && (
-                      <PhaseTimeline phase={ext.debug_info.phase1} label="Phase 1 — Amount-only" />
-                    )}
+                    <PhaseTimeline phase={ext.debug_info.phase1} label="Phase 1 — Exact amount" />
+                    <PhaseTimeline phase={ext.debug_info.phase2} label="Phase 2 — Client sum" />
+                    <PhaseTimeline phase={ext.debug_info.phase3} label="Phase 3 — Name + amount" />
 
-                    {ext.debug_info.phase2 && (
-                      <PhaseTimeline phase={ext.debug_info.phase2} label="Phase 2 — Name-based" />
-                    )}
-
-                    {ext.debug_info.phase3 && (
+                    {ext.debug_info.decision && (
                       <div className="border rounded-xl overflow-hidden">
                         <div className="flex items-center justify-between px-4 py-3 text-sm font-medium bg-muted/30">
-                          <span>Phase 3 — Ask user</span>
-                          <span className="text-muted-foreground font-normal text-xs">
-                            {ext.debug_info.phase3.candidatesShown} candidates, {new Set(ext.debug_info.phase3.candidates.map(c => c.cliente)).size} clients
+                          <span className="flex items-center gap-2">
+                            <HelpCircle className="h-4 w-4 text-amber-500" />
+                            Decision
                           </span>
+                          <StatusBadge status={ext.debug_info.decision.finalStatus} small />
                         </div>
-                        {ext.debug_info.phase3.candidates.length > 0 && (
-                          <div className="px-4 py-3">
-                            <CandidateTable candidates={ext.debug_info.phase3.candidates} />
-                          </div>
-                        )}
+                        <div className="px-4 py-3 space-y-2 text-sm">
+                          <div className="text-xs text-muted-foreground">Pool size: <span className="font-medium text-foreground">{ext.debug_info.decision.poolSize}</span></div>
+                          {ext.debug_info.decision.entries.length > 0 && (
+                            <div className="space-y-1.5">
+                              {ext.debug_info.decision.entries.map((e, i) => (
+                                <div key={i} className="flex items-center gap-2 p-2 rounded bg-muted/30 text-xs">
+                                  <PoolEntryBadge type={e.type} />
+                                  <span className="font-medium">{e.clientName}</span>
+                                  <span className="text-muted-foreground">— ${e.total.toFixed(2)}</span>
+                                  {e.invoiceCount > 1 && <span className="text-muted-foreground">({e.invoiceCount} facturas)</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {ext.debug_info.phase4 && (
+                      <div className="border rounded-xl overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3 text-sm font-medium bg-muted/30">
+                          <span className="flex items-center gap-2">
+                            <Search className="h-4 w-4 text-orange-500" />
+                            Phase 4 — Wide search
+                          </span>
+                          <StatusBadge status={ext.debug_info.phase4.result.status} small />
+                        </div>
+                        <div className="px-4 py-3 space-y-1 text-xs">
+                          <div className="text-muted-foreground">Tolerancia: <span className="font-medium text-foreground">{ext.debug_info.phase4.wideSearch.tolerancia}</span></div>
+                          <div className="text-muted-foreground">Candidates: <span className="font-medium text-foreground">{ext.debug_info.phase4.wideSearch.candidates}</span></div>
+                          <div className="text-muted-foreground">Timeout: <span className={`font-medium ${ext.debug_info.phase4.wideSearch.timeout ? 'text-destructive' : 'text-green-600'}`}>{ext.debug_info.phase4.wideSearch.timeout ? 'Yes' : 'No'}</span></div>
+                          <div className="text-muted-foreground">Shown to user: <span className="font-medium text-foreground">{ext.debug_info.phase4.result.candidatesShown}</span></div>
+                        </div>
                       </div>
                     )}
 
