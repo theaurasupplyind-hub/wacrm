@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD } from './voucher-matching'
+import { type MatchStatus, findExactClientSumMatches, getMontoTolerancia, montoDistance, NAME_MATCH_THRESHOLD } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -464,28 +464,58 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
 
     // ── Phase 2: Exact sum of same client invoices ──
-    if (voucher.monto && voucher.monto > 0 && amountCandidatesP1.length > 0) {
+    if (voucher.monto && voucher.monto > 0) {
       console.log('[voucher-debug] === Phase 2: Exact sum of client invoices ===')
       const p2steps: Record<string, unknown>[] = []
-      const exactSums = findExactClientSumMatches(voucher.monto, amountCandidatesP1)
-
-      let sumCount = 0
-      for (const group of exactSums) {
-        if (tryAddToPool({ type: 'sum', invoices: group.invoices, total: group.total, clientName: group.clientName })) {
-          sumCount++
+      try {
+        const p2Tolerancia = getMontoTolerancia(voucher.monto)
+        console.log('[voucher-debug] Phase 2 API: tolerancia=%s', p2Tolerancia)
+        const p2Result = await matchVoucherByName({
+          nombre_cliente: null,
+          nombre_origen: null,
+          nombre_destino: null,
+          cbu_destino: null,
+          cuit_destino: null,
+          monto: voucher.monto,
+          tolerancia: p2Tolerancia,
+        })
+        const p2Candidates = p2Result.invoice_candidates || []
+        console.log('[voucher-debug] Phase 2 API: %d candidates', p2Candidates.length)
+        const p2ApiResult = p2Candidates.map(c => ({
+          factura: c.numero_factura,
+          cliente: c.cliente_nombre,
+          saldo: c.saldo_pendiente,
+          score: c.score,
+        }))
+        if (p2Candidates.length > 0) {
+          console.table(p2ApiResult)
         }
-      }
 
-      p2steps.push({
-        step: 'Exact sum',
-        result: { totalGroups: exactSums.length, addedToPool: sumCount, groups: exactSums.map(s => ({ clientName: s.clientName, total: s.total, invoices: s.invoices.map(i => i.numero_factura) })) },
-      })
-      console.log('[voucher-debug] Phase 2: %d sum groups added to pool', sumCount)
+        const exactSums = findExactClientSumMatches(voucher.monto, p2Candidates)
+        let sumCount = 0
+        for (const group of exactSums) {
+          if (tryAddToPool({ type: 'sum', invoices: group.invoices, total: group.total, clientName: group.clientName })) {
+            sumCount++
+          }
+        }
 
-      debugInfo.phase2 = {
-        apiCall: { monto: voucher.monto, reusesPhase1Candidates: true },
-        steps: p2steps,
-        result: { groupsFound: exactSums.length, poolAdded: sumCount },
+        p2steps.push({
+          step: 'Exact sum',
+          result: { totalGroups: exactSums.length, addedToPool: sumCount, groups: exactSums.map(s => ({ clientName: s.clientName, total: s.total, invoices: s.invoices.map(i => i.numero_factura) })) },
+        })
+        console.log('[voucher-debug] Phase 2: %d sum groups added to pool', sumCount)
+
+        debugInfo.phase2 = {
+          apiCall: { monto: voucher.monto, tolerancia: p2Tolerancia },
+          apiResult: p2ApiResult,
+          steps: p2steps,
+          result: { groupsFound: exactSums.length, poolAdded: sumCount },
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[voucher-debug] Phase 2 search FAILED:', msg)
+        console.error('[voucher] Phase 2 search failed:', msg)
+        errorMessage = [errorMessage, `Phase2: ${msg}`].filter(Boolean).join(' | ')
       }
     }
 
