@@ -958,6 +958,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     await removePendingVoucher(db, conversationId, message.id)
   }
 
+  // Normalize multi_invoice for DB (CHECK constraint only allows matched/ambiguous/no_match)
+  const saveStatus: MatchStatus = matchStatus === 'multi_invoice' ? 'ambiguous' : matchStatus
   await saveAttempt({
     messageId: message.id,
     contactId,
@@ -965,7 +967,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     extractedDate,
     extractedReference,
     extractedBank,
-    matchStatus,
+    matchStatus: saveStatus,
     matchedInvoiceId,
     errorMessage,
     debugInfo,
