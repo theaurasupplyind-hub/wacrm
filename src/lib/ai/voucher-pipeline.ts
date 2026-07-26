@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { type MatchStatus, findExactClientSumMatches, getMontoTolerancia, montoDistance, NAME_MATCH_THRESHOLD } from './voucher-matching'
+import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -468,8 +468,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       console.log('[voucher-debug] === Phase 2: Exact sum of client invoices ===')
       const p2steps: Record<string, unknown>[] = []
       try {
-        const p2Tolerancia = getMontoTolerancia(voucher.monto)
-        console.log('[voucher-debug] Phase 2 API: tolerancia=%s', p2Tolerancia)
+        // Search ALL invoices with saldo in [0, 2*monto] so we can find
+        // clients whose combined invoices sum to the voucher amount exactly.
+        // Individual >= monto would already be caught by Phase 1.
+        const p2Tolerancia = voucher.monto
+        console.log('[voucher-debug] Phase 2 API: tolerancia=%s (full scan)', p2Tolerancia)
         const p2Result = await matchVoucherByName({
           nombre_cliente: null,
           nombre_origen: null,
@@ -478,20 +481,22 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           cuit_destino: null,
           monto: voucher.monto,
           tolerancia: p2Tolerancia,
+          timeoutMs: 60_000,
         })
-        const p2Candidates = p2Result.invoice_candidates || []
-        console.log('[voucher-debug] Phase 2 API: %d candidates', p2Candidates.length)
-        const p2ApiResult = p2Candidates.map(c => ({
+        const allCandidates = (p2Result.invoice_candidates || [])
+          .filter(c => c.saldo_pendiente < voucher.monto!)
+        console.log('[voucher-debug] Phase 2 API: %d total candidates, %d with saldo < monto', (p2Result.invoice_candidates || []).length, allCandidates.length)
+        const p2ApiResult = allCandidates.map(c => ({
           factura: c.numero_factura,
           cliente: c.cliente_nombre,
           saldo: c.saldo_pendiente,
           score: c.score,
         }))
-        if (p2Candidates.length > 0) {
+        if (allCandidates.length > 0) {
           console.table(p2ApiResult)
         }
 
-        const exactSums = findExactClientSumMatches(voucher.monto, p2Candidates)
+        const exactSums = findExactClientSumMatches(voucher.monto, allCandidates)
         let sumCount = 0
         for (const group of exactSums) {
           if (tryAddToPool({ type: 'sum', invoices: group.invoices, total: group.total, clientName: group.clientName })) {
