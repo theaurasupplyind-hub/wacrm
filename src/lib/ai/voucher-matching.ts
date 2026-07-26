@@ -1,9 +1,15 @@
 import type { VoucherData } from './voucher-extraction'
 import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 
-const MONTO_TOLERANCIA = 50
-const MONTO_GAP_MIN = 10
 const NAME_MATCH_THRESHOLD = 0.5
+
+export function getMontoTolerancia(monto: number): number {
+  return Math.max(50, monto * 0.03)
+}
+
+export function getMontoGapMin(monto: number): number {
+  return Math.max(10, monto * 0.005)
+}
 
 export type MatchStatus = 'matched' | 'ambiguous' | 'no_match' | 'multi_invoice'
 
@@ -37,7 +43,7 @@ export function findClientMatches(
   const results: { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] = []
   for (const [_, invoices] of groups) {
     const total = invoices.reduce((s, inv) => s + inv.saldo_pendiente, 0)
-    if (montoDistance(monto, total) <= MONTO_TOLERANCIA) {
+    if (montoDistance(monto, total) <= getMontoTolerancia(monto)) {
       results.push({
         clientName: invoices[0].cliente_nombre || 'Sin nombre',
         invoices,
@@ -121,14 +127,14 @@ export function matchVoucher(args: {
   }
 
   const byMonto = candidates
-    .filter((c) => monto <= c.saldo_pendiente + MONTO_TOLERANCIA)
+    .filter((c) => monto <= c.saldo_pendiente + getMontoTolerancia(monto))
     .sort((a, b) => {
       const da = montoDistance(monto, a.saldo_pendiente)
       const db = montoDistance(monto, b.saldo_pendiente)
       return da !== db ? da - db : b.score - a.score
     })
 
-  console.log('[voucher-debug] --- byMonto filter (monto=%s <= saldo + %s) ---', monto, MONTO_TOLERANCIA)
+  console.log('[voucher-debug] --- byMonto filter (monto=%s <= saldo + %s) ---', monto, getMontoTolerancia(monto))
   if (byMonto.length > 0) {
     console.table(byMonto.map(c => ({
       factura: c.numero_factura,
@@ -138,14 +144,14 @@ export function matchVoucher(args: {
       score: c.score,
     })))
   } else {
-    const rejected = candidates.filter(c => monto > c.saldo_pendiente + MONTO_TOLERANCIA)
+    const rejected = candidates.filter(c => monto > c.saldo_pendiente + getMontoTolerancia(monto))
     console.log('[voucher-debug]   byMonto: 0 candidates')
     if (rejected.length > 0) {
       console.table(rejected.map(c => ({
         factura: c.numero_factura,
         cliente: c.cliente_nombre,
         saldo: c.saldo_pendiente,
-        rechazo: `monto (${monto}) > saldo+${MONTO_TOLERANCIA} (${c.saldo_pendiente + MONTO_TOLERANCIA})`,
+        rechazo: `monto (${monto}) > saldo+${getMontoTolerancia(monto)} (${c.saldo_pendiente + getMontoTolerancia(monto)})`,
       })))
     }
   }
@@ -159,8 +165,8 @@ export function matchVoucher(args: {
   if (byMonto.length === 1) {
     const best = byMonto[0]
     console.log('[voucher-debug] byMonto.length=1, dist=%s, factura=%s', montoDistance(monto, best.saldo_pendiente), best.numero_factura)
-    if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
-      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
+    if (monto > best.saldo_pendiente + getMontoTolerancia(monto)) {
+      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', getMontoTolerancia(monto))
       const others = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (others.length > 0) {
         console.log('[voucher-debug] → multi_invoice')
@@ -181,7 +187,7 @@ export function matchVoucher(args: {
   console.log('[voucher-debug]   best=%s (cliente="%s", saldo=%s, dist=%s)', best.numero_factura, best.cliente_nombre, best.saldo_pendiente, bestDist)
   console.log('[voucher-debug]   next=%s (cliente="%s", saldo=%s, dist=%s)', next.numero_factura, next.cliente_nombre, next.saldo_pendiente, nextDist)
   console.log('[voucher-debug]   bestDist=%s, nextDist=%s, gap=%s', bestDist, nextDist, gap)
-  console.log('[voucher-debug]   bestDist===0? %s | gap>=%s? %s', bestDist === 0 ? 'YES' : 'NO', MONTO_GAP_MIN, gap >= MONTO_GAP_MIN ? 'YES' : 'NO')
+  console.log('[voucher-debug]   bestDist===0? %s | gap>=%s? %s', bestDist === 0 ? 'YES' : 'NO', getMontoGapMin(monto), gap >= getMontoGapMin(monto) ? 'YES' : 'NO')
 
   if (bestDist === 0) {
     console.log('[voucher-debug]   bestDist === 0 → exact match')
@@ -189,8 +195,8 @@ export function matchVoucher(args: {
       console.log('[voucher-debug]   multiple exact matches → disambiguate by name')
     } else {
       if (best.score >= NAME_MATCH_THRESHOLD) {
-        if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
-          console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
+        if (monto > best.saldo_pendiente + getMontoTolerancia(monto)) {
+          console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', getMontoTolerancia(monto))
           const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
           if (overCandidates.length > 0) {
             console.log('[voucher-debug] → multi_invoice')
@@ -204,9 +210,9 @@ export function matchVoucher(args: {
       console.log('[voucher-debug] → name_mismatch')
       return buildNameMismatch(best, nombreOrigen, monto, bestDest)
     }
-  } else if (gap >= MONTO_GAP_MIN) {
-    if (monto > best.saldo_pendiente + MONTO_TOLERANCIA) {
-      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', MONTO_TOLERANCIA)
+  } else if (gap >= getMontoGapMin(monto)) {
+    if (monto > best.saldo_pendiente + getMontoTolerancia(monto)) {
+      console.log('[voucher-debug]   monto > saldo+%s → checking multi-invoice', getMontoTolerancia(monto))
       const overCandidates = candidates.filter((c) => c.invoice_id !== best.invoice_id && c.saldo_pendiente > 0)
       if (overCandidates.length > 0) {
         console.log('[voucher-debug] → multi_invoice')

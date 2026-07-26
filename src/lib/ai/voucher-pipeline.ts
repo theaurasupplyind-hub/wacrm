@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { matchVoucher, type MatchStatus, findClientMatches, findExactClientSumMatches, montoDistance } from './voucher-matching'
+import { matchVoucher, type MatchStatus, findClientMatches, findExactClientSumMatches, montoDistance, getMontoTolerancia } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -388,8 +388,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     //     If client total balance matches → multi_invoice.
     //     If no match → Phase 2.
         if (voucher.monto && voucher.monto > 0) {
+      const phase1Tolerancia = Math.min(Math.max(10_000, (voucher.monto ?? 0) * 0.3), 30_000)
       console.log('[voucher-debug] === Phase 1: Amount-only search ===')
-      console.log('[voucher-debug]   monto=%s, tolerancia=%s', voucher.monto, Math.max(10_000, voucher.monto))
+      console.log('[voucher-debug]   monto=%s, tolerancia=%s', voucher.monto, phase1Tolerancia)
       const p1steps: Record<string, unknown>[] = []
       try {
         const amountResult = await matchVoucherByName({
@@ -399,7 +400,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           cbu_destino: null,
           cuit_destino: null,
           monto: voucher.monto,
-          tolerancia: Math.max(10_000, voucher.monto),
+          tolerancia: phase1Tolerancia,
         })
         const amountCandidates = amountResult.invoice_candidates || []
         console.log('[voucher-debug] Phase 1 API: %d candidates', amountCandidates.length)
@@ -420,8 +421,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             destinationCandidates: [],
           })
 
+          const montoTol1 = getMontoTolerancia(voucher.monto!)
           const byMontoCands = amountCandidates
-            .filter(c => voucher.monto! <= c.saldo_pendiente + 50)
+            .filter(c => voucher.monto! <= c.saldo_pendiente + montoTol1)
             .map(c => ({
               factura: c.numero_factura,
               cliente: c.cliente_nombre,
@@ -439,7 +441,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             input: phase1ApiResult,
             filters: {
               byMonto: {
-                rule: 'monto <= saldo + 50',
+                rule: `monto <= saldo + ${montoTol1}`,
                 passed: byMontoCands,
                 total: amountCandidates.length,
                 passedCount: byMontoCands.length,
@@ -522,7 +524,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               p1steps.push({
                 step: 'Close match',
                 input: phase1ApiResult,
-                filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) ≈ monto ± 50', tolerance: 50 },
+                filters: { groupBy: 'cliente_nombre', operator: `sum(saldo) ≈ monto ± ${montoTol1}`, tolerance: montoTol1 },
                 result: {
                   total: clientMatches.length,
                   groups: clientMatches.map(s => ({
@@ -556,7 +558,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
 
         debugInfo.phase1 = {
-          apiCall: { monto: voucher.monto, tolerancia: Math.max(10_000, voucher.monto) },
+          apiCall: { monto: voucher.monto, tolerancia: phase1Tolerancia },
           apiResult: phase1ApiResult,
           steps: p1steps,
           result: { status: amountCandidates.length > 0 ? matchStatus : 'no_match', matchedInvoiceId },
@@ -605,8 +607,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             destinationCandidates: nameDestCandidates,
           })
 
+          const montoTol2 = getMontoTolerancia(voucher.monto ?? 0)
           const byMontoCands = nameCandidates
-            .filter(c => (voucher.monto ?? 0) <= c.saldo_pendiente + 50)
+            .filter(c => (voucher.monto ?? 0) <= c.saldo_pendiente + montoTol2)
             .map(c => ({
               factura: c.numero_factura,
               cliente: c.cliente_nombre,
@@ -666,10 +669,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             } else {
               console.log('[voucher-debug] Phase 2: no exact sum → trying close client groups')
               const clientMatches = findClientMatches(voucher.monto, nameCandidates)
+              const closeTol2 = getMontoTolerancia(voucher.monto ?? 0)
               p2steps.push({
                 step: 'Close match',
                 input: phase2ApiResult,
-                filters: { groupBy: 'cliente_nombre', operator: 'sum(saldo) ≈ monto ± 50', tolerance: 50 },
+                filters: { groupBy: 'cliente_nombre', operator: `sum(saldo) ≈ monto ± ${closeTol2}`, tolerance: closeTol2 },
                 result: {
                   total: clientMatches.length,
                   groups: clientMatches.map(s => ({
