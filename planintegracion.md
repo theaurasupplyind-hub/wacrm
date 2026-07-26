@@ -1,5 +1,11 @@
 # Tarea: Integrar lectura automática de comprobantes de pago (WhatsApp → CRM → FacBal API)
 
+> **Nota (Jul 2026):** Este documento es el plan de integración original. La implementación
+> actual y las mejoras pendientes están documentadas en:
+> - [`invoice.md`](./invoice.md) — spec del matching (4 fases + pool + decisión)
+> - [`plan.md`](./plan.md) — plan de mejoras pendientes
+> - [`BOT_ARCHITECTURE.md`](./BOT_ARCHITECTURE.md) §3 — arquitectura actual
+
 ## Contexto del sistema
 
 Tenemos dos sistemas que hay que conectar:

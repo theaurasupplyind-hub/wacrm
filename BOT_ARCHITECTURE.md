@@ -172,44 +172,84 @@ processTextOrder() → mismo pipeline (salta transcripción)
 
 ## 3. Voucher Processing (ACTIVO)
 
-**Estado:** ✅ Activo
+**Estado:** ✅ Activo — mejoras planificadas en [`plan.md`](./plan.md)
 
-**Propósito:** Cuando un cliente envía imagen/PDF de un comprobante de pago, extrae los datos vía IA, los empareja con facturas pendientes en FacBal y registra el pago automáticamente.
+**Propósito:** Cuando un cliente envía imagen/PDF de un comprobante de pago por WhatsApp, extrae los datos vía IA (visión), los empareja con facturas pendientes en FacBal/backend_gal mediante un pipeline de 4 fases con pool de candidatos, y registra el pago automáticamente cuando hay match confiable.
+
+**Spec de matching:** [`invoice.md`](./invoice.md)
 
 ### Archivos clave
 
 | Archivo | Rol |
 |---------|-----|
-| `src/lib/ai/voucher-pipeline.ts` | Orchestrador del pipeline completo |
-| `src/lib/ai/voucher-extraction.ts` | Llamada OpenRouter multimodal (gemini-2.5-flash) |
-| `src/lib/ai/voucher-matching.ts` | Matching determinista (±$50 tolerancia) |
+| `src/lib/ai/voucher-pipeline.ts` | Orquestador: descarga media → extracción → fases 1–4 (+ decisión inline) → staging → pago |
+| `src/lib/ai/voucher-extraction.ts` | OpenRouter multimodal (`google/gemini-2.5-flash`) → JSON estructurado |
+| `src/lib/ai/voucher-matching.ts` | Helpers: `montoDistance`, `findExactClientSumMatches`, thresholds |
+| `src/lib/ai/voucher-context.ts` | Estado multi-turn en `conversations.voucher_context` |
+| `src/lib/facbal/client.ts` | `matchVoucherByName`, `createVoucherReview`, `registrarPago` |
+| `src/app/(dashboard)/voucher-debug/page.tsx` | Dashboard de debug con timeline por fase |
 
 ### Flujo
 
 ```
 Imagen/PDF WhatsApp
   ↓
-processMessage() webhook → bgTasks.push(processVoucherMessage())
+Webhook → bgTasks.push(processVoucherMessage())   [planificado: filtrar por caption/keywords]
   ↓
 processVoucherMessage()
-  ├── 1. Send ACK: "Recibimos tu comprobante..."
-  ├── 2. downloadMedia() → Meta API
-  ├── 3. extractVoucherData() → OpenRouter Gemini Vision
-  │       → {monto, fecha, referencia, banco}
-  ├── 4. getFacturasPendientes(telefono) → FacBal API
-  ├── 5. matchVoucher()
-  │       ├── matched → registrarPago() → FacBal POST /payments
-  │       ├── ambiguous → pregunta al usuario
-  │       └── no_match → deriva a humano
-  ├── 6. Save to voucher_extractions (audit)
-  └── 7. Send final response
+  ├── 0.  Idempotencia (voucher_extractions.message_id)
+  ├── 0b. Si hay pending + texto → interpretar respuesta del usuario
+  ├── 1.  ACK + downloadMedia() → Meta API (15s timeout)
+  ├── 2.  extractVoucherData() → OpenRouter Gemini Vision
+  │        → {monto, fecha, referencia, banco, nombre_origen, nombre_destino, cbu, cuit}
+  ├── 3.  Fases 1–3: acumular candidatePool (solo recolección, no confirman)
+  │        ├── Fase 1: monto exacto individual
+  │        ├── Fase 2: suma exacta mismo cliente
+  │        └── Fase 3: nombre + monto exacto
+  ├── 4.  Decisión inline → matched | multi_invoice | ambiguous | no_match
+  │        └── Si pool vacío → Fase 4 (wide search) → siempre ambiguous
+  │        └── 1 single sin nombre → matched
+  │        └── 1 single + nombre contradictorio → ambiguous (name_mismatch)
+  │        └── 1 sum → multi_invoice | 2+ entries → ambiguous
+  ├── 5.  createVoucherReview() → FacBal (siempre, para panel de revisión)
+  ├── 6.  matched → registrarPago() | ambiguous/multi → pending context
+  ├── 7.  Save to voucher_extractions + debug_info
+  └── 8.  Send final WhatsApp response
 ```
+
+### Principio de diseño
+
+- **Fases = recolección.** Ninguna fase confirma ni registra pagos por sí sola.
+- **Decisión centralizada.** Un motor evalúa el pool completo; usa el nombre extraído para validar single match (name_mismatch) y en el futuro para desempatar múltiples candidatos.
+- **Human-in-the-loop.** Todo se stagea en FacGal; auto-pago solo en `matched` confiable o tras confirmación explícita del usuario.
+
+### Variables de entorno
+
+| Variable | Requerida | Default | Uso |
+|----------|-----------|---------|-----|
+| `OPENROUTER_API_KEY` | Sí | — | Extracción IA |
+| `VOUCHER_AI_MODEL` | No | `google/gemini-2.5-flash` | Override del modelo |
+| `FACBAL_API_URL` | Sí | — | backend_gal |
+| `FACBAL_API_KEY` | Sí | — | Header `X-API-Key` |
 
 ### Base de datos
 
-| Migration | Tabla | Propósito |
-|-----------|-------|-----------|
+| Migration | Tabla / columna | Propósito |
+|-----------|-----------------|-----------|
 | `031_voucher_extractions.sql` | `voucher_extractions` | Auditoría de cada extracción |
+| `040_voucher_context.sql` | `conversations.voucher_context` | Estado multi-turn (pending + buffer de texto) |
+| `041_voucher_debug_info.sql` | `voucher_extractions.debug_info` | Timeline de fases para debug UI |
+| `042_voucher_match_status_multi_invoice.sql` | CHECK + `multi_invoice` | Distinguir multi_invoice de ambiguous en DB |
+
+### Mejoras pendientes
+
+Ver [`plan.md`](./plan.md):
+- Eliminar `pickBestMatch()` y función asociada
+- Validar nombre en decisión "1 single → matched" (name_mismatch)
+- Unificar `registrarPago()` en clarificación ambiguous
+- Eliminar `matchVoucher()` legacy y sus helpers
+- Persistir `multi_invoice` en DB sin normalizar a `ambiguous`
+- Filtrar disparo del pipeline (no toda imagen)
 
 ---
 
@@ -385,7 +425,7 @@ src/
 │   │   ├── build-invoice-payload.ts # Payload para crear factura
 │   │   ├── voucher-pipeline.ts      # Pipeline de voucher (ACTIVE)
 │   │   ├── voucher-extraction.ts    # Extracción de datos vía IA
-│   │   ├── voucher-matching.ts      # Matching de voucher con factura
+│   │   ├── voucher-matching.ts      # Helpers de matching (montoDistance, sumas, scoring)
 │   │   ├── auto-reply.ts            # AI Auto-Reply dispatch
 │   │   ├── generate.ts              # Generador de respuestas AI
 │   │   └── providers/               # Proveedores de IA
