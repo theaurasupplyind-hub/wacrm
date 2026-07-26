@@ -39,12 +39,16 @@ function formatMonto(n: number): string {
   return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function toArgentineDate(isoDate: string | null | undefined): string {
-  if (!isoDate) return new Date().toLocaleDateString('es-AR')
-  const parts = isoDate.split('-')
+function normalizeDate(isoDate: string | null | undefined): string {
+  if (!isoDate) return new Date().toISOString().slice(0, 10)
+  const parts = isoDate.trim().split(/[-/]/)
   if (parts.length === 3) {
-    const [y, m, d] = parts
-    return `${parseInt(d)}/${parseInt(m)}/${y}`
+    if (parts[0] && parts[0].length === 4) {
+      return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+    }
+    if (parts[2] && parts[2].length === 4) {
+      return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+    }
   }
   return isoDate
 }
@@ -172,7 +176,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       const selected = interpretMultiInvoiceResponse(userText, pendingItem.candidates)
       if (selected.length > 0) {
         await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
-        const fechaPago = toArgentineDate(pendingItem.extraction.fecha)
+        const fechaPago = normalizeDate(pendingItem.extraction.fecha)
         const paidList: string[] = []
         const errors: string[] = []
         let remaining = pendingItem.extraction.monto ?? 0
@@ -263,7 +267,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
         if (montoPago > 0) {
           try {
-            const fechaPago = toArgentineDate(pendingItem.extraction.fecha)
+            const fechaPago = normalizeDate(pendingItem.extraction.fecha)
             await registrarPago({
               invoiceId: chosen.invoice_id,
               monto: montoPago,
@@ -836,7 +840,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   // If matched, register the actual payment
   if (matchStatus === 'matched' && matchedInvoiceId !== null && extractedAmount !== null && extractedAmount > 0) {
     try {
-      const fechaPago = toArgentineDate(extractedDate)
+      const fechaPago = normalizeDate(extractedDate)
       await registrarPago({
         invoiceId: matchedInvoiceId,
         monto: extractedAmount,
@@ -883,7 +887,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const autoSelected = interpretMultiInvoiceResponse(pendingText, candidates)
         if (autoSelected.length > 0) {
           await removePendingVoucher(db, conversationId, message.id)
-          const fechaPago = toArgentineDate(extractedDate)
+          const fechaPago = normalizeDate(extractedDate)
           let remaining = extractedAmount ?? 0
           const paidList: string[] = []
 
@@ -989,7 +993,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           const montoAuto = extractedAmount ?? autoChosen.saldo_pendiente
           if (montoAuto > 0) {
             try {
-              const fechaAuto = toArgentineDate(extractedDate)
+              const fechaAuto = normalizeDate(extractedDate)
               await registrarPago({
                 invoiceId: autoChosen.invoice_id,
                 monto: montoAuto,
