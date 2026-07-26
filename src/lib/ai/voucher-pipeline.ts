@@ -78,6 +78,11 @@ function interpretUserResponse(
 ): MatchVoucherCandidate | null {
   const cleaned = text.trim().toLowerCase()
 
+  // Confirmation words are not invoice/name selections
+  if (/^(si|sí|confirmo?|ok|dale|adelante|todos?|todas)$/i.test(cleaned)) {
+    return null
+  }
+
   // Try matching by invoice number
   for (const c of candidates) {
     if (c.numero_factura.toLowerCase().includes(cleaned) || cleaned.includes(c.numero_factura.toLowerCase())) {
@@ -165,7 +170,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   const ctx = await loadVoucherContext(db, conversationId)
 
   // STEP 0b — If there are pending items awaiting clarification and this is a text reply
-  const pendingItem = ctx.pending.length > 0 ? ctx.pending[0] : null
+  // Prefer multi_invoice items so "si" goes to the right handler
+  const pendingItem = ctx.pending.find(p => p.multiInvoice) || (ctx.pending.length > 0 ? ctx.pending[0] : null)
   if (pendingItem && (message.type === 'text' || message.text)) {
     const userText = message.text || ''
     console.log('[voucher] User reply to clarification: "%s" (pending msg=%s multiInvoice=%s)', userText, pendingItem.sourceMessageId, pendingItem.multiInvoice)
