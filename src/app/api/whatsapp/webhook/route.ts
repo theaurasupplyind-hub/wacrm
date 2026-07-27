@@ -17,6 +17,7 @@ import { classifyIntent } from '@/lib/ai/intent-classifier'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
 import { processAttendanceMessage, looksLikeAttendance } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
+import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
   handleTemplateWebhookChange,
@@ -1292,7 +1293,7 @@ async function processMessage(
         } catch (err) { console.error('[attendance] Text error:', err) }
       })()
     )
-  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura')) {
+  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed })) {
     console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       handleVoiceText({
@@ -1330,7 +1331,7 @@ async function processMessage(
           } catch (err) { console.error('[attendance] Text error:', err) }
         })()
       )
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed })) {
       console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
       bgTasks.push(
         handleVoiceText({

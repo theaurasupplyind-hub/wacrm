@@ -300,6 +300,10 @@ export async function createPresupuesto(
       total: i.precio! * i.cantidad,
     }))
 
+  if (invoiceItems.length === 0) {
+    throw new Error('No se pudo determinar precio de ningún producto')
+  }
+
   const total = invoiceItems.reduce((s, i) => s + i.total, 0)
 
   const faltantes = items.filter(i => i.faltante)

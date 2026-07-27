@@ -93,6 +93,16 @@ async function runPipeline(
 
     const pricing = await priceItems(allResolved, logs)
 
+    const tienePrecios = pricing.items.some(i => i.precio != null)
+    if (!tienePrecios) {
+      return {
+        transcription, parsedOrder, resolvedItems: allResolved,
+        client: clientResult, pricing, invoice: null,
+        error: 'No se reconoció ningún producto, no se puede generar el presupuesto',
+        logs,
+      }
+    }
+
     if (commit) {
       const invoice = await createPresupuesto(clientResult, pricing.items, logs)
       return {
@@ -132,6 +142,16 @@ async function runPipeline(
   }
 
   const pricing = await priceItems(resolvedItems, logs)
+
+  const tienePrecios = pricing.items.some(i => i.precio != null)
+  if (!tienePrecios) {
+    return {
+      transcription, parsedOrder, resolvedItems, client,
+      pricing, invoice: null,
+      error: 'No se reconoció ningún producto, no se puede generar el presupuesto',
+      logs,
+    }
+  }
 
   if (commit) {
     const invoice = await createPresupuesto(client, pricing.items, logs)
