@@ -39,6 +39,31 @@ function formatMonto(n: number): string {
   return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+function labelForIndex(i: number): string {
+  return String.fromCharCode(65 + i)
+}
+
+function formatCandidatesMessage(cands: MatchVoucherCandidate[], monto: number | null): string {
+  const clientesUnicos = new Set(cands.map(c => c.cliente_nombre)).size
+  const intro = monto && monto > 0
+    ? `Recibimos un pago de ${formatMonto(monto)}. Hay ${clientesUnicos} clientes posibles con facturas cercanas a ese monto.\n\n`
+    : 'Comprobante con las siguientes facturas pendientes:\n\n'
+  return intro +
+    cands.map((c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+    '\n\nRespondé con la letra de la opción (A, B, C...).'
+}
+
+function formatMultiInvoiceMessage(
+  candidates: MatchVoucherCandidate[],
+  monto: number | null,
+  clientName: string,
+): string {
+  const total = candidates.reduce((s, c) => s + c.saldo_pendiente, 0)
+  return `Tu pago de ${formatMonto(monto ?? total)} coincide exactamente con el saldo total de ${clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
+    candidates.map((c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+    '\n\nRespondé "sí" o la letra de cada factura (ej: A, B).'
+}
+
 function normalizeDate(isoDate: string | null | undefined): string {
   if (!isoDate) return new Date().toISOString().slice(0, 10)
   const parts = isoDate.trim().split(/[-/]/)
@@ -74,9 +99,17 @@ function interpretUserResponse(
 ): MatchVoucherCandidate | null {
   const cleaned = text.trim().toLowerCase()
 
-  // Confirmation words are not invoice/name selections
+  // Confirmation words are not letter/invoice/name selections
   if (/^(si|sí|confirmo?|ok|dale|adelante|todos?|todas)$/i.test(cleaned)) {
     return null
+  }
+
+  // Try matching by letter (A, B, C, ...)
+  if (/^[a-z]$/.test(cleaned)) {
+    const idx = cleaned.charCodeAt(0) - 97
+    if (idx >= 0 && idx < candidates.length) {
+      return candidates[idx]
+    }
   }
 
   // Try matching by invoice number
@@ -111,9 +144,16 @@ function interpretMultiInvoiceResponse(
     return [...candidates]
   }
 
-  // "todas", "si", "confirmar" → all candidates
-  if (/^(tod[ao]s?|s[ií]|confirmo?|ok|dale|adelante)$/i.test(cleaned)) {
-    return [...candidates]
+  // Try matching by letters (A, B, AB, A,B, a b, etc.)
+  const letterMatch = cleaned.match(/^[a-z\s,.\-]+$/)
+  if (letterMatch) {
+    const chars = cleaned.replace(/[^a-z]/g, '').split('')
+    if (chars.length > 0 && chars.length <= candidates.length) {
+      const indices = chars.map(c => c.charCodeAt(0) - 97).filter(i => i >= 0 && i < candidates.length)
+      if (indices.length > 0) {
+        return [...new Set(indices)].map(i => candidates[i])
+      }
+    }
   }
 
   // Try parsing numbers separated by commas, spaces, "y", "e"
@@ -215,11 +255,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
       } else {
         const lines = pendingItem.candidates.map(
-          (c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
+          (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
         )
         await notify({
           ...sendCtx,
-          text: 'No entendimos tu respuesta. Respondé con los números separados por coma (ej: 1,2) o decí "todas".\n\n' + lines.join('\n'),
+          text: 'No entendimos tu respuesta. Respondé con las letras separadas por coma (ej: A, B) o decí "todas".\n\n' + lines.join('\n'),
         })
       }
       return
@@ -292,11 +332,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       })
     } else {
       const lines = pendingItem.candidates.map(
-        (c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
+        (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,
       )
       await notify({
         ...sendCtx,
-        text: 'No entendimos tu respuesta. Por favor respondé con el número de factura o el nombre del cliente exacto.\n\n' + lines.join('\n'),
+        text: 'No entendimos tu respuesta. Respondé con la letra de la opción (A, B, C...).\n\n' + lines.join('\n'),
       })
     }
     return
@@ -740,8 +780,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Hay ${clientesUnicos} clientes posibles con facturas cercanas a ese monto.\n\n`
           : 'No pudimos leer el monto del comprobante. Estas son las facturas pendientes:\n\n'
         mensajeRespuesta = intro +
-          phase4Cands.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
-          '\n\nRespondé con el número de factura o el nombre completo del cliente.'
+          phase4Cands.map((c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
+          '\n\nRespondé con la letra de la opción (A, B, C...).'
         console.log('[voucher] Phase 5: showing %d candidates (%d clients) to user', phase4Cands.length, clientesUnicos)
       } else if (phase4Cands.length > 15 || phase4Timeout) {
         // Too many or timeout — ask for exact client name first
@@ -787,9 +827,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       } else {
         matchStatus = 'multi_invoice'
         candidates = entry.invoices
-        mensajeRespuesta = `Tu pago de ${formatMonto(entry.total)} coincide exactamente con el saldo total de ${entry.clientName}. ¿Confirmás que querés pagar estas facturas?\n\n` +
-          entry.invoices.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
-          '\n\nRespondé "sí", "confirmar" o los números separados por coma.'
+        mensajeRespuesta = formatMultiInvoiceMessage(entry.invoices, voucher.monto, entry.clientName)
         console.log('[voucher-debug] Decision: multi_invoice (exact sum, client=%s, invoices=%d)', entry.clientName, entry.invoices.length)
       }
     } else {
@@ -798,12 +836,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       candidates = candidatePool.flatMap(e => e.invoices)
       const lineas = candidatePool.map((e, i) => {
         if (e.type === 'single') {
-          return `${i + 1}. ${e.clientName} — Factura ${e.invoices[0].numero_factura} — Saldo: ${formatMonto(e.total)}`
+          return `${labelForIndex(i)}. ${e.clientName} — Factura ${e.invoices[0].numero_factura} — Saldo: ${formatMonto(e.total)}`
         }
-        return `${i + 1}. ${e.clientName} — Suma de ${e.invoices.length} facturas: ${formatMonto(e.total)}`
+        return `${labelForIndex(i)}. ${e.clientName} — Suma de ${e.invoices.length} facturas: ${formatMonto(e.total)}`
       })
       const intro = `Recibimos un pago de ${formatMonto(voucher.monto ?? candidatePool[0].total)}. ${candidatePool.length} opciones posibles:\n\n`
-      mensajeRespuesta = intro + lineas.join('\n') + '\n\nRespondé con el número de factura o el nombre del cliente.'
+      mensajeRespuesta = intro + lineas.join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
       console.log('[voucher-debug] Decision: ambiguous (%d pool entries)', candidatePool.length)
     }
 
@@ -1100,6 +1138,31 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   } else if (matchStatus === 'matched') {
     // Remove from pending stack if it was there (e.g. re-processed via context)
     await removePendingVoucher(db, conversationId, message.id)
+  }
+
+  // ── Defer: skip candidates message if other pending items exist ──
+  if ((matchStatus === 'ambiguous' || matchStatus === 'multi_invoice') && candidates.length > 0) {
+    const currentCtx = await loadVoucherContext(db, conversationId)
+    const otherPending = currentCtx.pending.filter(p => p.sourceMessageId !== message.id)
+    if (otherPending.length > 0) {
+      mensajeRespuesta = extractedAmount && extractedAmount > 0
+        ? `Recibimos tu comprobante de ${formatMonto(extractedAmount)}. Hay comprobantes anteriores pendientes, te consultaremos cuando los resolvamos.`
+        : 'Comprobante guardado. Te consultaremos cuando resolvamos los anteriores.'
+      console.log('[voucher] Deferred showing candidates due to %d other pending items', otherPending.length)
+    }
+  }
+
+  // ── Next pending: if resolved and more items in queue, show the next ──
+  if ((matchStatus === 'matched' || matchStatus === 'multi_invoice') && candidates.length > 0) {
+    const updatedCtx = await loadVoucherContext(db, conversationId)
+    if (updatedCtx.pending.length > 0) {
+      const nextItem = updatedCtx.pending[0]
+      const nextMsg = nextItem.multiInvoice
+        ? formatMultiInvoiceMessage(nextItem.candidates, nextItem.extraction.monto, nextItem.candidates[0]?.cliente_nombre || '')
+        : formatCandidatesMessage(nextItem.candidates, nextItem.extraction.monto)
+      mensajeRespuesta = `El comprobante fue procesado.\n\nAhora, para el siguiente comprobante:\n${nextMsg}`
+      console.log('[voucher] Showing next pending item (%d remaining)', updatedCtx.pending.length)
+    }
   }
 
   await saveAttempt({
