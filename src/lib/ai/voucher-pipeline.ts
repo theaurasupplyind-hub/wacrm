@@ -478,9 +478,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const amountResult = await matchVoucherByName({
           nombre_cliente: null,
           nombre_origen: null,
-          nombre_destino: null,
-          cbu_destino: null,
-          cuit_destino: null,
+          nombre_destino: voucher.nombre_destino ?? null,
+          cbu_destino: voucher.cbu_destino ?? null,
+          cuit_destino: voucher.cuit_destino ?? null,
           monto: voucher.monto,
           tolerancia: 50,
           timeoutMs: 60_000,
@@ -543,9 +543,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const p2Result = await matchVoucherByName({
           nombre_cliente: null,
           nombre_origen: null,
-          nombre_destino: null,
-          cbu_destino: null,
-          cuit_destino: null,
+          nombre_destino: voucher.nombre_destino ?? null,
+          cbu_destino: voucher.cbu_destino ?? null,
+          cuit_destino: voucher.cuit_destino ?? null,
           monto: voucher.monto,
           tolerancia: p2Tolerancia,
           timeoutMs: 60_000,
@@ -747,9 +747,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const wideResult = await matchVoucherByName({
           nombre_cliente: null,
           nombre_origen: null,
-          nombre_destino: null,
-          cbu_destino: null,
-          cuit_destino: null,
+          nombre_destino: voucher.nombre_destino ?? null,
+          cbu_destino: voucher.cbu_destino ?? null,
+          cuit_destino: voucher.cuit_destino ?? null,
           monto: voucher.monto,
           tolerancia: wideTolerancia,
         })
