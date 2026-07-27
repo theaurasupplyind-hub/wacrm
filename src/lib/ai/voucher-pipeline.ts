@@ -244,14 +244,14 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         if (paidList.length > 0) {
           let reply = `Se registraron los pagos:\n${paidList.join('\n')}`
           if (remaining > 0) {
-            reply += `\n\nQuedó un saldo de ${formatMonto(remaining)} sin asignar. Un agente lo revisará.`
+            reply += `\n\nQuedó un saldo de ${formatMonto(remaining)} sin asignar.`
           }
           if (errors.length > 0) {
             reply += `\n\nErrores al registrar:\n${errors.join('\n')}`
           }
           await notify({ ...sendCtx, text: reply })
         } else {
-          await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago. Un agente lo revisará.' })
+          await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago.' })
         }
       } else {
         const lines = pendingItem.candidates.map(
@@ -328,7 +328,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
       await notify({
         ...sendCtx,
-        text: `Gracias. Registramos tu pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)} para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`,
+        text: `Confirmado. Pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)} registrado para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`,
       })
     } else {
       const lines = pendingItem.candidates.map(
@@ -390,7 +390,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       matchStatus: 'no_match',
       errorMessage: `Media download: ${msg}`,
     })
-    await notify({ ...sendCtx, text: 'No pudimos descargar la imagen. Un agente lo revisará.' })
+    await notify({ ...sendCtx, text: 'No pudimos descargar la imagen.' })
     return
   }
 
@@ -820,8 +820,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           matchedSaldoPendiente = bestInvoice.saldo_pendiente
           candidates = entry.invoices
           mensajeRespuesta = bestInvoice.cliente_nombre
-            ? `Gracias. Tu pago de ${formatMonto(entry.total)} corresponde a ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}. Lo estamos procesando.`
-            : `Registramos tu pago de ${formatMonto(entry.total)} para la Factura ${bestInvoice.numero_factura}. Lo estamos procesando.`
+            ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.`
+            : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
           console.log('[voucher-debug] Decision: matched (single exact, invoice=%s)', bestInvoice.numero_factura)
         }
       } else {
@@ -896,7 +896,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     errorMessage = `Extraction: ${msg}`
     matchStatus = 'no_match'
     mensajeRespuesta =
-      'Gracias por tu comprobante. No pudimos leerlo automáticamente. Un agente lo revisará y te confirmará el pago.'
+      'Gracias por tu comprobante. No pudimos leerlo automáticamente.'
   }
 
   // STEP 5 — Stage to backend_gal for ALL statuses (matched, ambiguous, no_match)
@@ -971,7 +971,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       console.error('[voucher] PAYMENT_FAILED:', msg)
       errorMessage = [errorMessage, `Payment: ${msg}`].filter(Boolean).join(' | ')
       // The review is staged as 'completed' but payment failed — let user know
-      mensajeRespuesta = 'Registramos el comprobante pero hubo un error al crear el pago. Un agente lo revisará.'
+      mensajeRespuesta = 'Registramos el comprobante pero hubo un error al crear el pago.'
     }
   }
 
@@ -1030,7 +1030,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           if (paidList.length > 0) {
             let reply = `Se registraron los pagos:\n${paidList.join('\n')}`
             if (remaining > 0) {
-              reply += `\n\nQuedó un saldo de $${remaining.toLocaleString('es-AR')} sin asignar. Un agente lo revisará.`
+              reply += `\n\nQuedó un saldo de $${remaining.toLocaleString('es-AR')} sin asignar.`
             }
             mensajeRespuesta = reply
             matchStatus = 'matched'
@@ -1125,7 +1125,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             }
           }
 
-          mensajeRespuesta = `Gracias. Registramos tu pago de ${formatMonto(montoAuto)} para ${autoChosen.cliente_nombre} — Factura ${autoChosen.numero_factura}.`
+          mensajeRespuesta = `Confirmado. Pago de ${formatMonto(montoAuto)} registrado para ${autoChosen.cliente_nombre} — Factura ${autoChosen.numero_factura}.`
           matchStatus = 'matched'
         } else {
           // Pending text didn't match, keep ambiguous state
