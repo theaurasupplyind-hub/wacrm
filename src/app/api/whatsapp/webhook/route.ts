@@ -1061,7 +1061,13 @@ async function processMessage(
   const mediaCaption = message.image?.caption || message.document?.caption || ''
   const mediaLooksLikeExpense = looksLikeExpense(mediaCaption)
 
+  // ============================================================
+  // Media consumption — prevent multiple systems processing the same image
+  // ============================================================
+  let mediaConsumedByVoucher = false
+
   if (message.type === 'image' || message.type === 'document') {
+    mediaConsumedByVoucher = true
     bgTasks.push(
       processVoucherMessage({
         message: {
@@ -1085,7 +1091,7 @@ async function processMessage(
   // ============================================================
   // Expense Bot: image or document with expense intent in caption.
   // ============================================================
-  if ((message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense) {
+  if ((message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense && !mediaConsumedByVoucher) {
     const msgType = message.type as 'image' | 'document'
     bgTasks.push(
       (async () => {

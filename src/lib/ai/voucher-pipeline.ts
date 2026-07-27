@@ -1165,6 +1165,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
   }
 
+  // ── Safety: if no candidates, strip any selection prompt ──
+  if (candidates.length === 0 && matchStatus !== 'matched') {
+    if (mensajeRespuesta.includes('Respondé con la letra') || mensajeRespuesta.includes('Respondé con el código')) {
+      mensajeRespuesta = extractedAmount && extractedAmount > 0
+        ? `Recibimos un pago de ${formatMonto(extractedAmount)} pero no encontramos ninguna factura pendiente. Un agente lo revisará.`
+        : 'No pudimos leer el monto del comprobante. Un agente lo revisará.'
+    }
+  }
+
   await saveAttempt({
     messageId: message.id,
     contactId,

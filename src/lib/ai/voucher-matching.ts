@@ -16,6 +16,30 @@ export function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
+function findExactSubsetSum(
+  target: number,
+  invoices: MatchVoucherCandidate[],
+): MatchVoucherCandidate[] | null {
+  // For small n (<=15), try all subsets via bitmask
+  if (invoices.length > 15) return null
+  const total = invoices.reduce((s, inv) => s + inv.saldo_pendiente, 0)
+  if (montoDistance(target, total) === 0) return null // full group match handled separately
+
+  for (let mask = 1; mask < (1 << invoices.length); mask++) {
+    let sum = 0
+    const subset: MatchVoucherCandidate[] = []
+    for (let i = 0; i < invoices.length; i++) {
+      if (mask & (1 << i)) {
+        sum += invoices[i].saldo_pendiente
+        subset.push(invoices[i])
+        if (sum > target) break
+      }
+    }
+    if (sum === target) return subset
+  }
+  return null
+}
+
 export function findExactClientSumMatches(
   monto: number,
   candidates: MatchVoucherCandidate[],
@@ -27,13 +51,23 @@ export function findExactClientSumMatches(
     groups.get(key)!.push(c)
   }
   const results: { clientName: string; invoices: MatchVoucherCandidate[]; total: number }[] = []
-  for (const [_, invoices] of groups) {
+  for (const invoices of groups.values()) {
     const total = invoices.reduce((s, inv) => s + inv.saldo_pendiente, 0)
     if (montoDistance(monto, total) === 0) {
       results.push({
         clientName: invoices[0].cliente_nombre || 'Sin nombre',
         invoices,
         total,
+      })
+    }
+    // Try subset sum (partial payment of multiple invoices)
+    const subset = findExactSubsetSum(monto, invoices)
+    if (subset) {
+      const subTotal = subset.reduce((s, inv) => s + inv.saldo_pendiente, 0)
+      results.push({
+        clientName: subset[0].cliente_nombre || 'Sin nombre',
+        invoices: subset,
+        total: subTotal,
       })
     }
   }
