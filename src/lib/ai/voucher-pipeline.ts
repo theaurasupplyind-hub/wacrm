@@ -426,6 +426,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     // Store Phase 1 candidates for Phase 2 reuse
     let amountCandidatesP1: MatchVoucherCandidate[] = []
+    // Store Phase 3 candidates for name-based disambiguation (Phase 4)
+    let nameCandidates: MatchVoucherCandidate[] = []
 
     // ── Phase 1: Exact amount (individual invoices) ──
     if (voucher.monto && voucher.monto > 0) {
@@ -568,7 +570,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           monto: voucher.monto,
           tolerancia: 50,
         })
-        const nameCandidates = nameResult.invoice_candidates || []
+        nameCandidates = nameResult.invoice_candidates || []
         if (nameResult.destination_candidates?.length) {
           allDestinationCandidates.push(...nameResult.destination_candidates)
         }
@@ -585,8 +587,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
         let nameExactCount = 0
         for (const c of nameCandidates) {
-          const dist = montoDistance(voucher.monto ?? 0, c.saldo_pendiente)
-          if (dist === 0 && c.score >= NAME_MATCH_THRESHOLD) {
+          if (c.score >= NAME_MATCH_THRESHOLD) {
             if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
               nameExactCount++
             }
@@ -598,13 +599,20 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           input: phase3ApiResult,
           result: { apiCandidates: nameCandidates.length, exactWithName: nameExactCount },
         })
-        console.log('[voucher-debug] Phase 3: %d name+exact matches added to pool', nameExactCount)
+        console.log('[voucher-debug] Phase 3: %d name matches added to pool', nameExactCount)
 
         debugInfo.phase3 = {
           apiCall: { nombre_cliente: voucher.nombre_cliente, nombre_origen: voucher.nombre_origen, monto: voucher.monto, tolerancia: 50 },
           apiResult: phase3ApiResult,
           steps: p3steps,
           result: { apiCandidates: nameCandidates.length, poolAdded: nameExactCount },
+          nameCandidates: nameCandidates.map(c => ({
+            invoice_id: c.invoice_id,
+            factura: c.numero_factura,
+            cliente: c.cliente_nombre,
+            saldo: c.saldo_pendiente,
+            score: c.score,
+          })),
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -614,19 +622,88 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       }
     }
 
-    // ── Decision after phases 1-3 ──
-    console.log('[voucher-debug] === Decision after phases 1-3 ===')
+    // ── Phase 4: Name-based resolution ──
+    console.log('[voucher-debug] === Phase 4: Name resolution ===')
     console.log('[voucher-debug]   candidatePool size=%d', candidatePool.length)
 
-    if (candidatePool.length === 0) {
-      // ── Phase 4: Wide search / partial payment ──
-      console.log('[voucher-debug] === Phase 4: Wide search / partial payment ===')
+    const p4steps: Record<string, unknown>[] = []
+    const hasName = voucher.nombre_cliente?.trim()
+                  || voucher.nombre_origen?.trim()
+                  || voucher.nombre_destino?.trim()
+
+    const nameIsReliable = nameCandidates.length > 0
+      && nameCandidates.some(c => c.score >= NAME_MATCH_THRESHOLD)
+
+    console.log('[voucher-debug] Phase 4: hasName=%s nameIsReliable=%s nameCands=%d',
+      !!hasName, nameIsReliable, nameCandidates.length)
+
+    // CASE A: Pool has multiple entries → narrow down by name
+    if (candidatePool.length > 1 && nameIsReliable) {
+      const highScoreIds = new Set(
+        nameCandidates
+          .filter(c => c.score >= NAME_MATCH_THRESHOLD)
+          .map(c => c.invoice_id)
+      )
+      const filteredPool = candidatePool.filter(entry =>
+        entry.invoices.some(inv => highScoreIds.has(inv.invoice_id))
+      )
+      if (filteredPool.length === 1) {
+        candidatePool.length = 0
+        candidatePool.push(...filteredPool)
+        p4steps.push({ step: 'Narrow pool by name', result: { narrowedTo: 1 } })
+        console.log('[voucher-debug] Phase 4: narrowed pool to 1 via name match')
+      } else {
+        p4steps.push({ step: 'Narrow pool by name', result: { narrowedTo: filteredPool.length, kept: filteredPool.length > 0 ? 'partial' : 'none' } })
+      }
+    }
+
+    // CASE B: Pool is empty → try to add best name match
+    if (candidatePool.length === 0 && nameIsReliable) {
+      const bestMatch = nameCandidates
+        .filter(c => c.score >= NAME_MATCH_THRESHOLD)
+        .sort((a, b) => b.score - a.score)[0]
+      if (bestMatch) {
+        if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) {
+          p4steps.push({ step: 'Add best name match', result: { factura: bestMatch.numero_factura, cliente: bestMatch.cliente_nombre, score: bestMatch.score, saldo: bestMatch.saldo_pendiente, added: true } })
+          console.log('[voucher-debug] Phase 4: added best name match (score=%s, saldo=%s)', bestMatch.score, bestMatch.saldo_pendiente)
+        }
+      }
+    }
+
+    // CASE C: Pool still empty AND name not reliable → ask directly
+    if (candidatePool.length === 0 && !nameIsReliable) {
+      matchStatus = 'ambiguous'
+      mensajeRespuesta = voucher.monto && voucher.monto > 0
+        ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Decinos el nombre exacto del cliente para identificar la factura.`
+        : 'Decinos el nombre exacto del cliente para identificar la factura.'
+      p4steps.push({ step: 'Ask for client name', reason: 'name not reliable' })
+      console.log('[voucher] Phase 4: no reliable name, asking for client name')
+    }
+
+    debugInfo.phase4 = {
+      hasName: !!hasName,
+      nameIsReliable,
+      nameCandidatesCount: nameCandidates.length,
+      bestNameScore: nameCandidates.length > 0
+        ? Math.max(...nameCandidates.map(c => c.score)) : null,
+      poolBefore: candidatePool.length,
+      steps: p4steps,
+      result: candidatePool.length,
+    }
+
+    // ── Decision after phase 4 ──
+    console.log('[voucher-debug] === Decision after phase 4 ===')
+    console.log('[voucher-debug]   candidatePool size=%d', candidatePool.length)
+
+    if (candidatePool.length === 0 && matchStatus !== 'ambiguous') {
+      // ── Phase 5: Wide search / partial payment ──
+      console.log('[voucher-debug] === Phase 5: Wide search / partial payment ===')
       let phase4Cands: MatchVoucherCandidate[] = []
       let phase4Timeout = false
 
       try {
         const wideTolerancia = Math.min(Math.max(10_000, (voucher.monto ?? 0) * 0.5), 50_000)
-        console.log('[voucher-debug] Phase 4: wide search tolerancia=%s', wideTolerancia)
+        console.log('[voucher-debug] Phase 5: wide search tolerancia=%s', wideTolerancia)
         const wideResult = await matchVoucherByName({
           nombre_cliente: null,
           nombre_origen: null,
@@ -640,10 +717,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         if (wideResult.destination_candidates?.length) {
           allDestinationCandidates.push(...wideResult.destination_candidates)
         }
-        console.log('[voucher-debug] Phase 4: wide search returned %d candidates, %d destinations', phase4Cands.length, wideResult.destination_candidates?.length || 0)
+        // Filter to invoices with saldo >= monto (no overpayments)
+        phase4Cands = phase4Cands.filter(c => c.saldo_pendiente >= (voucher.monto ?? 0))
+        console.log('[voucher-debug] Phase 5: wide search returned %d candidates, %d destinations (after saldo>=monto filter)', phase4Cands.length, wideResult.destination_candidates?.length || 0)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        console.error('[voucher-debug] Phase 4 wide search failed:', msg)
+        console.error('[voucher-debug] Phase 5 wide search failed:', msg)
         phase4Timeout = true
       }
 
@@ -663,23 +742,23 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         mensajeRespuesta = intro +
           phase4Cands.map((c, i) => `${i + 1}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') +
           '\n\nRespondé con el número de factura o el nombre completo del cliente.'
-        console.log('[voucher] Phase 4: showing %d candidates (%d clients) to user', phase4Cands.length, clientesUnicos)
+        console.log('[voucher] Phase 5: showing %d candidates (%d clients) to user', phase4Cands.length, clientesUnicos)
       } else if (phase4Cands.length > 15 || phase4Timeout) {
         // Too many or timeout — ask for exact client name first
         matchStatus = 'ambiguous'
         mensajeRespuesta = voucher.monto && voucher.monto > 0
           ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Decinos el nombre exacto del cliente para identificar la factura.`
           : 'Decinos el nombre exacto del cliente para identificar la factura.'
-        console.log('[voucher] Phase 4: asking for client name (%d cands, timeout=%s)', phase4Cands.length, phase4Timeout)
+        console.log('[voucher] Phase 5: asking for client name (%d cands, timeout=%s)', phase4Cands.length, phase4Timeout)
       } else {
-        console.log('[voucher-debug] Phase 4: no candidates found')
+        console.log('[voucher-debug] Phase 5: no candidates found')
         matchStatus = 'no_match'
         mensajeRespuesta = voucher.monto && voucher.monto > 0
           ? `Recibimos un pago de ${formatMonto(voucher.monto)} pero no encontramos ninguna factura pendiente. Un agente lo revisará.`
           : 'No pudimos leer el monto del comprobante. Un agente lo revisará.'
       }
 
-      debugInfo.phase4 = {
+      debugInfo.phase5 = {
         wideSearch: { tolerancia: Math.min(Math.max(10_000, (voucher.monto ?? 0) * 0.5), 50_000), candidates: phase4Cands.length, timeout: phase4Timeout },
         result: { status: matchStatus, candidatesShown: phase4Cands.length > 0 && phase4Cands.length <= 15 ? phase4Cands.length : 0 },
       }

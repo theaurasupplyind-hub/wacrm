@@ -37,6 +37,16 @@ interface Phase4Info {
   result: { status: string; candidatesShown: number }
 }
 
+interface Phase4NameResolutionInfo {
+  hasName: boolean
+  nameIsReliable: boolean
+  nameCandidatesCount: number
+  bestNameScore: number | null
+  poolBefore: number
+  steps?: StepInfo[]
+  result: number
+}
+
 interface Extraction {
   id: number
   message_id: string
@@ -52,8 +62,9 @@ interface Extraction {
     phase1: PhaseBaseInfo | null
     phase2: PhaseBaseInfo | null
     phase3: PhaseBaseInfo | null
+    phase4: Phase4NameResolutionInfo | null
     decision: DecisionInfo | null
-    phase4: Phase4Info | null
+    phase5: Phase4Info | null
     final: {
       matchStatus: string
       matchedInvoiceId: number | null
@@ -355,6 +366,40 @@ export default function VoucherDebugPage() {
                     <PhaseTimeline phase={ext.debug_info.phase2} label="Phase 2 — Client sum" />
                     <PhaseTimeline phase={ext.debug_info.phase3} label="Phase 3 — Name + amount" />
 
+                    {ext.debug_info.phase4 && (
+                      <div className="border rounded-xl overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3 text-sm font-medium bg-muted/30">
+                          <span className="flex items-center gap-2">
+                            <User className="h-4 w-4 text-blue-500" />
+                            Phase 4 — Name resolution
+                          </span>
+                          <span className="text-xs text-muted-foreground">Result: {ext.debug_info.phase4.result}</span>
+                        </div>
+                        <div className="px-4 py-3 space-y-1 text-xs">
+                          <div className="text-muted-foreground">Has name: <span className={`font-medium ${ext.debug_info.phase4.hasName ? 'text-green-600' : 'text-destructive'}`}>{ext.debug_info.phase4.hasName ? 'Yes' : 'No'}</span></div>
+                          <div className="text-muted-foreground">Name reliable: <span className={`font-medium ${ext.debug_info.phase4.nameIsReliable ? 'text-green-600' : 'text-orange-500'}`}>{ext.debug_info.phase4.nameIsReliable ? 'Yes' : 'No'}</span></div>
+                          <div className="text-muted-foreground">Name candidates: <span className="font-medium text-foreground">{ext.debug_info.phase4.nameCandidatesCount}</span></div>
+                          {ext.debug_info.phase4.bestNameScore !== null && (
+                            <div className="text-muted-foreground">Best score: <span className="font-medium text-foreground">{ext.debug_info.phase4.bestNameScore}</span></div>
+                          )}
+                          <div className="text-muted-foreground">Pool before: <span className="font-medium text-foreground">{ext.debug_info.phase4.poolBefore}</span></div>
+                          {ext.debug_info.phase4.steps && ext.debug_info.phase4.steps.length > 0 && (
+                            <div className="space-y-1 mt-1 pt-1 border-t border-muted">
+                              {ext.debug_info.phase4.steps.map((s, si) => (
+                                <div key={si}>
+                                  <div className="font-medium text-muted-foreground">{s.step}</div>
+                                  {s.result && (s.result as Record<string, unknown>).factura
+                                    ? <div className="text-muted-foreground/70">Factura: {String((s.result as Record<string, unknown>).factura)} — {String((s.result as Record<string, unknown>).cliente)} (score: {String((s.result as Record<string, unknown>).score)})</div>
+                                    : null}
+                                  <div className="text-muted-foreground/70">{JSON.stringify(s.result)}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {ext.debug_info.decision && (
                       <div className="border rounded-xl overflow-hidden">
                         <div className="flex items-center justify-between px-4 py-3 text-sm font-medium bg-muted/30">
@@ -382,20 +427,20 @@ export default function VoucherDebugPage() {
                       </div>
                     )}
 
-                    {ext.debug_info.phase4 && (
+                    {ext.debug_info.phase5 && (
                       <div className="border rounded-xl overflow-hidden">
                         <div className="flex items-center justify-between px-4 py-3 text-sm font-medium bg-muted/30">
                           <span className="flex items-center gap-2">
                             <Search className="h-4 w-4 text-orange-500" />
-                            Phase 4 — Wide search
+                            Phase 5 — Wide search
                           </span>
-                          <StatusBadge status={ext.debug_info.phase4.result.status} small />
+                          <StatusBadge status={ext.debug_info.phase5.result.status} small />
                         </div>
                         <div className="px-4 py-3 space-y-1 text-xs">
-                          <div className="text-muted-foreground">Tolerancia: <span className="font-medium text-foreground">{ext.debug_info.phase4.wideSearch.tolerancia}</span></div>
-                          <div className="text-muted-foreground">Candidates: <span className="font-medium text-foreground">{ext.debug_info.phase4.wideSearch.candidates}</span></div>
-                          <div className="text-muted-foreground">Timeout: <span className={`font-medium ${ext.debug_info.phase4.wideSearch.timeout ? 'text-destructive' : 'text-green-600'}`}>{ext.debug_info.phase4.wideSearch.timeout ? 'Yes' : 'No'}</span></div>
-                          <div className="text-muted-foreground">Shown to user: <span className="font-medium text-foreground">{ext.debug_info.phase4.result.candidatesShown}</span></div>
+                          <div className="text-muted-foreground">Tolerancia: <span className="font-medium text-foreground">{ext.debug_info.phase5.wideSearch.tolerancia}</span></div>
+                          <div className="text-muted-foreground">Candidates: <span className="font-medium text-foreground">{ext.debug_info.phase5.wideSearch.candidates}</span></div>
+                          <div className="text-muted-foreground">Timeout: <span className={`font-medium ${ext.debug_info.phase5.wideSearch.timeout ? 'text-destructive' : 'text-green-600'}`}>{ext.debug_info.phase5.wideSearch.timeout ? 'Yes' : 'No'}</span></div>
+                          <div className="text-muted-foreground">Shown to user: <span className="font-medium text-foreground">{ext.debug_info.phase5.result.candidatesShown}</span></div>
                         </div>
                       </div>
                     )}
