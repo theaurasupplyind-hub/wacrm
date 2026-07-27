@@ -16,7 +16,7 @@ import type { VoiceOrderResult, IntentClassification } from '@/lib/voice-orders/
 import { classifyIntent } from '@/lib/ai/intent-classifier'
 import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
 import { processAttendanceMessage, looksLikeAttendance } from '@/lib/attendance'
-import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
+import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
 import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import {
@@ -1343,23 +1343,36 @@ async function processMessage(
     }
   }
 
-  // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent ──
-  if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
-    console.log('[voucher] text dispatch -> conversation=%s', conversation.id)
+  // ── VOUCHER RESET COMMAND ──
+  if (inboundText.trim().toLowerCase() === 'jesusdanielllavesecreta') {
+    console.log('[voucher] RESET command received for conversation=%s', conversation.id)
+    await clearVoucherContext(supabaseAdmin(), conversation.id)
     bgTasks.push(
-      processVoucherMessage({
-        message: { id: message.id, from: message.from, type: 'text', text: inboundText },
-        accessToken, accountId, userId: configOwnerUserId,
-        contactId: contactRecord.id, conversationId: conversation.id,
-      }).catch((err) => console.error('[voucher] Text context error:', err))
+      engineSendText({
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        text: '🧹 Contexto de vouchers limpiado. Ya podés empezar de nuevo.',
+      }).then(() => {}).catch((err) => console.error('[voucher] Reset reply error:', err))
     )
-  } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
-    console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
-    bgTasks.push(
-      pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
-        console.error('[voucher] pushPendingText error:', err),
+  } else {
+    // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent ──
+    if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
+      console.log('[voucher] text dispatch -> conversation=%s', conversation.id)
+      bgTasks.push(
+        processVoucherMessage({
+          message: { id: message.id, from: message.from, type: 'text', text: inboundText },
+          accessToken, accountId, userId: configOwnerUserId,
+          contactId: contactRecord.id, conversationId: conversation.id,
+        }).catch((err) => console.error('[voucher] Text context error:', err))
       )
-    )
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
+      console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
+      bgTasks.push(
+        pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
+          console.error('[voucher] pushPendingText error:', err),
+        )
+      )
+    }
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget
