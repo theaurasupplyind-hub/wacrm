@@ -1299,7 +1299,7 @@ async function processMessage(
         } catch (err) { console.error('[attendance] Text error:', err) }
       })()
     )
-  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed })) {
+  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed, mediaConsumedByVoucher })) {
     console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       handleVoiceText({
@@ -1337,7 +1337,7 @@ async function processMessage(
           } catch (err) { console.error('[attendance] Text error:', err) }
         })()
       )
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed })) {
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed, mediaConsumedByVoucher })) {
       console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
       bgTasks.push(
         handleVoiceText({
