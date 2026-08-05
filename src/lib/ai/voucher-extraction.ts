@@ -4,6 +4,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 const DEFAULT_MODEL = 'google/gemini-2.5-flash'
 const DEFAULT_TIMEOUT_MS = 60_000
+const DEFAULT_MAX_TOKENS = 8000
 
 export interface VoucherData {
   monto: number | null
@@ -127,7 +128,7 @@ async function callOpenRouterMultimodal(args: {
             content: parts,
           },
         ],
-        max_tokens: 1024,
+        max_tokens: DEFAULT_MAX_TOKENS,
         temperature: 0.1,
       }),
       signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
@@ -167,11 +168,17 @@ async function callOpenRouterMultimodal(args: {
  * surrounding markdown or text.
  */
 function extractJsonBlock(text: string): string {
-  const cleaned = text.trim()
+  let cleaned = text.trim()
 
   const codeBlock = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
   if (codeBlock?.[1]) {
     return codeBlock[1].trim()
+  }
+
+  // Unclosed opening fence — the response was truncated mid-block.
+  const openFence = cleaned.match(/^```(?:json)?\s*([\s\S]*)$/)
+  if (openFence?.[1]) {
+    cleaned = openFence[1].trim()
   }
 
   const firstBrace = cleaned.indexOf('{')
@@ -179,22 +186,102 @@ function extractJsonBlock(text: string): string {
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     return cleaned.slice(firstBrace, lastBrace + 1)
   }
+  if (firstBrace !== -1) {
+    return cleaned.slice(firstBrace)
+  }
 
   return cleaned
+}
+
+/**
+ * Attempt to parse JSON that may have been truncated by the model
+ * (e.g. cut off by the token limit). Tries progressively shorter slices
+ * ending at a closing brace and closes any unclosed braces, so even a
+ * partial object like `{"monto": 3` is recovered.
+ */
+function tryParseJson(raw: string): Record<string, unknown> | null {
+  const closeBraces = (s: string) => {
+    const opens = (s.match(/\{/g) || []).length
+    const closes = (s.match(/\}/g) || []).length
+    return opens > closes ? s + '}'.repeat(opens - closes) : s
+  }
+
+  const attempts = [raw]
+  let idx = raw.length
+  for (;;) {
+    const lastClose = raw.lastIndexOf('}', idx - 1)
+    if (lastClose === -1) break
+    attempts.push(raw.slice(0, lastClose + 1))
+    idx = lastClose
+  }
+
+  for (const attempt of attempts) {
+    for (const candidate of [attempt, closeBraces(attempt)]) {
+      try {
+        const parsed = JSON.parse(candidate)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>
+        }
+      } catch {
+        // keep trying
+      }
+    }
+  }
+
+  return null
+}
+
+const FIELD_KEYS = [
+  'monto',
+  'fecha',
+  'referencia',
+  'banco',
+  'nombre_cliente',
+  'nombre_origen',
+  'nombre_destino',
+  'cbu_destino',
+  'cuit_destino',
+] as const
+
+/**
+ * Last-resort extraction: pull known fields out of a truncated response
+ * via regex, so a cut-off JSON still yields a usable voucher.
+ */
+function extractFieldsFromText(raw: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const key of FIELD_KEYS) {
+    const stringMatch = raw.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`))
+    if (stringMatch) {
+      const value = stringMatch[1].trim()
+      if (value) out[key] = value
+      continue
+    }
+    const numberMatch = raw.match(
+      new RegExp(`"${key}"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)`),
+    )
+    if (numberMatch) {
+      const num = parseFloat(numberMatch[1])
+      if (Number.isFinite(num)) out[key] = num
+    }
+  }
+  return out
 }
 
 /**
  * Parse the extracted JSON into a validated VoucherData object.
  */
 function parseVoucherJson(raw: string): VoucherData {
-  let parsed: Record<string, unknown>
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error(
-      'No se pudo interpretar la respuesta de la IA como JSON. Texto recibido: ' +
-        raw.slice(0, 200),
-    )
+  let parsed = tryParseJson(raw)
+
+  if (!parsed) {
+    const fallback = extractFieldsFromText(raw)
+    if (Object.keys(fallback).length === 0) {
+      throw new Error(
+        'No se pudo interpretar la respuesta de la IA como JSON. Texto recibido: ' +
+          raw.slice(0, 200),
+      )
+    }
+    parsed = fallback
   }
 
   const monto = typeof parsed.monto === 'number' && Number.isFinite(parsed.monto)
