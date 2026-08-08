@@ -15,7 +15,14 @@ import {
   clearAttendanceContext,
   type AttendanceContextState,
 } from './context'
-import { parseAttendance, looksLikeAttendance, type AttendanceStatusType } from './parse-attendance'
+import {
+  parseAttendance,
+  looksLikeAttendance,
+  type AttendanceStatusType,
+  type ParsedAttendance,
+} from './parse-attendance'
+import { normalizeTime } from '@/lib/bot-llm/sanitize'
+import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 
 export const ATT_CORRECT_ID = 'att_correct_time'
 export const ATT_LEAVE_ID = 'att_leave_time'
@@ -322,11 +329,33 @@ async function resolveEmployeeAndRecord(args: ResolveArgs): Promise<ProcessAtten
   }
 }
 
+function extractionToParsedAttendance(extraction: UnifiedExtraction, raw: string): ParsedAttendance {
+  let statusType: AttendanceStatusType = 'arrival'
+  if (extraction.intent === 'asistencia_salida') {
+    statusType = 'departure'
+  } else if (extraction.intent === 'asistencia_estado') {
+    statusType = extraction.estado || 'ausente'
+  }
+
+  return {
+    employeeName: extraction.empleado,
+    time: extraction.hora,
+    date: extraction.fecha || todayString(),
+    raw,
+    isAttendanceIntent: true,
+    statusType,
+  }
+}
+
 export async function processAttendanceMessage(
   args: ProcessAttendanceArgs,
+  extraction?: UnifiedExtraction,
 ): Promise<ProcessAttendanceResult> {
   const ctx = await loadAttendanceContext(args.db, args.conversationId)
-  const parsed = parseAttendance(args.text)
+  let parsed =
+    extraction && extraction.intent.startsWith('asistencia')
+      ? extractionToParsedAttendance(extraction, args.text)
+      : parseAttendance(args.text)
 
   // Las respuestas a los botones de corrección se manejan aparte
   // (processAttendanceConfirmReply). Si mientras tanto llega un mensaje de
@@ -337,8 +366,28 @@ export async function processAttendanceMessage(
     await clearAttendanceContext(args.db, args.conversationId)
   }
 
+  // Multi-turno: esperando la HORA (el empleado ya se resolvió y no hay hora).
+  if (ctx.pendingType && ctx.pendingEmployee && ctx.awaitingTime) {
+    const time = parsed.time || normalizeTime(args.text)
+    if (!time) {
+      await saveAttendanceContext(args.db, args.conversationId, { ...ctx })
+      const tipo = ctx.pendingType === 'arrival' ? 'llegó' : 'salió'
+      const msg = `No entendí la hora. ¿A qué hora ${tipo} ${ctx.pendingEmployee}? (ej: 9:30)`
+      await sendTextResponse(args, msg)
+      return { handled: true }
+    }
+    await clearAttendanceContext(args.db, args.conversationId)
+    return resolveEmployeeAndRecord({
+      ...args,
+      employeeName: ctx.pendingEmployee,
+      statusType: ctx.pendingType,
+      date: ctx.pendingDate || parsed.date || todayString(),
+      time,
+    })
+  }
+
   // Multi-turno: hay un empleado pendiente de resolver → el texto actual es el nombre.
-  if (ctx.pendingType) {
+  if (ctx.pendingType && !ctx.awaitingTime) {
     const isFreshIntent = parsed.isAttendanceIntent && !!parsed.employeeName
     if (!isFreshIntent) {
       return resolveEmployeeAndRecord({
@@ -348,6 +397,11 @@ export async function processAttendanceMessage(
         date: ctx.pendingDate || parsed.date,
         time: ctx.pendingTime || parsed.time,
       })
+    }
+    // El LLM resolvió el nombre como intent fresco, pero si la hora ya se había
+    // dado antes ("llegó a las 8:30" → "juan"), conservarla en vez de pedirla de nuevo.
+    if (ctx.pendingTime && !parsed.time) {
+      parsed = { ...parsed, time: ctx.pendingTime }
     }
     await clearAttendanceContext(args.db, args.conversationId)
   }
@@ -364,6 +418,24 @@ export async function processAttendanceMessage(
       pendingTime: parsed.time || null,
     })
     const msg = '¿De quién es? Decime el nombre del empleado.'
+    await sendTextResponse(args, msg)
+    return { handled: true }
+  }
+
+  // Sin hora en llegada/salida → preguntar la hora (en vez de asumir 00:00)
+  if (
+    (parsed.statusType === 'arrival' || parsed.statusType === 'departure') &&
+    !parsed.time
+  ) {
+    await saveAttendanceContext(args.db, args.conversationId, {
+      pendingType: parsed.statusType,
+      pendingDate: parsed.date,
+      pendingEmployee: parsed.employeeName,
+      pendingTime: null,
+      awaitingTime: true,
+    })
+    const tipo = parsed.statusType === 'arrival' ? 'llegó' : 'salió'
+    const msg = `¿A qué hora ${tipo} ${parsed.employeeName}?`
     await sendTextResponse(args, msg)
     return { handled: true }
   }

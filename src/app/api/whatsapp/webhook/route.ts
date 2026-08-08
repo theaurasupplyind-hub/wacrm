@@ -12,8 +12,10 @@ import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
-import type { VoiceOrderResult, IntentClassification } from '@/lib/voice-orders/types'
-import { classifyIntent } from '@/lib/ai/intent-classifier'
+import type { VoiceOrderResult } from '@/lib/voice-orders/types'
+import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
+import { buildBotContextText } from '@/lib/bot-llm/context'
+import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
 import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
 import {
   processAttendanceMessage,
@@ -829,6 +831,7 @@ async function handleAttendanceMessage(args: {
   userId: string
   conversationId: string
   contactId: string
+  extraction?: UnifiedExtraction
 }): Promise<boolean> {
   try {
     const result = await processAttendanceMessage({
@@ -838,7 +841,7 @@ async function handleAttendanceMessage(args: {
       userId: args.userId,
       conversationId: args.conversationId,
       contactId: args.contactId,
-    })
+    }, args.extraction)
     if (result.handled) {
       console.log('[attendance] handled conversation=%s employee=%s', args.conversationId, result.employeeName)
       return true
@@ -896,6 +899,7 @@ async function handleExpenseMessage(args: {
   userId: string
   conversationId: string
   contactId: string
+  extraction?: UnifiedExtraction
 }): Promise<boolean> {
   try {
     const result = await processExpenseMessage({
@@ -911,7 +915,7 @@ async function handleExpenseMessage(args: {
       userId: args.userId,
       conversationId: args.conversationId,
       contactId: args.contactId,
-    })
+    }, args.extraction)
     if (result.handled) {
       console.log('[expense] handled conversation=%s expenseId=%s', args.conversationId, result.expenseId)
       return true
@@ -1029,8 +1033,7 @@ async function processMessage(
   // Cargar estado multi-turn de asistencia (empleado pendiente / corrección de hora)
   const attendanceCtx = await loadAttendanceContext(supabaseAdmin(), conversation.id)
   const hasPendingAttendance =
-    (!!attendanceCtx.pendingType && !!attendanceCtx.pendingEmployee) ||
-    attendanceCtx.awaitingCorrection === true
+    !!attendanceCtx.pendingType || attendanceCtx.awaitingCorrection === true
 
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
@@ -1394,26 +1397,35 @@ async function processMessage(
     })
   }
 
-  // ── INTENT CLASSIFIER: decide qué handler procesa el texto ──
-  let classifiedIntent: IntentClassification | null = null
+  // ── EXTRACTOR UNIFICADO (LLM): intent + campos + faltan_campos + dudoso ──
+  const contextText = buildBotContextText({
+    expenseCtx,
+    attendanceCtx,
+    voucherCtx,
+    voiceCtx,
+  })
+  let extraction: UnifiedExtraction | null = null
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
     try {
-      classifiedIntent = await classifyIntent(inboundText)
+      extraction = await extractBotMessage(inboundText, contextText)
     } catch (err) {
-      console.error('[intent] classifier error:', err)
+      console.error('[intent] extractor error:', err)
     }
   }
 
-  const intentOk = classifiedIntent && classifiedIntent.confianza === 'alta'
-  const intentTipo = classifiedIntent?.tipo
+  const intent = extraction?.intent
+  const confianza = extraction?.confianza
 
-  if (classifiedIntent) {
-    console.log('[intent] tipo=%s confianza=%s text=%s', intentTipo, classifiedIntent.confianza, inboundText.slice(0, 80))
+  if (extraction) {
+    console.log('[intent] intent=%s confianza=%s dudoso=%s text=%s', intent, confianza, extraction.dudoso, inboundText.slice(0, 80))
   }
 
-  // Primary dispatch: elige UN handler según la intención clasificada
-  if (intentOk && intentTipo === 'gasto') {
-    console.log('[expense] intent dispatch -> conversation=%s', conversation.id)
+  const isAsistenciaIntent = (i: BotIntent | undefined): boolean =>
+    i === 'asistencia_llegada' || i === 'asistencia_salida' || i === 'asistencia_estado'
+
+  const suppressVoice = !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })
+
+  const pushExpenseTask = (ex?: UnifiedExtraction) => {
     bgTasks.push(
       (async () => {
         try {
@@ -1422,24 +1434,28 @@ async function processMessage(
             senderPhone: message.from, senderName: contact.profile.name,
             accountId, userId: configOwnerUserId,
             conversationId: conversation.id, contactId: contactRecord.id,
+            extraction: ex,
           })
         } catch (err) { console.error('[expense] Text error:', err) }
       })()
     )
-  } else if (intentOk && intentTipo === 'asistencia') {
-    console.log('[attendance] intent dispatch -> conversation=%s', conversation.id)
+  }
+
+  const pushAttendanceTask = (ex?: UnifiedExtraction) => {
     bgTasks.push(
       (async () => {
         try {
           await handleAttendanceMessage({
             text: inboundText, accountId, userId: configOwnerUserId,
             conversationId: conversation.id, contactId: contactRecord.id,
+            extraction: ex,
           })
         } catch (err) { console.error('[attendance] Text error:', err) }
       })()
     )
-  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })) {
-    console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
+  }
+
+  const pushVoiceTask = () => {
     bgTasks.push(
       handleVoiceText({
         text: inboundText, senderPhone: message.from, senderName: contact.profile.name,
@@ -1447,44 +1463,43 @@ async function processMessage(
         conversationId: conversation.id, contactId: contactRecord.id,
       }).catch((err) => console.error('[voice] Text error:', err))
     )
+  }
+
+  // Primary dispatch: elige UN handler según la intención extraída.
+  // Mientras hay un multi-turno pendiente, las respuestas cortas van al
+  // handler de ese bot aunque el LLM no las haya resuelto (fallback conservador).
+  if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
+    console.log('[expense] pending multi-turn dispatch -> conversation=%s', conversation.id)
+    pushExpenseTask()
+  } else if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent)) {
+    console.log('[attendance] pending multi-turn dispatch -> conversation=%s', conversation.id)
+    pushAttendanceTask()
+  } else if (intent === 'gasto') {
+    console.log('[expense] intent dispatch -> conversation=%s', conversation.id)
+    pushExpenseTask(extraction ?? undefined)
+  } else if (isAsistenciaIntent(intent)) {
+    console.log('[attendance] intent dispatch -> conversation=%s', conversation.id)
+    pushAttendanceTask(extraction ?? undefined)
+  } else if (intent === 'voucher') {
+    // Voucher: se consume sin dispatch para que expense/voice NO lo capturen.
+    // El bloque inferior maneja pendingTexts y las respuestas a comprobantes
+    // pendientes (grieta corregida: "transferí para la factura 001" ya no es gasto).
+    console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
+  } else if ((intent === 'pedido' || intent === 'factura') && confianza !== 'baja' && suppressVoice) {
+    console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
+    pushVoiceTask()
   } else {
-    // ── FALLBACK: intent bajo/otro/clasificador falló → regex gates ──
+    // ── FALLBACK: intent otro/confianza baja o extractor cayó a otro → regex gates ──
     const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
     if (isExpenseText) {
       console.log('[expense] fallback dispatch -> conversation=%s', conversation.id)
-      bgTasks.push(
-        (async () => {
-          try {
-            await handleExpenseMessage({
-              messageType: 'text', text: inboundText, accessToken,
-              senderPhone: message.from, senderName: contact.profile.name,
-              accountId, userId: configOwnerUserId,
-              conversationId: conversation.id, contactId: contactRecord.id,
-            })
-          } catch (err) { console.error('[expense] Text error:', err) }
-        })()
-      )
+      pushExpenseTask()
     } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && (hasPendingAttendance || looksLikeAttendance(inboundText))) {
       console.log('[attendance] fallback dispatch -> conversation=%s', conversation.id)
-      bgTasks.push(
-        (async () => {
-          try {
-            await handleAttendanceMessage({
-              text: inboundText, accountId, userId: configOwnerUserId,
-              conversationId: conversation.id, contactId: contactRecord.id,
-            })
-          } catch (err) { console.error('[attendance] Text error:', err) }
-        })()
-      )
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })) {
+      pushAttendanceTask()
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {
       console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
-      bgTasks.push(
-        handleVoiceText({
-          text: inboundText, senderPhone: message.from, senderName: contact.profile.name,
-          voiceContext: voiceCtx, accountId, userId: configOwnerUserId,
-          conversationId: conversation.id, contactId: contactRecord.id,
-        }).catch((err) => console.error('[voice] Text error:', err))
-      )
+      pushVoiceTask()
     }
   }
 

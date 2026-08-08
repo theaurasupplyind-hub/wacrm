@@ -127,6 +127,16 @@ describe('looksLikeAttendance', () => {
     expect(looksLikeAttendance('juan de vacaciones')).toBe(true)
   })
 
+  it('no detecta "se fue la luz" como salida', () => {
+    expect(looksLikeAttendance('se fue la luz')).toBe(false)
+    expect(looksLikeAttendance('se cortó la luz')).toBe(false)
+  })
+
+  it('sigue detectando "se fue" con persona', () => {
+    expect(looksLikeAttendance('juan se fue')).toBe(true)
+    expect(looksLikeAttendance('se fue juan')).toBe(true)
+  })
+
   it('no detecta texto de pedido', () => {
     expect(looksLikeAttendance('quiero un bastidor 40x50')).toBe(false)
     expect(looksLikeAttendance('buen día')).toBe(false)

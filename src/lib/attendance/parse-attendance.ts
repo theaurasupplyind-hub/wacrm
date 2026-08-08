@@ -224,9 +224,18 @@ export function parseAttendance(text: string): ParsedAttendance {
   return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false, statusType: 'arrival' }
 }
 
+// "se fue la luz", "se fue la corriente", etc. NO son salidas del trabajo.
+// Solo "se fue [persona]" con nombre cuenta como salida.
+const INANIMATE_FUE_PATTERNS = [
+  /\bse\s+fue\s+(la\s+|el\s+)?(luz|corriente|electricidad|energia|bateria|internet|wifi|senal)\b/,
+]
+
 export function looksLikeAttendance(text: string): boolean {
   const normalized = normalize(text)
   if (ARRIVAL_KEYWORDS.some(k => normalized.includes(k))) return true
-  if (DEPARTURE_KEYWORDS.some(k => normalized.includes(k))) return true
+  if (DEPARTURE_KEYWORDS.some(k => normalized.includes(k))) {
+    if (INANIMATE_FUE_PATTERNS.some(p => p.test(normalized))) return false
+    return true
+  }
   return Object.keys(STATUS_KEYWORDS).some(k => normalized.includes(k))
 }

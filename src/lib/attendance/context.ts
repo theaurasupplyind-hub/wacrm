@@ -6,6 +6,12 @@ export interface AttendanceContextState {
   pendingType?: AttendanceStatusType | null
   pendingDate?: string | null
   pendingTime?: string | null
+  /**
+   * True cuando el bot preguntó "¿A qué hora llegó/salió X?" y está esperando
+   * la hora (distinto de esperar el nombre). Se guarda con pendingEmployee
+   * set y pendingTime null.
+   */
+  awaitingTime?: boolean
   awaitingCorrection?: boolean
   existingEmployeeId?: number | null
   existingStatus?: string | null

@@ -56,6 +56,21 @@ describe('looksLikeExpense', () => {
   it('returns false for order keywords', () => {
     expect(looksLikeExpense('quiero un bastidor 40x50')).toBe(false)
   })
+
+  it('excluye compras de catálogo ("compré 3 bastidores 60x40" → pedido)', () => {
+    expect(looksLikeExpense('compré 3 bastidores 60x40')).toBe(false)
+    expect(looksLikeExpense('compré un acrílico 50x70')).toBe(false)
+    expect(looksLikeExpense('compré 2 telas')).toBe(false)
+  })
+
+  it('excluye "pagué el pedido" (confirmación de pedido)', () => {
+    expect(looksLikeExpense('pagué el pedido')).toBe(false)
+  })
+
+  it('sigue detectando compras de insumos como gasto', () => {
+    expect(looksLikeExpense('compré pintura para el taller')).toBe(true)
+    expect(looksLikeExpense('compré insumos')).toBe(true)
+  })
 })
 
 describe('split payments', () => {

@@ -201,7 +201,7 @@ POST /api/whatsapp/webhook
   │     flow runner / automaciones / AI reply no lo ven
   │
   ├── 🥇 FLOWS ENGINE → dispatchInboundToFlows()
-  │     Si consume → suprime automatizaciones + AI reply + Voice Orders
+  │     Si consume → suprime automatizaciones + AI reply + extractor
   │
   ├── 🥈 AUTOMATIONS → runAutomationsForTrigger()
   │
@@ -209,15 +209,24 @@ POST /api/whatsapp/webhook
   │     Solo si NO fue consumido por flow
   │
   ├── VOUCHER → processVoucherMessage()
-  │     Solo imágenes/documentos de pago de clientes (fire-and-forget)
+  │     Solo imágenes/documentos de pago de clientes (fire-and-forget).
+  │     Las respuestas de texto a comprobantes pendientes y los pendingTexts
+  │     se manejan en el bloque voucher del webhook, NO vía el extractor.
   │
-  ├── EXPENSE BOT → processExpenseMessage()
-  │     Texto, audio, imagen o documento con intención de gasto
-  │     Disponible para todos los números (fire-and-forget)
+  ├── EXTRACTOR UNIFICADO (LLM) → extractBotMessage()
+  │     Un solo call LLM por texto devuelve intent + campos + faltan_campos
+  │     + dudoso (src/lib/bot-llm/). Recibe el contexto multi-turn de los
+  │     bots para resolver respuestas cortas. Ante fallo/timeout/JSON
+  │     inválido cae a fallbackExtract() (regex, confianza baja).
   │
-  ├── ATTENDANCE BOT → processAttendanceMessage()
-  │     Llegada, salida y estados (vacaciones/licencia/ausente)
-  │     Multi-turno de empleado + dedupe de segunda llegada (fire-and-forget)
+  │     Dispatch por intent (un solo handler):
+  │       · hasPendingExpense/hasPendingAttendance → handler del bot pendiente
+  │       · gasto → handleExpenseMessage(extraction)
+  │       · asistencia_* → handleAttendanceMessage(extraction)
+  │       · voucher → se consume sin handler (grieta corregida: ya NO lo
+  │         captura expense ni voice)
+  │       · pedido/factura (confianza ≠ baja) → handleVoiceText()
+  │       · otro / confianza baja → gates regex de seguridad (igual que antes)
   │
   ├── VOICE AUDIO → handleVoiceAudio()
   │     Solo audio de pedidos (fire-and-forget)
@@ -228,10 +237,10 @@ POST /api/whatsapp/webhook
   └── WEBHOOK FAN-OUT → dispatchWebhookEvent()
 ```
 
-> **Mejora planificada:** el routing binario por regex/LLM del bloque de dispatch
-> se va a reemplazar por un router unificado con umbral de confianza de 3
-> niveles. Ver el plan archivado en
-> [`archive/bot-personal.md`](./archive/bot-personal.md).
+> **Implementado (2026-08):** router unificado por LLM con confianza de 3
+> niveles (`alta`/`media`/`baja`) y extracción estructurada por bot. Ver
+> [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md).
+
 
 ---
 

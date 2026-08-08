@@ -533,7 +533,37 @@ export function parseExpense(text: string): ParsedExpense {
   }
 }
 
+// Palabras de producto del catálogo (normalizadas, sin acentos). Si un verbo de
+// COMPRA aparece junto a estas palabras (o a una medida tipo 60x40), es un
+// pedido de cliente, NO un gasto del negocio.
+const CATALOG_PRODUCT_WORDS = [
+  'bastidor',
+  'acrilico',
+  'circular',
+  'tela',
+  'lienzo',
+  'marco',
+  'moldura',
+]
+
+const ORDER_COMPRA_VERBS = ['compre', 'compra', 'compramos', 'compraron', 'comprar']
+
+function isCatalogOrder(normalized: string): boolean {
+  const hasProduct = CATALOG_PRODUCT_WORDS.some(w => normalized.includes(w))
+  const hasCompraVerb = ORDER_COMPRA_VERBS.some(v => normalized.includes(v))
+  const hasMeasure = /\d{1,4}\s*x\s*\d{1,4}/.test(normalized)
+  return hasCompraVerb && (hasProduct || hasMeasure)
+}
+
+// "pagué el pedido" → confirmación de pedido, NO gasto.
+function isOrderMention(normalized: string): boolean {
+  return /(pague|pago|pagamos|pagar|abone|abono)\s+(el|lo|un|mi|ese)?\s*pedido/.test(normalized)
+}
+
 export function looksLikeExpense(text: string): boolean {
   const normalized = normalize(text)
-  return EXPENSE_INTENT_KEYWORDS.some(k => normalized.includes(k))
+  if (!EXPENSE_INTENT_KEYWORDS.some(k => normalized.includes(k))) return false
+  if (isCatalogOrder(normalized)) return false
+  if (isOrderMention(normalized)) return false
+  return true
 }

@@ -9,6 +9,7 @@ import { extractExpenseData } from './extract-expense'
 import { loadExpenseContext, saveExpenseContext, clearExpenseContext } from './context'
 import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult, PaymentSplit, ExpenseContextState } from './types'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 
 export const EXP_CONFIRM_ID = 'exp_confirm'
 export const EXP_CORRECT_ID = 'exp_correct'
@@ -302,6 +303,7 @@ export async function processExpenseConfirmReply(
 
 export async function processExpenseMessage(
   args: ProcessExpenseMessageArgs,
+  extraction?: UnifiedExtraction,
 ): Promise<ProcessExpenseResult> {
   const ctx = await loadExpenseContext(args.db, args.conversationId)
   if (ctx.stage === 'collecting' && ctx.pendingExpense && args.messageType === 'text') {
@@ -313,7 +315,27 @@ export async function processExpenseMessage(
 
   try {
     if (args.messageType === 'text' && args.text) {
-      parsed = parseExpense(args.text)
+      const regexParsed = parseExpense(args.text)
+      if (extraction && extraction.intent === 'gasto') {
+        parsed = {
+          amount: extraction.monto,
+          description: regexParsed.description,
+          category: extraction.categoria,
+          provider: extraction.proveedor,
+          employee: extraction.empleado_gasto,
+          payment_method: extraction.metodo_pago,
+          // Merge con regex: conserva split payments y saldo que el LLM no modela.
+          payments: regexParsed.payments || undefined,
+          saldo: regexParsed.saldo || undefined,
+          reference: regexParsed.reference,
+          date: extraction.fecha || regexParsed.date,
+          isExpenseIntent: true,
+          amountAmbiguous: extraction.dudoso || regexParsed.amountAmbiguous,
+          raw: args.text,
+        }
+      } else {
+        parsed = regexParsed
+      }
     } else if (args.messageType === 'audio' && args.mediaId && args.mimeType) {
       const mediaInfo = await getMediaUrl({ mediaId: args.mediaId, accessToken: args.accessToken })
       const audio = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken: args.accessToken })
