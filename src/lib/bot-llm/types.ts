@@ -3,6 +3,7 @@ export type BotIntent =
   | 'asistencia_salida'
   | 'asistencia_estado'
   | 'gasto'
+  | 'multi_expense'
   | 'voucher'
   | 'pedido'
   | 'factura'
@@ -17,6 +18,22 @@ export type MissingField =
   | 'monto'
   | 'categoria'
   | 'proveedor'
+
+/**
+ * Un gasto individual dentro de un mensaje multi-expense. `amount` o
+ * `category` pueden ser null si el LLM no logró extraerlos; el flujo de
+ * confirmación preguntará por el campo faltante antes de guardar.
+ */
+export interface MultiExpenseItem {
+  amount: number | null
+  category: string | null
+  provider: string | null
+  employee: string | null
+  payment_method: string | null
+  description: string | null
+  date: string | null
+  raw: string
+}
 
 export interface UnifiedExtraction {
   intent: BotIntent
@@ -36,6 +53,8 @@ export interface UnifiedExtraction {
   proveedor: string | null
   empleado_gasto: string | null
   metodo_pago: string | null
+  // multi-expense (solo si intent es 'multi_expense')
+  multipleExpenses?: MultiExpenseItem[]
   // común
   fecha: string | null
   faltan_campos: MissingField[]

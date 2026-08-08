@@ -1,6 +1,6 @@
 import { looksLikeExpense, parseExpense } from '@/lib/expenses/parse-expense'
 import { looksLikeAttendance, parseAttendance } from '@/lib/attendance/parse-attendance'
-import type { BotIntent, MissingField, UnifiedExtraction } from './types'
+import type { BotIntent, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
 
 function empty(raw: string): UnifiedExtraction {
   return {
@@ -23,6 +23,60 @@ function empty(raw: string): UnifiedExtraction {
   }
 }
 
+// Separadores de una lista de gastos: coma, punto y coma, o "y"/"después"/"luego".
+const MULTI_DELIMITER_RE = /(?:\s*[,;]\s*|\s+(?:y|despu[eé]s|luego)\s+)/i
+
+// Si el texto matchea esto, es un split de pago (mismo gasto) o saldo — NO multi-expense.
+const SPLIT_PAYMENT_HINT = /(?:por|en)\s+(?:transferencia|efectivo|transferi|transferí|debito|débito|credito|crédito|qr|mercado\s+pago|mp)\s+y/i
+
+const STOPWORDS = new Set([
+  'de', 'en', 'por', 'para', 'el', 'la', 'los', 'las', 'del', 'dia',
+  'gasto', 'gastos', 'varios', 'lunes', 'martes', 'miercoles', 'miércoles',
+  'jueves', 'viernes', 'sabado', 'sábado', 'domingo', 'hoy', 'ayer',
+])
+
+/** Intenta partir un texto en 2+ gastos independientes (conservador). */
+function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
+  if (/\bsaldo\b/i.test(text)) return null
+  if (SPLIT_PAYMENT_HINT.test(text)) return null
+
+  const parts = text
+    .split(MULTI_DELIMITER_RE)
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (parts.length < 2) return null
+
+  const items: MultiExpenseItem[] = []
+  for (const part of parts) {
+    const p = parseExpense(part)
+    if (!p.amount || p.amount <= 0) return null
+
+    let category = p.category
+    if (!category) {
+      // Derivar la categoría del resto del segmento (quita el monto y conectores).
+      const rest = part
+        .replace(/\$?\s*\d[\d.,]*\s*(mil|k|m)?(?![.\d])/gi, ' ')
+        .replace(/[.:,]+/g, ' ')
+        .trim()
+      const words = rest.split(/\s+/).filter(w => w && !STOPWORDS.has(w.toLowerCase()))
+      category = words.join(' ') || null
+    }
+
+    items.push({
+      amount: p.amount,
+      category,
+      provider: p.provider,
+      employee: p.employee,
+      payment_method: p.payment_method,
+      description: p.description,
+      date: p.date,
+      raw: part,
+    })
+  }
+
+  return items.length >= 2 ? items : null
+}
+
 /**
  * Red de seguridad sin LLM: emula los gates regex actuales y los convierte en
  * una UnifiedExtraction. Confianza siempre 'baja' y dudoso según ambigüedad,
@@ -31,6 +85,29 @@ function empty(raw: string): UnifiedExtraction {
 export function fallbackExtract(text: string): UnifiedExtraction {
   const raw = (text || '').trim()
   if (!raw) return empty(raw)
+
+  const multi = trySplitMultiExpense(raw)
+  if (multi) {
+    return {
+      intent: 'multi_expense',
+      confianza: 'media',
+      extractor_source: 'fallback',
+      empleado: null,
+      hora: null,
+      estado: null,
+      monto: null,
+      categoria: null,
+      proveedor: null,
+      empleado_gasto: null,
+      metodo_pago: null,
+      fecha: null,
+      multipleExpenses: multi,
+      faltan_campos: [],
+      dudoso: false,
+      razon_duda: null,
+      raw,
+    }
+  }
 
   if (looksLikeExpense(raw)) {
     const p = parseExpense(raw)

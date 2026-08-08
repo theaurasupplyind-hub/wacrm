@@ -1083,7 +1083,7 @@ async function processMessage(
   // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
   const hasPendingExpense =
-    !!expenseCtx.pendingExpense &&
+    (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple) &&
     (expenseCtx.stage === 'collecting' || expenseCtx.stage === 'confirming')
 
   // Cargar estado multi-turn de asistencia (empleado pendiente / corrección de hora)
@@ -1202,7 +1202,9 @@ async function processMessage(
   // ============================================================
   let interactiveConsumed = false
   if (interactiveReplyId) {
-    const expenseConfirming = expenseCtx.stage === 'confirming' && !!expenseCtx.pendingExpense
+    const expenseConfirming =
+      expenseCtx.stage === 'confirming' &&
+      (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple)
     const attendanceCorrecting = attendanceCtx.awaitingCorrection === true
 
     if (expenseConfirming) {
@@ -1542,6 +1544,11 @@ async function processMessage(
     dispatchReason = 'pending_multiturn'
     console.log('[attendance] pending multi-turn dispatch -> conversation=%s', conversation.id)
     pushAttendanceTask()
+  } else if (intent === 'multi_expense') {
+    dispatchedTo = 'expense'
+    dispatchReason = 'multi_expense'
+    console.log('[expense] multi-expense intent dispatch -> conversation=%s', conversation.id)
+    pushExpenseTask(extraction ?? undefined)
   } else if (intent === 'gasto') {
     dispatchedTo = 'expense'
     dispatchReason = 'intent'

@@ -71,7 +71,7 @@ describe('extractBotMessage — LLM responde JSON válido', () => {
         userMessage: expect.stringContaining('CONTEXTO'),
         jsonMode: true,
         temperature: 0.1,
-        maxTokens: 700,
+        maxTokens: 1100,
       }),
     )
   })

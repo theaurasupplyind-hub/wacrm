@@ -22,7 +22,24 @@ export function buildBotContextText(input: BotContextInput): string {
   const lines: string[] = []
 
   const exp = input.expenseCtx
-  if (exp?.pendingExpense) {
+  if (exp?.pendingMultiple && (exp.stage === 'collecting' || exp.stage === 'confirming')) {
+    if (exp.stage === 'collecting') {
+      const idx = exp.multiMissingIndex
+      const field =
+        exp.multiMissingField === 'amount'
+          ? 'el monto'
+          : exp.multiMissingField === 'category'
+            ? 'la categoría'
+            : 'un dato'
+      lines.push(
+        `Gastos múltiples pendientes: hay ${exp.pendingMultiple.length} gastos por confirmar. Se está esperando ${field} del gasto #${(idx ?? 0) + 1}.`,
+      )
+    } else {
+      lines.push(
+        'Gastos múltiples pendientes: el bot mostró una lista con botones [Confirmar todos / Editar / Cancelar]. El usuario puede responder por texto: un número para editar ese gasto, "si" para confirmar todos, o "cancelar".',
+      )
+    }
+  } else if (exp?.pendingExpense) {
     if (exp.stage === 'collecting') {
       const esperando =
         exp.missingField === 'amount'

@@ -1,3 +1,5 @@
+import type { MultiExpenseItem } from '@/lib/bot-llm/types'
+
 export interface ParsedExpense {
   amount: number | null
   description: string | null
@@ -61,6 +63,15 @@ export interface ExpenseContextState {
   awaitingConfirmation?: boolean
   stage?: ExpenseStage
   missingField?: 'amount' | 'category' | null
+  /** Multi-expense: lista de gastos detectados en un solo mensaje. */
+  pendingMultiple?: MultiExpenseItem[] | null
+  /** Índice (0-based) del gasto incompleto cuyo campo se está esperando. */
+  multiMissingIndex?: number | null
+  multiMissingField?: 'amount' | 'category' | null
+  /** Esperando que el usuario elija qué gasto editar (número). */
+  awaitingMultiEditIndex?: boolean
+  /** Índice (0-based) del gasto que se está editando. */
+  multiEditingIndex?: number | null
 }
 
 export type ExpenseStage = 'idle' | 'collecting' | 'confirming'

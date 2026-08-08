@@ -64,4 +64,43 @@ describe('fallbackExtract', () => {
     expect(r.intent).toBe('otro')
     expect(r.dudoso).toBe(false)
   })
+
+  it('detecta 3 gastos separados por coma', () => {
+    const r = fallbackExtract('Gastos varios dia lunes: $40 mil nafta, $34.500 bulonera, 38.000 empanadas')
+    expect(r.intent).toBe('multi_expense')
+    expect(r.multipleExpenses?.length).toBe(3)
+    expect(r.multipleExpenses?.[0].amount).toBe(40000)
+    expect(r.multipleExpenses?.[0].category).toBe('nafta')
+    expect(r.multipleExpenses?.[1].amount).toBe(34500)
+    expect(r.multipleExpenses?.[1].category).toBe('bulonera')
+    expect(r.multipleExpenses?.[2].amount).toBe(38000)
+    expect(r.multipleExpenses?.[2].category).toBe('empanadas')
+  })
+
+  it('detecta 2 gastos separados por "y"', () => {
+    const r = fallbackExtract('gaste 5000 en luz y 2000 en gas')
+    expect(r.intent).toBe('multi_expense')
+    expect(r.multipleExpenses?.length).toBe(2)
+    expect(r.multipleExpenses?.[0].amount).toBe(5000)
+    expect(r.multipleExpenses?.[0].category).toBe('luz')
+    expect(r.multipleExpenses?.[1].amount).toBe(2000)
+    expect(r.multipleExpenses?.[1].category).toBe('gas')
+  })
+
+  it('split de pago NO es multi-expense → gasto simple', () => {
+    const r = fallbackExtract('pagué 5.000 por transferencia y 2.000 en efectivo')
+    expect(r.intent).toBe('gasto')
+    expect(r.monto).toBe(7000)
+  })
+
+  it('saldo NO es multi-expense', () => {
+    const r = fallbackExtract('saldo en transferencia es 4.000.000 y saldo en efectivo es 1.261.792,27')
+    expect(r.intent).not.toBe('multi_expense')
+  })
+
+  it('un solo monto NO es multi-expense → gasto simple', () => {
+    const r = fallbackExtract('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+    expect(r.multipleExpenses).toBeUndefined()
+  })
 })

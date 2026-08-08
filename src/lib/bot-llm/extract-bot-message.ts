@@ -1,13 +1,13 @@
 import { callOpenRouter } from '@/lib/ai/openrouter'
 import { fallbackExtract } from './fallback'
 import { extractJson, normalizeDate, normalizeTime, parseMontoSafe } from './sanitize'
-import type { BotIntent, Confidence, MissingField, UnifiedExtraction } from './types'
+import type { BotIntent, Confidence, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
 
 const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema de WhatsApp (taller de bastidores GAL + gestión de gastos, asistencia y vouchers).
 
 Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exacta:
 {
-  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "voucher" | "pedido" | "factura" | "otro",
+  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "multi_expense" | "voucher" | "pedido" | "factura" | "otro",
   "confianza": "alta" | "media" | "baja",
   "empleado": "nombre del empleado o null",
   "hora": "HH:MM o null",
@@ -18,6 +18,16 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
   "empleado_gasto": "nombre del empleado si es pago de sueldo, o null",
   "metodo_pago": "efectivo" | "transferencia" | "debito" | "credito" | "mercado pago" | "qr" | null,
   "fecha": "YYYY-MM-DD o null",
+  "multipleExpenses": [
+    {
+      "monto": número o null,
+      "categoria": "categoría o null",
+      "proveedor": "proveedor o null",
+      "empleado": "empleado o null",
+      "metodo_pago": "método o null",
+      "descripcion": "texto del gasto o null"
+    }
+  ],
   "faltan_campos": ["empleado" | "hora" | "estado" | "monto" | "categoria" | "proveedor"],
   "dudoso": true | false,
   "razon_duda": "texto breve explicando la duda o null"
@@ -28,7 +38,8 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "asistencia_llegada": llegada al trabajo ("llegó", "llegue", "llegada", "buenos días"). Necesita empleado + hora.
 - "asistencia_salida": salida del trabajo ("salgo", "salí", "me voy", "me fui", "se fue", "terminé", "chau"). Necesita empleado + hora.
 - "asistencia_estado": vacaciones, licencia o ausente. Necesita empleado.
-- "gasto": registro de un gasto del negocio (servicios, insumos, sueldos, proveedores). Necesita monto.
+- "gasto": registro de UN gasto del negocio (servicios, insumos, sueldos, proveedores). Necesita monto.
+- "multi_expense": un mismo mensaje contiene DOS O MÁS gastos separados e independientes del negocio. Devolvé la lista en "multipleExpenses". Cada gasto debe tener su propio monto.
 - "voucher": comprobante de pago o transferencia/depósito para pagar una factura.
 - "pedido": el cliente quiere comprar productos del catálogo (bastidores, acrílicos, circulares, telas), pedir presupuesto, precios, o confirmar un pedido.
 - "factura": consulta de facturas pendientes, deudas, saldos.
@@ -44,6 +55,18 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
 - Si consulta "factura", "deuda", "saldo", "debo", "pendiente" → factura.
 - Ante la duda, usá confianza "baja" o "media".
+
+=== MULTI-EXPENSE ===
+
+Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con sus propios montos. Cada gasto va como un objeto en "multipleExpenses" con su monto y categoría.
+- "gaste 5000 en luz y 2000 en gas" → multi_expense: [{monto:5000,categoria:"luz"},{monto:2000,categoria:"gas"}].
+- "$40 mil nafta, $34.500 bulonera, 38.000 empanadas" → multi_expense con 3 gastos.
+- "pagué 18 mil de luz" → gasto simple (UN monto), NO multi_expense.
+- "pagué 5.000 por transferencia y 2.000 en efectivo" → gasto simple con split de pago (mismo gasto, dos métodos), NO multi_expense. Devolvé "monto": 7000.
+- "saldo en transferencia es X y saldo en efectivo es Y" → gasto simple con saldo, NO multi_expense.
+- Un solo monto → gasto simple, NUNCA multi_expense.
+- Una descripción con varios conceptos pero UN monto ("pago de luz y gas") → gasto simple.
+- Si un gasto de la lista no tiene categoría clara, poné "categoria": null (el bot preguntará).
 
 === CAMPOS ===
 
@@ -106,13 +129,19 @@ Mensaje: "cuánto debo?"
 {"intent":"factura","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "hola"
-{"intent":"otro","confianza":"baja","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+{"intent":"otro","confianza":"baja","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[],"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "gaste 5000 en luz y 2000 en gas"
+{"intent":"multi_expense","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[{"monto":5000,"categoria":"luz","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"luz"},{"monto":2000,"categoria":"gas","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"gas"}],"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "Gastos varios dia lunes: $40 mil nafta, $34.500 bulonera, 38.000 empanadas"
+{"intent":"multi_expense","confianza":"media","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[{"monto":40000,"categoria":"nafta","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"nafta"},{"monto":34500,"categoria":"bulonera","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"bulonera"},{"monto":38000,"categoria":"empanadas","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"empanadas"}],"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 DEVOLVÉ SOLO EL JSON, NADA MÁS.`
 
 const VALID_INTENTS: BotIntent[] = [
   'asistencia_llegada', 'asistencia_salida', 'asistencia_estado',
-  'gasto', 'voucher', 'pedido', 'factura', 'otro',
+  'gasto', 'multi_expense', 'voucher', 'pedido', 'factura', 'otro',
 ]
 const VALID_CONFIDENCE: Confidence[] = ['alta', 'media', 'baja']
 const VALID_MISSING: MissingField[] = ['empleado', 'hora', 'estado', 'monto', 'categoria', 'proveedor']
@@ -145,6 +174,12 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     ? (parsed.estado as 'vacaciones' | 'licencia' | 'ausente')
     : null
 
+  const multipleExpenses = Array.isArray(parsed.multipleExpenses)
+    ? parsed.multipleExpenses
+        .map(sanitizeMultiExpenseItem)
+        .filter((i): i is MultiExpenseItem => i !== null)
+    : undefined
+
   return {
     intent,
     confianza,
@@ -157,6 +192,7 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     proveedor: strOrNull(parsed.proveedor),
     empleado_gasto: strOrNull(parsed.empleado_gasto),
     metodo_pago: strOrNull(parsed.metodo_pago),
+    multipleExpenses,
     fecha: normalizeDate(parsed.fecha),
     faltan_campos: Array.isArray(parsed.faltan_campos)
       ? parsed.faltan_campos.filter((f): f is MissingField => VALID_MISSING.includes(f as MissingField))
@@ -165,6 +201,25 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     razon_duda: strOrNull(parsed.razon_duda),
     raw,
   }
+}
+
+/** Normaliza un item de "multipleExpenses" devuelto por el LLM. */
+function sanitizeMultiExpenseItem(raw: unknown): MultiExpenseItem | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const item: MultiExpenseItem = {
+    amount: parseMontoSafe(o.monto),
+    category: strOrNull(o.categoria),
+    provider: strOrNull(o.proveedor),
+    employee: strOrNull(o.empleado),
+    payment_method: strOrNull(o.metodo_pago),
+    description: strOrNull(o.descripcion),
+    date: normalizeDate(o.fecha),
+    raw: strOrNull(o.descripcion) || '',
+  }
+  // Descartar items totalmente vacíos (sin monto ni categoría).
+  if (item.amount === null && item.category === null) return null
+  return item
 }
 
 /**
@@ -190,7 +245,7 @@ export async function extractBotMessage(
       userMessage,
       jsonMode: true,
       temperature: 0.1,
-      maxTokens: 700,
+      maxTokens: 1100,
     })
     rawText = result.text
   } catch (err) {

@@ -9,11 +9,15 @@ import { extractExpenseData } from './extract-expense'
 import { loadExpenseContext, saveExpenseContext, clearExpenseContext } from './context'
 import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult, PaymentSplit, ExpenseContextState } from './types'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { UnifiedExtraction } from '@/lib/bot-llm/types'
+import type { UnifiedExtraction, MultiExpenseItem } from '@/lib/bot-llm/types'
 
 export const EXP_CONFIRM_ID = 'exp_confirm'
 export const EXP_CORRECT_ID = 'exp_correct'
 export const EXP_CANCEL_ID = 'exp_cancel'
+
+export const EXP_MULTI_CONFIRM_ID = 'exp_multi_confirm'
+export const EXP_MULTI_EDIT_ID = 'exp_multi_edit'
+export const EXP_MULTI_CANCEL_ID = 'exp_multi_cancel'
 
 export interface ProcessExpenseMessageArgs {
   db: SupabaseClient
@@ -343,6 +347,12 @@ export async function processExpenseConfirmReply(
   replyId: string,
 ): Promise<ProcessExpenseResult> {
   const ctx = await loadExpenseContext(args.db, args.conversationId)
+
+  // Multi-expense en confirmación → botones propios.
+  if (ctx.pendingMultiple && ctx.stage === 'confirming') {
+    return handleMultiExpenseConfirmReply(args, ctx, replyId)
+  }
+
   if (ctx.stage !== 'confirming' || !ctx.pendingExpense) {
     return { handled: false }
   }
@@ -411,11 +421,371 @@ export async function processExpenseConfirmReply(
   return { handled: true, text: msg }
 }
 
+// ─── Multi-expense (2+ gastos en un solo mensaje) ───
+
+function firstIncompleteMulti(items: MultiExpenseItem[]): { index: number; field: 'amount' | 'category' } | null {
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (!it.amount || it.amount <= 0) return { index: i, field: 'amount' }
+    if (!it.category) return { index: i, field: 'category' }
+  }
+  return null
+}
+
+function buildMultiExpensePreview(items: MultiExpenseItem[]): string {
+  const lines = [`Voy a registrar ${items.length} gastos:`]
+  items.forEach((it, i) => {
+    const missing: string[] = []
+    if (!it.amount || it.amount <= 0) missing.push('monto')
+    if (!it.category) missing.push('categoría')
+    const parts = [
+      `💰 $${it.amount ? it.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 }) : '?'}`,
+      `📁 ${it.category || 'Sin categoría'}`,
+    ]
+    if (it.provider) parts.push(`🏭 ${it.provider}`)
+    lines.push(`${i + 1}. ${parts.join(' · ')}${missing.length ? ` ❓ Falta ${missing.join(', ')}` : ''}`)
+  })
+  lines.push('')
+  lines.push('¿Confirmás todos?')
+  return lines.join('\n')
+}
+
+async function sendMultiConfirmButtons(args: ProcessExpenseMessageArgs, text: string) {
+  try {
+    await engineSendInteractiveButtons({
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+      bodyText: text,
+      buttons: [
+        { id: EXP_MULTI_CONFIRM_ID, title: '✅ Confirmar todos' },
+        { id: EXP_MULTI_EDIT_ID, title: '✏️ Editar' },
+        { id: EXP_MULTI_CANCEL_ID, title: '❌ Cancelar' },
+      ],
+    })
+  } catch (err) {
+    console.error('[expense] multi confirm buttons error:', err)
+    await sendTextResponse(args, text)
+  }
+}
+
+/**
+ * Avanza el flujo multi-expense: si queda algún gasto incompleto (sin monto o
+ * sin categoría) pregunta por él; si todos están completos, muestra el preview
+ * con los botones [Confirmar todos / Editar / Cancelar].
+ */
+async function advanceMultiExpense(args: ProcessExpenseMessageArgs): Promise<ProcessExpenseResult> {
+  const ctx = await loadExpenseContext(args.db, args.conversationId)
+  const items = ctx.pendingMultiple || []
+  if (items.length === 0) {
+    await clearExpenseContext(args.db, args.conversationId)
+    return { handled: true, text: 'No pude recuperar los gastos. Escribílos de nuevo, por favor.' }
+  }
+
+  const incomplete = firstIncompleteMulti(items)
+  if (incomplete) {
+    const { index, field } = incomplete
+    const it = items[index]
+    await saveExpenseContext(args.db, args.conversationId, {
+      ...ctx,
+      stage: 'collecting',
+      multiMissingIndex: index,
+      multiMissingField: field,
+    })
+    const amountLabel = it.amount ? `$${it.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}` : 'sin monto'
+    const msg =
+      field === 'amount'
+        ? `El gasto #${index + 1} no tiene monto. ¿Cuánto fue?`
+        : `El gasto #${index + 1} (💰 ${amountLabel}) no tiene categoría. ¿Para qué fue? (ej: luz, alquiler, insumos)`
+    await sendTextResponse(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  // Todos completos → preview + confirmación interactiva.
+  await saveExpenseContext(args.db, args.conversationId, {
+    ...ctx,
+    stage: 'confirming',
+    multiMissingIndex: null,
+    multiMissingField: null,
+    awaitingMultiEditIndex: false,
+    multiEditingIndex: null,
+  })
+  const preview = buildMultiExpensePreview(items)
+  await sendMultiConfirmButtons(args, preview)
+  return { handled: true, text: preview }
+}
+
+async function confirmMultipleExpenses(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+): Promise<ProcessExpenseResult> {
+  const items = ctx.pendingMultiple || []
+  const saved: ExpenseExecutionResult[] = []
+  const errors: string[] = []
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (!it.amount || it.amount <= 0) {
+      errors.push(`#${i + 1} sin monto`)
+      continue
+    }
+    const parsed: ParsedExpense = {
+      amount: it.amount,
+      description: it.description || it.category || `Gasto ${i + 1}`,
+      category: it.category,
+      provider: it.provider,
+      employee: it.employee,
+      payment_method: it.payment_method,
+      reference: null,
+      date: it.date || todaysDate(),
+      isExpenseIntent: true,
+      raw: it.raw || `${it.amount} ${it.category || ''}`.trim(),
+      extractorSource: 'llm',
+      confianza: 'alta',
+    }
+    try {
+      const match = await fuzzyMatchExpense(parsed)
+      if (!match.categoryId) {
+        errors.push(`#${i + 1} (${it.category || 'sin categoría'})`)
+        continue
+      }
+      const result = await executeExpense(parsed, match, {
+        source: 'whatsapp',
+        createdByContactId: parseInt(args.contactId, 10) || null,
+      })
+      if (result.error || !result.expenseId) {
+        errors.push(`#${i + 1} (${match.categoryName}): ${result.error || 'error'}`)
+      } else {
+        saved.push(result)
+      }
+    } catch (err) {
+      errors.push(`#${i + 1}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  await clearExpenseContext(args.db, args.conversationId)
+
+  const lines: string[] = [`✅ ${saved.length} gastos registrados:`]
+  for (const r of saved) {
+    const parts = [`💰 $${r.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`, `📁 ${r.categoryName}`]
+    if (r.providerName) parts.push(`🏭 ${r.providerName}`)
+    lines.push(`• ${parts.join(' · ')}`)
+  }
+  if (errors.length) {
+    lines.push('')
+    lines.push(`⚠️ No se registraron: ${errors.join(' | ')}`)
+  }
+  const msg = lines.join('\n')
+  await sendTextResponse(args, msg)
+  return { handled: true, text: msg }
+}
+
+async function handleMultiExpenseConfirmReply(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+  replyId: string,
+): Promise<ProcessExpenseResult> {
+  if (replyId === EXP_MULTI_CONFIRM_ID) {
+    await clearExpenseContext(args.db, args.conversationId)
+    return confirmMultipleExpenses(args, { ...ctx, stage: 'confirming', pendingMultiple: ctx.pendingMultiple })
+  }
+
+  if (replyId === EXP_MULTI_EDIT_ID) {
+    const count = (ctx.pendingMultiple || []).length
+    await saveExpenseContext(args.db, args.conversationId, {
+      ...ctx,
+      stage: 'confirming',
+      awaitingMultiEditIndex: true,
+      multiEditingIndex: null,
+    })
+    const msg = `¿Cuál querés editar? Escribí el número (1-${count}).`
+    await sendTextResponse(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  // Cancelar (o cualquier otra reply).
+  await logExpenseExtraction(args, {
+    status: 'cancelled',
+    rawText: args.text || null,
+    debug: { flow: 'multi_confirm_reply_cancel', replyId },
+  })
+  await clearExpenseContext(args.db, args.conversationId)
+  const msg = 'Listo, no guardé los gastos. 👍'
+  await sendTextResponse(args, msg)
+  return { handled: true, text: msg }
+}
+
+/**
+ * Responde por texto dentro de un flujo multi-expense:
+ * - collecting: completa el campo faltante del gasto señalado.
+ * - confirming: "si/confirmar" confirma todo; un número edita ese gasto;
+ *   "cancelar" aborta; mientras edita, aplica el cambio.
+ */
+async function handleMultiExpenseReply(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+): Promise<ProcessExpenseResult> {
+  const items = [...(ctx.pendingMultiple || [])]
+  const text = (args.text || '').trim()
+  const lower = text.toLowerCase()
+
+  if (ctx.stage === 'collecting' && ctx.multiMissingIndex !== null && ctx.multiMissingIndex !== undefined && ctx.multiMissingField) {
+    const idx = ctx.multiMissingIndex
+    if (ctx.multiMissingField === 'amount') {
+      const num = parseFloatSafe(text)
+      if (!num) {
+        await saveExpenseContext(args.db, args.conversationId, { ...ctx })
+        return { handled: true, text: 'Sigo sin entender el monto. Escribí solo el número (ej: 5000).' }
+      }
+      items[idx] = { ...items[idx], amount: num }
+    } else {
+      items[idx] = { ...items[idx], category: text || null }
+    }
+    await saveExpenseContext(args.db, args.conversationId, {
+      ...ctx,
+      pendingMultiple: items,
+      multiMissingIndex: null,
+      multiMissingField: null,
+    })
+    return advanceMultiExpense(args)
+  }
+
+  if (ctx.stage === 'confirming') {
+    if (lower.includes('cancelar') || lower === 'no') {
+      await clearExpenseContext(args.db, args.conversationId)
+      const msg = 'Listo, no guardé los gastos. 👍'
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
+
+    if (ctx.awaitingMultiEditIndex) {
+      const n = parseInt(text, 10)
+      if (!n || n < 1 || n > items.length) {
+        return { handled: true, text: `Elegí un número entre 1 y ${items.length}.` }
+      }
+      const idx = n - 1
+      await saveExpenseContext(args.db, args.conversationId, {
+        ...ctx,
+        awaitingMultiEditIndex: false,
+        multiEditingIndex: idx,
+      })
+      const it = items[idx]
+      const amountLabel = it.amount ? `$${it.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}` : '?'
+      const msg = `Gasto #${n}: 💰 ${amountLabel} · 📁 ${it.category || 'Sin categoría'}.\n¿Qué querés corregir? (ej: "monto 30000", "categoría pintura", "proveedor Juan")`
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
+
+    if (ctx.multiEditingIndex !== null && ctx.multiEditingIndex !== undefined) {
+      const idx = ctx.multiEditingIndex
+      const updated = { ...items[idx] }
+      const montoMatch = text.match(/monto\s+[\d.,]+/i)
+      const bareAmount = !montoMatch && /^[\d.,]+$/.test(text)
+      if (montoMatch || bareAmount) {
+        const num = parseFloatSafe(text.match(/[\d.,]+/)?.[0] || '')
+        if (num) updated.amount = num
+      }
+      const catMatch = text.match(/categor[ií]a\s+(.+)/i)
+      if (catMatch) updated.category = catMatch[1].trim()
+      const provMatch = text.match(/proveedor\s+(.+)/i)
+      if (provMatch) updated.provider = provMatch[1].trim()
+      if (!montoMatch && !bareAmount && !catMatch && !provMatch) {
+        // Texto suelto → tratarlo como categoría.
+        updated.category = text || updated.category
+      }
+      items[idx] = updated
+      await saveExpenseContext(args.db, args.conversationId, {
+        ...ctx,
+        pendingMultiple: items,
+        multiEditingIndex: null,
+      })
+      return advanceMultiExpense(args)
+    }
+
+    // Sin modo edición activo: confirmar o volver a pedir.
+    if (lower.includes('confirmar') || lower === 'si' || lower === 'sí' || lower === 'ok') {
+      return confirmMultipleExpenses(args, { ...ctx, pendingMultiple: ctx.pendingMultiple })
+    }
+
+    const n = parseInt(text, 10)
+    if (n && n >= 1 && n <= items.length) {
+      await saveExpenseContext(args.db, args.conversationId, {
+        ...ctx,
+        multiEditingIndex: n - 1,
+      })
+      const it = items[n - 1]
+      const amountLabel = it.amount ? `$${it.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}` : '?'
+      const msg = `Gasto #${n}: 💰 ${amountLabel} · 📁 ${it.category || 'Sin categoría'}.\n¿Qué querés corregir? (ej: "monto 30000", "categoría pintura", "proveedor Juan")`
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
+
+    return {
+      handled: true,
+      text: `¿Confirmás todos los gastos? Respondé "si" para confirmar, un número (1-${items.length}) para editar, o "cancelar".`,
+    }
+  }
+
+  return { handled: false }
+}
+
+/** Recibe un intent 'multi_expense' y arranca el flujo de confirmación. */
+export async function processMultipleExpenses(
+  args: ProcessExpenseMessageArgs,
+  items: MultiExpenseItem[],
+): Promise<ProcessExpenseResult> {
+  const valid = items.filter(i => i.amount !== null || i.category !== null)
+  if (valid.length < 2) {
+    return { handled: false }
+  }
+
+  await saveExpenseContext(args.db, args.conversationId, {
+    stage: 'collecting',
+    pendingMultiple: valid,
+    multiMissingIndex: null,
+    multiMissingField: null,
+    awaitingMultiEditIndex: false,
+    multiEditingIndex: null,
+  })
+  await logExpenseExtraction(args, {
+    status: 'collecting',
+    rawText: args.text || null,
+    extractorSource: 'llm',
+    confianza: 'alta',
+    debug: {
+      flow: 'multi_expense_start',
+      count: valid.length,
+      items: valid.map(i => ({ amount: i.amount, category: i.category })),
+    },
+  })
+  return advanceMultiExpense(args)
+}
+
 export async function processExpenseMessage(
   args: ProcessExpenseMessageArgs,
   extraction?: UnifiedExtraction,
 ): Promise<ProcessExpenseResult> {
   const ctx = await loadExpenseContext(args.db, args.conversationId)
+
+  // Multi-expense pendiente → responder al flujo (campo faltante / edición / confirmar).
+  if (
+    ctx.pendingMultiple &&
+    (ctx.stage === 'collecting' || ctx.stage === 'confirming') &&
+    args.messageType === 'text'
+  ) {
+    return handleMultiExpenseReply(args, ctx)
+  }
+
+  // Nuevo mensaje multi-expense (intent del LLM o fallback regex).
+  if (
+    extraction?.intent === 'multi_expense' &&
+    extraction.multipleExpenses &&
+    extraction.multipleExpenses.length >= 2
+  ) {
+    return processMultipleExpenses(args, extraction.multipleExpenses)
+  }
+
   if (ctx.stage === 'collecting' && ctx.pendingExpense && args.messageType === 'text') {
     return handleCollectingReply(args, ctx)
   }
