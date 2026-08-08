@@ -34,6 +34,8 @@ export interface ProcessAttendanceArgs {
   userId: string
   conversationId: string
   contactId: string
+  /** WhatsApp message ID (Meta), para correlacionar con la tabla messages. */
+  messageId?: string | null
 }
 
 export interface ProcessAttendanceResult {
@@ -55,6 +57,61 @@ const STATUS_TO_LABEL: Record<AttendanceStatusType, { status: string; icon: stri
 
 function todayString(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function intentFromStatus(statusType: AttendanceStatusType): string {
+  if (statusType === 'arrival') return 'asistencia_llegada'
+  if (statusType === 'departure') return 'asistencia_salida'
+  return 'asistencia_estado'
+}
+
+interface AttendanceLogEntry {
+  outcome: string
+  intent?: string | null
+  extractorSource?: string | null
+  employeeName?: string | null
+  time?: string | null
+  date?: string | null
+  statusType?: string | null
+  faltanCampos?: string[] | null
+  matchedEmployeeId?: number | null
+  matchedEmployeeName?: string | null
+  errorMessage?: string | null
+  debug?: Record<string, unknown>
+}
+
+/**
+ * Auditoría de cada evento del flujo de asistencia en `attendance_extractions`
+ * (migración 045). Fire-and-forget: nunca debe romper el procesamiento.
+ */
+async function logAttendanceExtraction(args: ProcessAttendanceArgs, entry: AttendanceLogEntry) {
+  try {
+    await args.db.from('attendance_extractions').insert({
+      message_id: args.messageId || null,
+      contact_id: args.contactId,
+      conversation_id: args.conversationId,
+      raw_text: args.text || null,
+      intent: entry.intent ?? null,
+      extractor_source: entry.extractorSource ?? null,
+      employee_name: entry.employeeName ?? null,
+      time: entry.time ?? null,
+      date: entry.date ?? null,
+      status_type: entry.statusType ?? null,
+      faltan_campos: entry.faltanCampos ?? null,
+      outcome: entry.outcome,
+      matched_employee_id: entry.matchedEmployeeId ?? null,
+      matched_employee_name: entry.matchedEmployeeName ?? null,
+      error_message: entry.errorMessage ?? null,
+      debug_info: entry.debug ?? null,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('relation') && msg.includes('does not exist')) {
+      console.error('[attendance-log] TABLE MISSING — run migration 045_bot_debug_logs.sql in Supabase')
+    } else {
+      console.error('[attendance-log] Failed to save attendance extraction:', msg)
+    }
+  }
 }
 
 function formatDate(iso: string): string {
@@ -160,6 +217,18 @@ async function recordArrival(
   const msg = `✅ Asistencia registrada:\n👤 ${emp.name}\n${label}\n📅 ${dateFormatted}`
   await sendTextResponse(args, msg)
 
+  await logAttendanceExtraction(args, {
+    outcome: 'recorded',
+    intent: 'asistencia_llegada',
+    employeeName: emp.name,
+    time: finalStatus,
+    date,
+    statusType: 'arrival',
+    matchedEmployeeId: emp.id,
+    matchedEmployeeName: emp.name,
+    debug: { recorded: { time, label, status: finalStatus } },
+  })
+
   return { handled: true, employeeName: emp.name, time: label, date }
 }
 
@@ -196,6 +265,19 @@ async function handleArrival(
       { id: ATT_CORRECT_ID, title: '✅ Corregir hora' },
       { id: ATT_LEAVE_ID, title: '❌ No tocar' },
     ])
+
+    await logAttendanceExtraction(args, {
+      outcome: 'awaiting_correction',
+      intent: 'asistencia_llegada',
+      employeeName: emp.name,
+      time: parsedTime,
+      date,
+      statusType: 'arrival',
+      matchedEmployeeId: emp.id,
+      matchedEmployeeName: emp.name,
+      debug: { existingStatus: existingArrival.status, previous },
+    })
+
     return { handled: true, awaitingCorrection: true }
   }
 
@@ -220,6 +302,19 @@ async function handleDeparture(
   if (!existingArrival) {
     const msg = `❌ ${emp.name} no tiene una llegada registrada hoy. Primero registrá su llegada.`
     await sendTextResponse(args, msg)
+
+    await logAttendanceExtraction(args, {
+      outcome: 'rejected_no_arrival',
+      intent: 'asistencia_salida',
+      employeeName: emp.name,
+      time: parsedTime,
+      date,
+      statusType: 'departure',
+      matchedEmployeeId: emp.id,
+      matchedEmployeeName: emp.name,
+      errorMessage: msg,
+    })
+
     return { handled: true, error: msg }
   }
 
@@ -241,6 +336,18 @@ async function handleDeparture(
   const msg = `🚪 Salida registrada:\n👤 ${emp.name}\n🕔 ${parsedTime}\n📅 ${dateFormatted}${extra}`
   await sendTextResponse(args, msg)
 
+  await logAttendanceExtraction(args, {
+    outcome: 'recorded',
+    intent: 'asistencia_salida',
+    employeeName: emp.name,
+    time: parsedTime,
+    date,
+    statusType: 'departure',
+    matchedEmployeeId: emp.id,
+    matchedEmployeeName: emp.name,
+    debug: { expectedExitTime: fullEmp?.exit_time ?? null },
+  })
+
   return { handled: true, employeeName: emp.name, time: parsedTime, date }
 }
 
@@ -257,6 +364,17 @@ async function handleStatus(
   const dateFormatted = formatDate(date)
   const msg = `✅ Asistencia registrada:\n👤 ${emp.name}\n${label}\n📅 ${dateFormatted}`
   await sendTextResponse(args, msg)
+
+  await logAttendanceExtraction(args, {
+    outcome: 'recorded',
+    intent: intentFromStatus(statusType),
+    employeeName: emp.name,
+    date,
+    statusType,
+    matchedEmployeeId: emp.id,
+    matchedEmployeeName: emp.name,
+    debug: { label, status },
+  })
 
   return { handled: true, employeeName: emp.name, time: label, date }
 }
@@ -307,6 +425,18 @@ async function resolveEmployeeAndRecord(args: ResolveArgs): Promise<ProcessAtten
       })
       const msg = `No encontré ningún empleado con el nombre "${name}". ¿De quién es?`
       await sendTextResponse(args, msg)
+
+      await logAttendanceExtraction(args, {
+        outcome: 'employee_not_found',
+        intent: intentFromStatus(args.statusType),
+        employeeName: name,
+        time: args.time,
+        date: args.date,
+        statusType: args.statusType,
+        errorMessage: msg,
+        debug: { bestScore: bestScore ?? null },
+      })
+
       return { handled: true, error: msg }
     }
 
@@ -325,6 +455,17 @@ async function resolveEmployeeAndRecord(args: ResolveArgs): Promise<ProcessAtten
     console.error('[attendance] process error:', msg)
     const errorResp = '❌ No pude registrar la asistencia. Intentá de nuevo o contactá al administrador.'
     await sendTextResponse(args, errorResp)
+
+    await logAttendanceExtraction(args, {
+      outcome: 'error',
+      intent: intentFromStatus(args.statusType),
+      employeeName: args.employeeName,
+      time: args.time,
+      date: args.date,
+      statusType: args.statusType,
+      errorMessage: msg,
+    })
+
     return { handled: true, error: msg }
   }
 }
@@ -362,7 +503,14 @@ export async function processAttendanceMessage(
   // asistencia completo nuevo, se resetea el contexto y se procesa en fresco.
   if (ctx.awaitingCorrection) {
     const isFreshIntent = parsed.isAttendanceIntent && !!parsed.employeeName
-    if (!isFreshIntent) return { handled: false }
+    if (!isFreshIntent) {
+      await logAttendanceExtraction(args, {
+        outcome: 'not_handled',
+        extractorSource: extraction?.extractor_source ?? null,
+        debug: { reason: 'awaiting_correction_no_fresh_intent', ctx },
+      })
+      return { handled: false }
+    }
     await clearAttendanceContext(args.db, args.conversationId)
   }
 
@@ -374,6 +522,19 @@ export async function processAttendanceMessage(
       const tipo = ctx.pendingType === 'arrival' ? 'llegó' : 'salió'
       const msg = `No entendí la hora. ¿A qué hora ${tipo} ${ctx.pendingEmployee}? (ej: 9:30)`
       await sendTextResponse(args, msg)
+
+      await logAttendanceExtraction(args, {
+        outcome: 'ask_time',
+        intent: intentFromStatus(ctx.pendingType),
+        extractorSource: extraction?.extractor_source ?? null,
+        employeeName: ctx.pendingEmployee,
+        time: null,
+        date: ctx.pendingDate || todayString(),
+        statusType: ctx.pendingType,
+        faltanCampos: ['hora'],
+        debug: { reask: true, ctx },
+      })
+
       return { handled: true }
     }
     await clearAttendanceContext(args.db, args.conversationId)
@@ -407,6 +568,14 @@ export async function processAttendanceMessage(
   }
 
   if (!parsed.isAttendanceIntent) {
+    await logAttendanceExtraction(args, {
+      outcome: 'not_handled',
+      intent: extraction?.intent ?? null,
+      extractorSource: extraction?.extractor_source ?? null,
+      employeeName: extraction?.empleado ?? null,
+      faltanCampos: extraction?.faltan_campos ?? null,
+      debug: { reason: 'not_an_attendance_intent', ctx },
+    })
     return { handled: false }
   }
 
@@ -419,6 +588,19 @@ export async function processAttendanceMessage(
     })
     const msg = '¿De quién es? Decime el nombre del empleado.'
     await sendTextResponse(args, msg)
+
+    await logAttendanceExtraction(args, {
+      outcome: 'ask_employee',
+      intent: intentFromStatus(parsed.statusType),
+      extractorSource: extraction?.extractor_source ?? null,
+      employeeName: null,
+      time: parsed.time,
+      date: parsed.date,
+      statusType: parsed.statusType,
+      faltanCampos: ['empleado'],
+      debug: { ctx },
+    })
+
     return { handled: true }
   }
 
@@ -437,6 +619,19 @@ export async function processAttendanceMessage(
     const tipo = parsed.statusType === 'arrival' ? 'llegó' : 'salió'
     const msg = `¿A qué hora ${tipo} ${parsed.employeeName}?`
     await sendTextResponse(args, msg)
+
+    await logAttendanceExtraction(args, {
+      outcome: 'ask_time',
+      intent: intentFromStatus(parsed.statusType),
+      extractorSource: extraction?.extractor_source ?? null,
+      employeeName: parsed.employeeName,
+      time: null,
+      date: parsed.date,
+      statusType: parsed.statusType,
+      faltanCampos: ['hora'],
+      debug: { ctx },
+    })
+
     return { handled: true }
   }
 
@@ -474,6 +669,19 @@ export async function processAttendanceConfirmReply(
       const dateFormatted = formatDate(date)
       const msg = `✅ Hora corregida:\n👤 ${fullEmp?.name || ''}\n🕔 ${ctx.pendingTime}\n📅 ${dateFormatted}`
       await sendTextResponse(args, msg)
+
+      await logAttendanceExtraction(args, {
+        outcome: 'correction_recorded',
+        intent: 'asistencia_llegada',
+        employeeName: fullEmp?.name ?? null,
+        time: ctx.pendingTime,
+        date,
+        statusType: 'arrival',
+        matchedEmployeeId: ctx.existingEmployeeId,
+        matchedEmployeeName: fullEmp?.name ?? null,
+        debug: { replyId, finalStatus, ctx },
+      })
+
       return { handled: true }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -481,6 +689,19 @@ export async function processAttendanceConfirmReply(
       await clearAttendanceContext(args.db, args.conversationId)
       const errorResp = '❌ No pude corregir la hora. Intentá de nuevo.'
       await sendTextResponse(args, errorResp)
+
+      await logAttendanceExtraction(args, {
+        outcome: 'error',
+        intent: 'asistencia_llegada',
+        employeeName: ctx.pendingEmployee ?? null,
+        time: ctx.pendingTime,
+        date,
+        statusType: 'arrival',
+        matchedEmployeeId: ctx.existingEmployeeId,
+        errorMessage: msg,
+        debug: { replyId, flow: 'correction' },
+      })
+
       return { handled: true, error: msg }
     }
   }
@@ -489,6 +710,18 @@ export async function processAttendanceConfirmReply(
   await clearAttendanceContext(args.db, args.conversationId)
   const msg = 'Listo, no toqué la hora registrada. 👍'
   await sendTextResponse(args, msg)
+
+  await logAttendanceExtraction(args, {
+    outcome: 'correction_ignored',
+    intent: 'asistencia_llegada',
+    employeeName: ctx.pendingEmployee ?? null,
+    time: ctx.pendingTime,
+    date: ctx.pendingDate || todayString(),
+    statusType: 'arrival',
+    matchedEmployeeId: ctx.existingEmployeeId,
+    debug: { replyId, ctx },
+  })
+
   return { handled: true }
 }
 

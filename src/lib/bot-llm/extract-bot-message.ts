@@ -148,6 +148,7 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
   return {
     intent,
     confianza,
+    extractor_source: 'llm',
     empleado: strOrNull(parsed.empleado),
     hora: normalizeTime(parsed.hora),
     estado,

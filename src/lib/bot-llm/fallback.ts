@@ -6,6 +6,7 @@ function empty(raw: string): UnifiedExtraction {
   return {
     intent: 'otro',
     confianza: 'baja',
+    extractor_source: 'fallback',
     empleado: null,
     hora: null,
     estado: null,
@@ -48,6 +49,7 @@ export function fallbackExtract(text: string): UnifiedExtraction {
     return {
       intent: 'gasto',
       confianza: 'baja',
+      extractor_source: 'fallback',
       empleado: null,
       hora: null,
       estado: null,
@@ -102,6 +104,7 @@ export function fallbackExtract(text: string): UnifiedExtraction {
     return {
       intent,
       confianza: 'baja',
+      extractor_source: 'fallback',
       empleado: a.employeeName,
       hora,
       estado,

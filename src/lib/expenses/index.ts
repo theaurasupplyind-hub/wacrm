@@ -21,6 +21,8 @@ export interface ProcessExpenseMessageArgs {
   text?: string | null
   mediaId?: string | null
   mimeType?: string | null
+  /** WhatsApp message ID (Meta), para correlacionar con la tabla messages. */
+  messageId?: string | null
   accessToken: string
   senderPhone: string
   senderName: string
@@ -110,6 +112,57 @@ async function sendTextResponse(args: ProcessExpenseMessageArgs, text: string) {
   }
 }
 
+interface ExpenseLogEntry {
+  status: string
+  rawText?: string | null
+  amount?: number | null
+  category?: string | null
+  provider?: string | null
+  employee?: string | null
+  paymentMethod?: string | null
+  reference?: string | null
+  extractorSource?: string | null
+  confianza?: string | null
+  matchedExpenseId?: number | null
+  errorMessage?: string | null
+  debug?: Record<string, unknown>
+}
+
+/**
+ * Auditoría de cada evento del flujo de gastos en `expense_extractions`
+ * (migración 037 + columnas debug_info de la 045). Fire-and-forget: nunca
+ * debe romper el procesamiento del gasto.
+ */
+async function logExpenseExtraction(args: ProcessExpenseMessageArgs, entry: ExpenseLogEntry) {
+  try {
+    await args.db.from('expense_extractions').insert({
+      message_id: args.messageId || args.mediaId || null,
+      contact_id: args.contactId,
+      conversation_id: args.conversationId,
+      raw_text: entry.rawText ?? null,
+      extracted_amount: entry.amount ?? null,
+      extracted_category: entry.category ?? null,
+      extracted_provider: entry.provider ?? null,
+      extracted_employee: entry.employee ?? null,
+      extracted_payment_method: entry.paymentMethod ?? null,
+      extracted_reference: entry.reference ?? null,
+      match_status: entry.status,
+      matched_expense_id: entry.matchedExpenseId ?? null,
+      error_message: entry.errorMessage ?? null,
+      extractor_source: entry.extractorSource ?? null,
+      confianza: entry.confianza ?? null,
+      debug_info: entry.debug ?? null,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('relation') && msg.includes('does not exist')) {
+      console.error('[expense-log] TABLE MISSING — run migration 037_expense_extractions.sql in Supabase')
+    } else {
+      console.error('[expense-log] Failed to save extraction record:', msg)
+    }
+  }
+}
+
 function parseFloatSafe(reply: string): number | null {
   const cleaned = reply.replace(/[^0-9,.]/g, '').replace(',', '.')
   const num = parseFloat(cleaned)
@@ -168,11 +221,38 @@ async function handleCollectingReply(
   })
 
   if (result.error || !result.expenseId) {
+    await logExpenseExtraction(args, {
+      status: 'error',
+      rawText: pending.raw,
+      amount: pending.amount,
+      category: pending.category,
+      provider: pending.provider,
+      employee: pending.employee,
+      paymentMethod: pending.payment_method,
+      extractorSource: pending.extractorSource,
+      confianza: pending.confianza,
+      errorMessage: result.error || 'No se pudo guardar el gasto.',
+      debug: { flow: 'collecting_reply', match },
+    })
     await clearExpenseContext(args.db, args.conversationId)
     return { handled: true, error: result.error, text: result.error || 'No se pudo guardar el gasto.' }
   }
 
   await createSaldoExpense(pending, match, result, args, null)
+
+  await logExpenseExtraction(args, {
+    status: 'confirmed',
+    rawText: pending.raw,
+    amount: pending.amount,
+    category: pending.category,
+    provider: pending.provider,
+    employee: pending.employee,
+    paymentMethod: pending.payment_method,
+    extractorSource: pending.extractorSource,
+    confianza: pending.confianza,
+    matchedExpenseId: result.expenseId,
+    debug: { flow: 'collecting_reply', match },
+  })
 
   await clearExpenseContext(args.db, args.conversationId)
 
@@ -231,25 +311,21 @@ async function executeAndConfirmExpense(
   await createSaldoExpense(parsed, match, result, args, mediaUrl)
 
   // Auditoría
-  try {
-    await args.db.from('expense_extractions').insert({
-      message_id: args.mediaId || undefined,
-      contact_id: args.contactId,
-      conversation_id: args.conversationId,
-      raw_text: parsed.raw,
-      extracted_amount: parsed.amount,
-      extracted_category: parsed.category,
-      extracted_provider: parsed.provider,
-      extracted_employee: parsed.employee,
-      extracted_payment_method: parsed.payment_method,
-      extracted_reference: parsed.reference,
-      match_status: result.error ? 'error' : 'confirmed',
-      matched_expense_id: result.expenseId,
-      error_message: result.error || undefined,
-    })
-  } catch (auditErr) {
-    console.error('[expense] audit insert error:', auditErr)
-  }
+  await logExpenseExtraction(args, {
+    status: result.error ? 'error' : 'confirmed',
+    rawText: parsed.raw,
+    amount: parsed.amount,
+    category: parsed.category,
+    provider: parsed.provider,
+    employee: parsed.employee,
+    paymentMethod: parsed.payment_method,
+    reference: parsed.reference,
+    extractorSource: parsed.extractorSource,
+    confianza: parsed.confianza,
+    matchedExpenseId: result.expenseId,
+    errorMessage: result.error || undefined,
+    debug: { match, result, media_url: mediaUrl },
+  })
 
   const text = buildExpenseConfirmation(result)
   await sendTextResponse(args, text)
@@ -276,6 +352,16 @@ export async function processExpenseConfirmReply(
 
   if (replyId === EXP_CONFIRM_ID) {
     if (!match) {
+      await logExpenseExtraction(args, {
+        status: 'error',
+        rawText: parsed.raw,
+        amount: parsed.amount,
+        category: parsed.category,
+        extractorSource: parsed.extractorSource,
+        confianza: parsed.confianza,
+        errorMessage: 'No se pudo recuperar el gasto pendiente.',
+        debug: { flow: 'confirm_reply', replyId },
+      })
       await clearExpenseContext(args.db, args.conversationId)
       return { handled: true, text: 'No pude recuperar el gasto pendiente. Escribílo de nuevo, por favor.' }
     }
@@ -290,11 +376,35 @@ export async function processExpenseConfirmReply(
       awaitingConfirmation: false,
       missingField: null,
     })
+    await logExpenseExtraction(args, {
+      status: 'collecting',
+      rawText: parsed.raw,
+      amount: parsed.amount,
+      category: parsed.category,
+      provider: parsed.provider,
+      employee: parsed.employee,
+      paymentMethod: parsed.payment_method,
+      extractorSource: parsed.extractorSource,
+      confianza: parsed.confianza,
+      debug: { flow: 'confirm_reply_correct', replyId, correcting: true },
+    })
     const msg = '¿Qué querés corregir? Escribí el monto (solo números) o la categoría correcta.'
     await sendTextResponse(args, msg)
     return { handled: true, text: msg }
   }
 
+  await logExpenseExtraction(args, {
+    status: 'cancelled',
+    rawText: parsed.raw,
+    amount: parsed.amount,
+    category: parsed.category,
+    provider: parsed.provider,
+    employee: parsed.employee,
+    paymentMethod: parsed.payment_method,
+    extractorSource: parsed.extractorSource,
+    confianza: parsed.confianza,
+    debug: { flow: 'confirm_reply_cancel', replyId },
+  })
   await clearExpenseContext(args.db, args.conversationId)
   const msg = 'Listo, no guardé el gasto. 👍'
   await sendTextResponse(args, msg)
@@ -332,15 +442,19 @@ export async function processExpenseMessage(
           isExpenseIntent: true,
           amountAmbiguous: extraction.dudoso || regexParsed.amountAmbiguous,
           raw: args.text,
+          extractorSource: extraction.extractor_source,
+          confianza: extraction.confianza,
         }
       } else {
         parsed = regexParsed
+        parsed.extractorSource = 'regex'
       }
     } else if (args.messageType === 'audio' && args.mediaId && args.mimeType) {
       const mediaInfo = await getMediaUrl({ mediaId: args.mediaId, accessToken: args.accessToken })
       const audio = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken: args.accessToken })
       const transcript = await transcribeExpense(audio.buffer, audio.contentType)
       parsed = parseExpense(transcript)
+      parsed.extractorSource = 'whisper_regex'
     } else if ((args.messageType === 'image' || args.messageType === 'document') && args.mediaId && args.mimeType) {
       const mediaInfo = await getMediaUrl({ mediaId: args.mediaId, accessToken: args.accessToken })
       const file = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken: args.accessToken })
@@ -358,10 +472,18 @@ export async function processExpenseMessage(
         date: parseDateFromExtracted(extracted.fecha),
         isExpenseIntent: true,
         raw: JSON.stringify(extracted),
+        extractorSource: 'multimodal',
       }
     }
 
     if (!parsed || !parsed.isExpenseIntent) {
+      await logExpenseExtraction(args, {
+        status: 'not_handled',
+        rawText: args.text || args.mediaId || null,
+        extractorSource: parsed?.extractorSource,
+        confianza: parsed?.confianza,
+        debug: { messageType: args.messageType },
+      })
       return { handled: false }
     }
 
@@ -371,6 +493,18 @@ export async function processExpenseMessage(
         stage: 'collecting',
         pendingExpense: parsed,
         missingField: 'amount',
+      })
+      await logExpenseExtraction(args, {
+        status: 'collecting',
+        rawText: parsed.raw,
+        amount: parsed.amount,
+        category: parsed.category,
+        provider: parsed.provider,
+        employee: parsed.employee,
+        paymentMethod: parsed.payment_method,
+        extractorSource: parsed.extractorSource,
+        confianza: parsed.confianza,
+        debug: { missingField: 'amount', extraction },
       })
       const msg = 'No detecté el monto. ¿Cuánto fue?'
       await sendTextResponse(args, msg)
@@ -387,6 +521,18 @@ export async function processExpenseMessage(
         pendingMatch: match,
         missingField: 'category',
       })
+      await logExpenseExtraction(args, {
+        status: 'collecting',
+        rawText: parsed.raw,
+        amount: parsed.amount,
+        category: parsed.category,
+        provider: parsed.provider,
+        employee: parsed.employee,
+        paymentMethod: parsed.payment_method,
+        extractorSource: parsed.extractorSource,
+        confianza: parsed.confianza,
+        debug: { missingField: 'category', match },
+      })
       const msg = 'No entendí la categoría. ¿Para qué fue el gasto? (ej: luz, alquiler, insumos)'
       await sendTextResponse(args, msg)
       return { handled: true, text: msg }
@@ -401,6 +547,23 @@ export async function processExpenseMessage(
         awaitingConfirmation: true,
       })
       const preview = buildExpensePreview(parsed)
+      await logExpenseExtraction(args, {
+        status: 'ambiguous',
+        rawText: parsed.raw,
+        amount: parsed.amount,
+        category: parsed.category,
+        provider: parsed.provider,
+        employee: parsed.employee,
+        paymentMethod: parsed.payment_method,
+        extractorSource: parsed.extractorSource,
+        confianza: parsed.confianza,
+        debug: { match, preview, reason: {
+          amountAmbiguous: parsed.amountAmbiguous,
+          categoryWasCreated: match.categoryWasCreated,
+          providerUnresolved: !!parsed.provider && !match.providerId && !match.employeeId,
+          employeeUnresolved: !!parsed.employee && !match.employeeId,
+        } },
+      })
       await sendExpenseConfirmButtons(args, preview)
       return { handled: true, text: preview }
     }
@@ -409,6 +572,14 @@ export async function processExpenseMessage(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] process error:', msg)
+    await logExpenseExtraction(args, {
+      status: 'error',
+      rawText: args.text || args.mediaId || null,
+      extractorSource: parsed?.extractorSource,
+      confianza: parsed?.confianza,
+      errorMessage: msg,
+      debug: { messageType: args.messageType },
+    })
     return {
       handled: true,
       error: msg,

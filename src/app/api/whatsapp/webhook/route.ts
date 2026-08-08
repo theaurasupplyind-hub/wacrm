@@ -831,6 +831,7 @@ async function handleAttendanceMessage(args: {
   userId: string
   conversationId: string
   contactId: string
+  messageId?: string | null
   extraction?: UnifiedExtraction
 }): Promise<boolean> {
   try {
@@ -841,6 +842,7 @@ async function handleAttendanceMessage(args: {
       userId: args.userId,
       conversationId: args.conversationId,
       contactId: args.contactId,
+      messageId: args.messageId,
     }, args.extraction)
     if (result.handled) {
       console.log('[attendance] handled conversation=%s employee=%s', args.conversationId, result.employeeName)
@@ -860,6 +862,7 @@ async function handleAttendanceConfirmReply(args: {
   userId: string
   conversationId: string
   contactId: string
+  messageId?: string | null
 }): Promise<boolean> {
   try {
     const result = await processAttendanceConfirmReply(
@@ -870,6 +873,7 @@ async function handleAttendanceConfirmReply(args: {
         userId: args.userId,
         conversationId: args.conversationId,
         contactId: args.contactId,
+        messageId: args.messageId,
       },
       args.replyId,
     )
@@ -892,6 +896,7 @@ async function handleExpenseMessage(args: {
   text?: string | null
   mediaId?: string | null
   mimeType?: string | null
+  messageId?: string | null
   accessToken: string
   senderPhone: string
   senderName: string
@@ -908,6 +913,7 @@ async function handleExpenseMessage(args: {
       text: args.text,
       mediaId: args.mediaId,
       mimeType: args.mimeType,
+      messageId: args.messageId,
       accessToken: args.accessToken,
       senderPhone: args.senderPhone,
       senderName: args.senderName,
@@ -963,6 +969,56 @@ async function handleExpenseConfirmReply(args: {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] confirm reply handler error:', msg)
     return false
+  }
+}
+
+// ─── Router log (auditoría de la decisión de dispatch por mensaje) ───
+
+async function logRouterDecision(args: {
+  messageId: string
+  contactId: string
+  conversationId: string
+  accountId: string
+  rawText: string
+  source: string
+  flowConsumed: boolean
+  interactive: boolean
+  hadContext: boolean
+  extraction: UnifiedExtraction | null
+  dispatchedTo: string
+  dispatchReason: string
+  contextText?: string
+}): Promise<void> {
+  try {
+    await supabaseAdmin().from('router_logs').insert({
+      message_id: args.messageId,
+      contact_id: args.contactId,
+      conversation_id: args.conversationId,
+      account_id: args.accountId,
+      raw_text: args.rawText,
+      source: args.source,
+      flow_consumed: args.flowConsumed,
+      interactive: args.interactive,
+      had_context: args.hadContext,
+      extractor_source: args.extraction?.extractor_source ?? null,
+      intent: args.extraction?.intent ?? null,
+      confianza: args.extraction?.confianza ?? null,
+      dudoso: args.extraction?.dudoso ?? false,
+      faltan_campos: args.extraction?.faltan_campos ?? null,
+      dispatched_to: args.dispatchedTo,
+      dispatch_reason: args.dispatchReason,
+      debug_info: {
+        context_text: args.contextText || null,
+        extraction: args.extraction,
+      },
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('relation') && msg.includes('does not exist')) {
+      console.error('[router-log] TABLE MISSING — run migration 045_bot_debug_logs.sql in Supabase')
+    } else {
+      console.error('[router-log] Failed to save router log:', msg)
+    }
   }
 }
 
@@ -1180,6 +1236,7 @@ async function processMessage(
               userId: configOwnerUserId,
               conversationId: conversation.id,
               contactId: contactRecord.id,
+              messageId: message.id,
             })
           } catch (err) {
             console.error('[attendance] Confirm reply error:', err)
@@ -1247,6 +1304,7 @@ async function processMessage(
             userId: configOwnerUserId,
             conversationId: conversation.id,
             contactId: contactRecord.id,
+            messageId: message.id,
           })
         } catch (err) {
           console.error('[expense] Media error:', err)
@@ -1277,6 +1335,7 @@ async function processMessage(
             userId: configOwnerUserId,
             conversationId: conversation.id,
             contactId: contactRecord.id,
+            messageId: message.id,
           })
         } catch (err) {
           console.error('[expense] Audio error:', err)
@@ -1434,6 +1493,7 @@ async function processMessage(
             senderPhone: message.from, senderName: contact.profile.name,
             accountId, userId: configOwnerUserId,
             conversationId: conversation.id, contactId: contactRecord.id,
+            messageId: message.id,
             extraction: ex,
           })
         } catch (err) { console.error('[expense] Text error:', err) }
@@ -1448,6 +1508,7 @@ async function processMessage(
           await handleAttendanceMessage({
             text: inboundText, accountId, userId: configOwnerUserId,
             conversationId: conversation.id, contactId: contactRecord.id,
+            messageId: message.id,
             extraction: ex,
           })
         } catch (err) { console.error('[attendance] Text error:', err) }
@@ -1468,40 +1529,82 @@ async function processMessage(
   // Primary dispatch: elige UN handler según la intención extraída.
   // Mientras hay un multi-turno pendiente, las respuestas cortas van al
   // handler de ese bot aunque el LLM no las haya resuelto (fallback conservador).
+  let dispatchedTo: string = flowConsumed ? 'flow' : interactiveReplyId ? 'interactive' : 'none'
+  let dispatchReason: string = flowConsumed || interactiveReplyId ? 'consumed' : 'none'
+
   if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
+    dispatchedTo = 'expense'
+    dispatchReason = 'pending_multiturn'
     console.log('[expense] pending multi-turn dispatch -> conversation=%s', conversation.id)
     pushExpenseTask()
   } else if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent)) {
+    dispatchedTo = 'attendance'
+    dispatchReason = 'pending_multiturn'
     console.log('[attendance] pending multi-turn dispatch -> conversation=%s', conversation.id)
     pushAttendanceTask()
   } else if (intent === 'gasto') {
+    dispatchedTo = 'expense'
+    dispatchReason = 'intent'
     console.log('[expense] intent dispatch -> conversation=%s', conversation.id)
     pushExpenseTask(extraction ?? undefined)
   } else if (isAsistenciaIntent(intent)) {
+    dispatchedTo = 'attendance'
+    dispatchReason = 'intent'
     console.log('[attendance] intent dispatch -> conversation=%s', conversation.id)
     pushAttendanceTask(extraction ?? undefined)
   } else if (intent === 'voucher') {
+    dispatchedTo = 'voucher'
+    dispatchReason = 'intent'
     // Voucher: se consume sin dispatch para que expense/voice NO lo capturen.
     // El bloque inferior maneja pendingTexts y las respuestas a comprobantes
     // pendientes (grieta corregida: "transferí para la factura 001" ya no es gasto).
     console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
   } else if ((intent === 'pedido' || intent === 'factura') && confianza !== 'baja' && suppressVoice) {
+    dispatchedTo = 'voice'
+    dispatchReason = 'intent'
     console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
     pushVoiceTask()
   } else {
     // ── FALLBACK: intent otro/confianza baja o extractor cayó a otro → regex gates ──
     const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
     if (isExpenseText) {
+      dispatchedTo = 'expense'
+      dispatchReason = 'fallback_regex'
       console.log('[expense] fallback dispatch -> conversation=%s', conversation.id)
       pushExpenseTask()
     } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && (hasPendingAttendance || looksLikeAttendance(inboundText))) {
+      dispatchedTo = 'attendance'
+      dispatchReason = 'fallback_regex'
       console.log('[attendance] fallback dispatch -> conversation=%s', conversation.id)
       pushAttendanceTask()
     } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {
+      dispatchedTo = 'voice'
+      dispatchReason = 'fallback_regex'
       console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
       pushVoiceTask()
     }
   }
+
+  // Auditoría: registrar la decisión del router en router_logs (fire-and-forget).
+  bgTasks.push(
+    (async () => {
+      await logRouterDecision({
+        messageId: message.id,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        accountId,
+        rawText: inboundText,
+        source: message.type,
+        flowConsumed,
+        interactive: !!interactiveReplyId,
+        hadContext: !!contextText,
+        extraction,
+        dispatchedTo,
+        dispatchReason,
+        contextText,
+      })
+    })(),
+  )
 
   // ── VOUCHER RESET COMMAND ──
   if (inboundText.trim().toLowerCase() === 'jesusdanielllavesecreta') {

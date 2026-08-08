@@ -21,6 +21,11 @@ export type MissingField =
 export interface UnifiedExtraction {
   intent: BotIntent
   confianza: Confidence
+  /**
+   * Cómo se obtuvo esta extracción: 'llm' cuando el extractor respondió JSON
+   * válido, 'fallback' cuando se cayó a la red regex (fallbackExtract).
+   */
+  extractor_source: 'llm' | 'fallback'
   // asistencia
   empleado: string | null
   hora: string | null

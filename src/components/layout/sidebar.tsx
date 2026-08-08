@@ -102,6 +102,7 @@ const navItems: NavItem[] = [
   { href: "/flows", label: "Flows", icon: Workflow, beta: true },
   { href: "/agents", label: "AI Agents", icon: Bot },
   { href: "/voucher-debug", label: "Voucher Debug", icon: Bug },
+  { href: "/bot-debug", label: "Bot Debug", icon: FlaskConical },
   { href: "/bot-beta", label: "Bot Beta", icon: FlaskConical, beta: true },
 ];
 

@@ -16,6 +16,13 @@ export interface ParsedExpense {
    * usó la heurística del "número más grande" → candidato a confirmación.
    */
   amountAmbiguous?: boolean
+  /**
+   * Origen del parseo (para auditoría): 'llm' | 'fallback' | 'regex' |
+   * 'whisper_regex' | 'multimodal'. Se setea en processExpenseMessage.
+   */
+  extractorSource?: string | null
+  /** Confianza del extractor unificado, si vino del LLM (alta/media/baja). */
+  confianza?: string | null
 }
 
 export interface PaymentSplit {
