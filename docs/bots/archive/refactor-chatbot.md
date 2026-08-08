@@ -1,3 +1,16 @@
+# [ARCHIVO] Plan de refactor: chatbot de pedidos (Bastidores GAL)
+
+> **Estado:** ❌ Sin implementar — el chatbot está **deshabilitado**
+> (`CHATBOT_ENABLED = false` en `src/lib/ai/chatbot.ts:20`).
+> **Qué lo reemplaza:** el flujo de pedidos lo cubre **Voice Orders**
+> ([`voice-orders.md`](../voice-orders.md)); la arquitectura actual de todos los
+> sistemas está en [`architecture.md`](../architecture.md).
+>
+> Se conserva como registro del refactor planificado. Si algún día se reactiva
+> el chatbot, este es el plan a seguir (reglas de negocio de precios incluidas).
+
+---
+
 # Plan de refactor: chatbot de pedidos (Bastidores GAL)
 
 ## Instrucción para quien lo implemente

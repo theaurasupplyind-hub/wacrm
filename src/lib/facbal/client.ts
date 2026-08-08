@@ -611,13 +611,24 @@ export interface Employee {
   job_type: string
   base_salary: number
   entry_time?: string | null
+  exit_time?: string | null
   late_threshold?: number
 }
 
 export interface AttendanceRecord {
   employee_id: number
   date: string
-  status: string
+  status?: string
+  exit_time?: string
+}
+
+export interface AttendanceRow {
+  id: number
+  employee_id: number
+  date: string
+  status: string | null
+  exit_time: string | null
+  created_at?: string
 }
 
 export async function createAttendance(
@@ -637,6 +648,25 @@ export async function createAttendance(
     )
   }
   return res.json() as Promise<{ id: number } & AttendanceRecord>
+}
+
+export async function getAttendance(
+  employeeId: number,
+  date: string,
+): Promise<AttendanceRow[]> {
+  const url = `${apiUrl()}/attendance?employee_id=${employeeId}&date=${encodeURIComponent(date)}`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al consultar asistencia${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as AttendanceRow[]) : []
 }
 
 export async function listProviders(): Promise<Provider[]> {

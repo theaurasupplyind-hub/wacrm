@@ -1,10 +1,20 @@
+# [ARCHIVO] Integración: lectura automática de comprobantes (plan original)
+
+> **Estado:** ✅ Implementado — este es el plan original de integración.
+> **Qué lo reemplaza:** la implementación actual y las mejoras están en
+> [`vouchers.md`](../vouchers.md) (spec de matching + pipeline actual) y en
+> [`architecture.md`](../architecture.md) §3.
+>
+> Se conserva como registro histórico del trabajo original.
+
+---
+
 # Tarea: Integrar lectura automática de comprobantes de pago (WhatsApp → CRM → FacBal API)
 
 > **Nota (Jul 2026):** Este documento es el plan de integración original. La implementación
 > actual y las mejoras pendientes están documentadas en:
-> - [`invoice.md`](./invoice.md) — spec del matching (4 fases + pool + decisión)
-> - [`plan.md`](./plan.md) — plan de mejoras pendientes
-> - [`BOT_ARCHITECTURE.md`](./BOT_ARCHITECTURE.md) §3 — arquitectura actual
+> - [`vouchers.md`](../vouchers.md) — spec del matching (fases + pool + decisión) y pipeline actual
+> - [`architecture.md`](../architecture.md) §3 — arquitectura actual
 
 ## Contexto del sistema
 

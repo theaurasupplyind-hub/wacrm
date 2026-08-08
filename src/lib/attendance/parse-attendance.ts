@@ -1,4 +1,4 @@
-export type AttendanceStatusType = 'arrival' | 'vacaciones' | 'licencia' | 'ausente'
+export type AttendanceStatusType = 'arrival' | 'departure' | 'vacaciones' | 'licencia' | 'ausente'
 
 export interface ParsedAttendance {
   employeeName: string | null
@@ -9,7 +9,25 @@ export interface ParsedAttendance {
   statusType: AttendanceStatusType
 }
 
+// Keywords se usan en dos lugares: la detección corre sobre el texto
+// normalizado (sin acentos), el regex de extracción del nombre corre sobre
+// el texto crudo. Por eso conviene incluir ambas formas (acentuada y no).
 const ARRIVAL_KEYWORDS = ['llego', 'llegó', 'llegue', 'llegada', 'llegadas']
+
+const DEPARTURE_KEYWORDS = [
+  'salgo',
+  'sale',
+  'sali',
+  'salí',
+  'salida',
+  'me voy',
+  'me fui',
+  'termine',
+  'terminé',
+  'me retiro',
+  'chau',
+  'se fue',
+]
 
 const STATUS_KEYWORDS: Record<string, AttendanceStatusType> = {
   vacaciones: 'vacaciones',
@@ -43,6 +61,10 @@ function normalize(text: string): string {
 
 function todayString(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function extractTime(text: string): { time: string | null; remaining: string } {
@@ -92,11 +114,26 @@ function extractDate(text: string): { date: string | null; remaining: string } {
   return { date: null, remaining: text }
 }
 
-function extractEmployeeName(text: string, keywordPos: number): string | null {
+/**
+ * Captura el nombre del empleado antes o después de la keyword de asistencia.
+ * Ej: "juan llegó a las 8:30" (antes), "llegó juan" (después),
+ *     "se fue juan" (después), "juan se fue" (antes).
+ */
+function extractEmployeeName(text: string, keywordPos: number, keywordLen: number): string | null {
+  const candidates: string[] = []
   const before = text.slice(0, keywordPos).trim()
-  if (!before) return null
-  const tokens = before.split(/\s+/)
-  return tokens.join(' ') || null
+  if (before) candidates.push(before)
+
+  const after = text.slice(keywordPos + keywordLen).trim()
+  if (after) candidates.push(after)
+
+  for (const candidate of candidates) {
+    const tokens = candidate.split(/\s+/).filter(t => !FILLER_WORDS.has(t.toLowerCase()))
+    if (tokens.length > 0) {
+      return tokens.join(' ')
+    }
+  }
+  return null
 }
 
 function extractStatusEmployeeName(text: string, keywordPos: number): string | null {
@@ -107,6 +144,16 @@ function extractStatusEmployeeName(text: string, keywordPos: number): string | n
   return filtered.join(' ') || null
 }
 
+// Las keywords pueden contener acentos (ej: "llegó"), donde `\b` no genera
+// límite de palabra (JS \w no cubre caracteres acentuados). Usamos grupos de
+// límite explícitos (inicio/fin de texto o separador) para que el match
+// funcione sobre el texto crudo. El grupo 1 captura el separador inicial,
+// el grupo 2 la keyword.
+function buildIntentRegex(): RegExp {
+  const words = [...ARRIVAL_KEYWORDS, ...DEPARTURE_KEYWORDS].sort((a, b) => b.length - a.length)
+  return new RegExp('(^|[\\s.,;:!?¿¡])(' + words.map(escapeRegex).join('|') + ')(?=[\\s.,;:!?¿¡]|$)', 'i')
+}
+
 export function parseAttendance(text: string): ParsedAttendance {
   const raw = text.trim()
   if (!raw) {
@@ -115,11 +162,12 @@ export function parseAttendance(text: string): ParsedAttendance {
 
   const normalized = normalize(raw)
   const isArrival = ARRIVAL_KEYWORDS.some(k => normalized.includes(k))
+  const isDeparture = DEPARTURE_KEYWORDS.some(k => normalized.includes(k))
 
   const statusEntry = Object.entries(STATUS_KEYWORDS).find(([kw]) => normalized.includes(kw))
   const isStatus = !!statusEntry
 
-  if (!isArrival && !isStatus) {
+  if (!isArrival && !isDeparture && !isStatus) {
     return { employeeName: null, time: null, date: todayString(), raw, isAttendanceIntent: false, statusType: 'arrival' }
   }
 
@@ -129,17 +177,18 @@ export function parseAttendance(text: string): ParsedAttendance {
   date = parsedDate.date
   remaining = parsedDate.remaining
 
-  if (isArrival) {
+  if (isArrival || isDeparture) {
     let time: string | null = null
     const parsedTime = extractTime(remaining)
     time = parsedTime.time
     remaining = parsedTime.remaining
 
-    const keywordRegex = /\b(llego|llegó|llegue|llegada|llegadas)\b/i
-    const kwMatch = remaining.match(keywordRegex)
+    const kwMatch = remaining.match(buildIntentRegex())
     let employeeName: string | null = null
     if (kwMatch) {
-      employeeName = extractEmployeeName(remaining, kwMatch.index!)
+      const boundaryLen = kwMatch[1] ? kwMatch[1].length : 0
+      const kwStart = kwMatch.index! + boundaryLen
+      employeeName = extractEmployeeName(remaining, kwStart, kwMatch[2].length)
     }
 
     return {
@@ -148,7 +197,7 @@ export function parseAttendance(text: string): ParsedAttendance {
       date: date || todayString(),
       raw,
       isAttendanceIntent: true,
-      statusType: 'arrival',
+      statusType: isDeparture ? 'departure' : 'arrival',
     }
   }
 
@@ -178,5 +227,6 @@ export function parseAttendance(text: string): ParsedAttendance {
 export function looksLikeAttendance(text: string): boolean {
   const normalized = normalize(text)
   if (ARRIVAL_KEYWORDS.some(k => normalized.includes(k))) return true
+  if (DEPARTURE_KEYWORDS.some(k => normalized.includes(k))) return true
   return Object.keys(STATUS_KEYWORDS).some(k => normalized.includes(k))
 }

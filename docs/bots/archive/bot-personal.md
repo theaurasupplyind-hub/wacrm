@@ -1,8 +1,21 @@
+# [ARCHIVO] Plan: Bot personal multiuso
+
+> **Estado:** ⏳ Planificado — **no iniciado**. Documenta la visión de unificar
+> todos los intents del bot en un asistente con router por umbral de confianza.
+> **Qué lo reemplaza:** por ahora cada sistema funciona por separado
+> (ver [`architecture.md`](../architecture.md)); el roadmap general está en
+> [`architecture.md`](../architecture.md) §11.
+>
+> Se conserva como registro del plan de largo plazo. Referencias de código
+> actualizadas a las rutas vigentes.
+
+---
+
 # Plan: Bot personal multiuso (voice orders + gastos + asistencia + vouchers + facturas)
 
 > **Estado:** Planificado
 > **Alcance:** Bot de WhatsApp personal para un solo usuario (el dueño). Multiuso: pedidos, pagos, gastos, asistencia y consultas. A futuro se separará el bot de pedidos.
-> **Contexto técnico:** [`BOT_ARCHITECTURE.md`](./BOT_ARCHITECTURE.md) · [`voice-orders-pendientes.md`](./voice-orders-pendientes.md) · [`invoice.md`](./invoice.md)
+> **Contexto técnico:** [`architecture.md`](../architecture.md) · [`voice-orders.md`](../voice-orders.md) · [`vouchers.md`](../vouchers.md)
 
 ---
 
@@ -44,7 +57,7 @@ classifyIntent() (LLM) → {tipo, confianza}
 | 3 | Respuesta de variante | "lienzo profesional" | ✅ Voice orders (multi-turn `voice_context`) | — |
 | 4 | Confirmación / cancelación de presupuesto | "dale mandalo" | ✅ Voice orders | — |
 | 5 | Consulta de deudas / saldos | "cuánto debe el cliente X?" | ❌ | `factura` se manda a `processTextOrder` → se parsea como pedido |
-| 6 | Aviso de pago por imagen/PDF | comprobante adjunto | ✅ Voucher (matching 4 fases + stage a revisión) | — |
+| 6 | Aviso de pago por imagen/PDF | comprobante adjunto | ✅ Voucher (matching de fases + stage a revisión) | — |
 | 7 | Aviso de pago por texto | "transferí para la factura 001" | ❌ | No hay dispatch primario de voucher por texto; el fallback regex lo manda a **gastos** ("transferí" está en `EXPENSE_INTENT_KEYWORDS`, `parse-expense.ts:11`) |
 | 8 | Registro de gasto | "pagué 18 mil de luz" | ✅ Expense | — |
 | 9 | Gasto con categoría/proveedor ambiguo | — | ⚠️ | Fuzzy match por regex/tokens; pregunta 1 campo a la vez |
@@ -137,6 +150,9 @@ CREATE TABLE IF NOT EXISTS bot_escalations (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 ```
+
+> **Nota:** la migración `043` ya está ocupada por `043_voucher_atomic_pending.sql`.
+> Si se implementa este plan, usar el siguiente número libre.
 
 ---
 

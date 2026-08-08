@@ -207,3 +207,65 @@ describe('real-world message with saldo', () => {
     expect(result.saldo![1].payment_method).toBe('efectivo')
   })
 })
+
+describe('monto robusto — sufijos y formatos', () => {
+  it('parsea "18 mil" → 18000', () => {
+    const result = parseExpense('pagué 18 mil de luz')
+    expect(result.amount).toBe(18000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('parsea "18k" → 18000', () => {
+    const result = parseExpense('gasté 18k en insumos')
+    expect(result.amount).toBe(18000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('parsea "18 m" → 18000', () => {
+    const result = parseExpense('costo 18 m')
+    expect(result.amount).toBe(18000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('parsea formato AR "$18.000,00" → 18000', () => {
+    const result = parseExpense('pagué $18.000,00 de luz')
+    expect(result.amount).toBe(18000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('parsea formato US "18,000.00" → 18000', () => {
+    const result = parseExpense('transferí 18,000.00 por insumos')
+    expect(result.amount).toBe(18000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('ancla el monto a la palabra de dinero sin tomar días', () => {
+    const result = parseExpense('pagué el 16 de agosto 85000 de alquiler')
+    expect(result.amount).toBe(85000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('excluye cantidades chicas de la descripción', () => {
+    const result = parseExpense('compré 2 sillas y 1 mesa por 25000')
+    expect(result.amount).toBe(25000)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('no corta decimales con punto (350.75)', () => {
+    const result = parseExpense('pagué 350.75 en fletes')
+    expect(result.amount).toBe(350.75)
+    expect(result.amountAmbiguous).toBe(false)
+  })
+
+  it('marca amountAmbiguous cuando el monto no está anclado a una keyword', () => {
+    const result = parseExpense('el alquiler 85000 pagué')
+    expect(result.amount).toBe(85000)
+    expect(result.amountAmbiguous).toBe(true)
+  })
+
+  it('marca ambiguous cuando hay dos montos candidatos en la misma oración', () => {
+    const result = parseExpense('pagué 5000 en efectivo y 3000 pendientes')
+    expect(result.amount).toBe(5000)
+    expect(result.amountAmbiguous).toBe(true)
+  })
+})

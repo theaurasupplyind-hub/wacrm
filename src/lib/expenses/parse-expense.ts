@@ -36,32 +36,23 @@ function normalize(text: string): string {
     .trim()
 }
 
-function extractAmount(text: string): { amount: number | null; remaining: string } {
-  // Buscar "costo $1234" o "costo 1234"
-  const costMatch = text.match(/costo\s*[$\s]*(\d[\d.,]*)/i)
-  if (costMatch) {
-    const amount = parseNumber(costMatch[1])
-    if (amount && amount > 0) {
-      return { amount, remaining: text.replace(costMatch[0], ' ').trim() }
-    }
-  }
+// Palabras que indican un desembolso y suelen preceder al monto.
+// Se usan tanto sobre texto normalizado (detección) como sobre el texto crudo
+// (regex de anclaje), por eso se incluyen ambas formas (acentuada y no).
+const MONEY_ANCHOR_WORDS = [
+  'pagué', 'pague', 'pagó', 'pago', 'pagan', 'pagamos', 'pagar', 'pagaste', 'paguemos',
+  'gasté', 'gaste', 'gastó', 'gasto', 'gastamos',
+  'compré', 'compre', 'compramos',
+  'costó', 'costo', 'cuestó', 'cuesto', 'costaron',
+  'transferí', 'transferi', 'transfiera',
+  'deposité', 'deposite', 'depósito', 'deposito',
+  'aboné', 'abone', 'abono',
+  'puse', 'puso', 'pusimos',
+  'debemos', 'adeudamos', 'debo',
+]
 
-  // Encontrar TODOS los números y elegir el más grande (evita confundir días como "16")
-  const allNumMatches = [...text.matchAll(/(\d[\d.,]*)/g)]
-  let bestNum: string | null = null
-  let bestValue = 0
-  for (const m of allNumMatches) {
-    const val = parseNumber(m[1])
-    if (val && val > bestValue) {
-      bestValue = val
-      bestNum = m[1]
-    }
-  }
-  if (bestNum) {
-    return { amount: bestValue, remaining: text.replace(bestNum, ' ').trim() }
-  }
-
-  return { amount: null, remaining: text }
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function parseNumber(s: string): number | null {
@@ -96,6 +87,125 @@ function parseNumber(s: string): number | null {
 
   const n = parseFloat(cleaned)
   return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** "18 mil" / "18k" / "18 m" → 18000; "18.000,00" → 18000 */
+function parseNumberWithSuffix(s: string): number | null {
+  const m = s.trim().match(/^(\d[\d.,]*)\s*(mil|k|m)?$/i)
+  if (!m) return null
+  const base = parseNumber(m[1])
+  if (base === null) return null
+  const suffix = (m[2] || '').toLowerCase()
+  if (suffix === 'mil' || suffix === 'k' || suffix === 'm') {
+    return base * 1000
+  }
+  return base
+}
+
+interface FoundNumber {
+  match: string
+  value: number
+  index: number
+}
+
+/** Encuentra todos los montos candidatos (con sufijos mil/k/m) y su posición en el texto. */
+function findNumbers(text: string, baseIndex = 0): FoundNumber[] {
+  const out: FoundNumber[] = []
+  const numRegex = /(\d[\d.,]*)\s*(mil|k|m)?(?![.\d])/gi
+  for (const m of text.matchAll(numRegex)) {
+    const numStr = m[1] + (m[2] ? ' ' + m[2] : '')
+    const value = parseNumberWithSuffix(numStr)
+    if (value !== null) {
+      out.push({ match: m[0].trim(), value, index: baseIndex + m.index! })
+    }
+  }
+  return out
+}
+
+function removeAt(text: string, found: FoundNumber): string {
+  return text.slice(0, found.index) + ' ' + text.slice(found.index + found.match.length)
+}
+
+// Elige el monto mayor. La ventana del ancla suele contener también cantidades
+// chicas (días, unidades) que no deben considerarse ambigüedad real; solo la
+// marcamos si el segundo mayor es una fracción significativa del mayor (≥1/5).
+function pickBest(numbers: FoundNumber[]): { best: FoundNumber; ambiguous: boolean } {
+  const sorted = [...numbers].sort((a, b) => b.value - a.value)
+  const best = sorted[0]
+  const second = sorted[1]
+  const ambiguous = !!second && best.value < second.value * 5
+  return { best, ambiguous }
+}
+
+// El punto termina una oración solo si NO está dentro de un número
+// (ej: "5000." o "5000. Ayer" → termina; "350.75" / "18.000" → no).
+function truncateSentence(text: string, start: number): string {
+  const maxLen = 100
+  for (let i = start; i < text.length && i - start < maxLen; i++) {
+    const ch = text[i]
+    if (ch === '!' || ch === '?') return text.slice(start, i + 1)
+    if (ch === '\n' || ch === '\r') return text.slice(start, i)
+    if (ch === '.') {
+      const next = text[i + 1]
+      const nextIsDigit = next !== undefined && /\d/.test(next)
+      if (!nextIsDigit) {
+        return text.slice(start, i + 1)
+      }
+    }
+  }
+  return text.slice(start, start + maxLen)
+}
+
+function extractAmount(text: string): { amount: number | null; remaining: string; ambiguous: boolean } {
+  // 1. Monto anclado a una palabra de dinero ("pagué $X", "costo X", "gasté X").
+  //    Recorremos cada keyword de desembolso; la ventana de su oración se corta
+  //    en el primer punto/!? que no sea parte de un número. Dentro de la ventana
+  //    elegimos el número más grande (evita capturar días o cantidades chicas).
+  const anchorVerbRegex = new RegExp(
+    '(^|[^\\wáéíóúñ])(' + MONEY_ANCHOR_WORDS.map(escapeRegex).join('|') + ')',
+    'gi',
+  )
+  for (const verbMatch of text.matchAll(anchorVerbRegex)) {
+    const verbEnd = verbMatch.index! + verbMatch[0].length
+    const windowText = truncateSentence(text, verbEnd)
+    const numbers = findNumbers(windowText, verbEnd)
+    if (numbers.length > 0) {
+      const { best, ambiguous } = pickBest(numbers)
+      return {
+        amount: best.value,
+        remaining: removeAt(text, best).replace(/\s+/g, ' ').trim(),
+        ambiguous,
+      }
+    }
+  }
+
+  // 2. Monto con símbolo "$" (sin keyword previa)
+  const dollarMatch = text.match(/[\$]\s*(\d[\d.,]*)\s*(mil|k|m)?(?![.\d])/i)
+  if (dollarMatch) {
+    const numStr = dollarMatch[1] + (dollarMatch[2] ? ' ' + dollarMatch[2] : '')
+    const amount = parseNumberWithSuffix(numStr)
+    if (amount !== null) {
+      return {
+        amount,
+        remaining: text.replace(dollarMatch[0], ' ').replace(/\s+/g, ' ').trim(),
+        ambiguous: false,
+      }
+    }
+  }
+
+  // 3. Heurística: el número más grande de todo el texto → ambiguo (candidato
+  //    a confirmación, ya que no quedó anclado a una palabra de dinero).
+  const numbers = findNumbers(text)
+  if (numbers.length > 0) {
+    const best = numbers.reduce((a, b) => (b.value > a.value ? b : a))
+    return {
+      amount: best.value,
+      remaining: removeAt(text, best).replace(/\s+/g, ' ').trim(),
+      ambiguous: true,
+    }
+  }
+
+  return { amount: null, remaining: text, ambiguous: false }
 }
 
 function detectPaymentMethod(text: string): { method: string | null; remaining: string } {
@@ -369,12 +479,14 @@ export function parseExpense(text: string): ParsedExpense {
   let splitResult = detectSplitPayments(remaining)
   ;({ payments, remaining } = splitResult)
   let amount: number | null = null
+  let amountAmbiguous = false
   if (payments && payments.length > 1) {
     amount = payments.reduce((sum, p) => sum + p.amount, 0)
     remaining = splitResult.remaining
   } else {
-    let amountResult = extractAmount(remaining)
+    const amountResult = extractAmount(remaining)
     amount = amountResult.amount
+    amountAmbiguous = amountResult.ambiguous
     remaining = amountResult.remaining
   }
 
@@ -416,6 +528,7 @@ export function parseExpense(text: string): ParsedExpense {
     reference: null,
     date: date || todayString(),
     isExpenseIntent,
+    amountAmbiguous,
     raw,
   }
 }

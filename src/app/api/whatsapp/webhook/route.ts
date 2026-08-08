@@ -14,8 +14,13 @@ import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult, IntentClassification } from '@/lib/voice-orders/types'
 import { classifyIntent } from '@/lib/ai/intent-classifier'
-import { processExpenseMessage, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
-import { processAttendanceMessage, looksLikeAttendance } from '@/lib/attendance'
+import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
+import {
+  processAttendanceMessage,
+  processAttendanceConfirmReply,
+  looksLikeAttendance,
+  loadAttendanceContext,
+} from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
 import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
@@ -827,6 +832,7 @@ async function handleAttendanceMessage(args: {
 }): Promise<boolean> {
   try {
     const result = await processAttendanceMessage({
+      db: supabaseAdmin(),
       text: args.text,
       accountId: args.accountId,
       userId: args.userId,
@@ -841,6 +847,37 @@ async function handleAttendanceMessage(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[attendance] handler error:', msg)
+    return false
+  }
+}
+
+async function handleAttendanceConfirmReply(args: {
+  replyId: string
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}): Promise<boolean> {
+  try {
+    const result = await processAttendanceConfirmReply(
+      {
+        db: supabaseAdmin(),
+        text: '',
+        accountId: args.accountId,
+        userId: args.userId,
+        conversationId: args.conversationId,
+        contactId: args.contactId,
+      },
+      args.replyId,
+    )
+    if (result.handled) {
+      console.log('[attendance] confirm reply handled conversation=%s reply=%s', args.conversationId, args.replyId)
+      return true
+    }
+    return false
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[attendance] confirm reply handler error:', msg)
     return false
   }
 }
@@ -883,6 +920,44 @@ async function handleExpenseMessage(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] handler error:', msg)
+    return false
+  }
+}
+
+async function handleExpenseConfirmReply(args: {
+  replyId: string
+  accessToken: string
+  senderPhone: string
+  senderName: string
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+}): Promise<boolean> {
+  try {
+    const result = await processExpenseConfirmReply(
+      {
+        db: supabaseAdmin(),
+        messageType: 'text',
+        text: '',
+        accessToken: args.accessToken,
+        senderPhone: args.senderPhone,
+        senderName: args.senderName,
+        accountId: args.accountId,
+        userId: args.userId,
+        conversationId: args.conversationId,
+        contactId: args.contactId,
+      },
+      args.replyId,
+    )
+    if (result.handled) {
+      console.log('[expense] confirm reply handled conversation=%s reply=%s', args.conversationId, args.replyId)
+      return true
+    }
+    return false
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[expense] confirm reply handler error:', msg)
     return false
   }
 }
@@ -947,7 +1022,15 @@ async function processMessage(
 
   // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
-  const hasPendingExpense = expenseCtx.stage === 'collecting' && !!expenseCtx.pendingExpense
+  const hasPendingExpense =
+    !!expenseCtx.pendingExpense &&
+    (expenseCtx.stage === 'collecting' || expenseCtx.stage === 'confirming')
+
+  // Cargar estado multi-turn de asistencia (empleado pendiente / corrección de hora)
+  const attendanceCtx = await loadAttendanceContext(supabaseAdmin(), conversation.id)
+  const hasPendingAttendance =
+    (!!attendanceCtx.pendingType && !!attendanceCtx.pendingEmployee) ||
+    attendanceCtx.awaitingCorrection === true
 
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
@@ -1048,6 +1131,60 @@ async function processMessage(
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+
+  // ============================================================
+  // Interactive replies de los bots multi-turn (asistencia/gastos).
+  //
+  // Un tap a un botón [✅]/[✏️]/[❌] llega como mensaje `interactive`.
+  // Se maneja AQUÍ, antes de `dispatchInboundToFlows`, y se marca como
+  // consumido para que el flow runner / automaciones / AI reply no se
+  // lo arrebaten (la respuesta es la conclusión de un multi-turno del bot,
+  // no navegación de menú).
+  // ============================================================
+  let interactiveConsumed = false
+  if (interactiveReplyId) {
+    const expenseConfirming = expenseCtx.stage === 'confirming' && !!expenseCtx.pendingExpense
+    const attendanceCorrecting = attendanceCtx.awaitingCorrection === true
+
+    if (expenseConfirming) {
+      interactiveConsumed = true
+      bgTasks.push(
+        (async () => {
+          try {
+            await handleExpenseConfirmReply({
+              replyId: interactiveReplyId,
+              accessToken,
+              senderPhone: message.from,
+              senderName: contact.profile.name,
+              accountId,
+              userId: configOwnerUserId,
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+            })
+          } catch (err) {
+            console.error('[expense] Confirm reply error:', err)
+          }
+        })()
+      )
+    } else if (attendanceCorrecting) {
+      interactiveConsumed = true
+      bgTasks.push(
+        (async () => {
+          try {
+            await handleAttendanceConfirmReply({
+              replyId: interactiveReplyId,
+              accountId,
+              userId: configOwnerUserId,
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+            })
+          } catch (err) {
+            console.error('[attendance] Confirm reply error:', err)
+          }
+        })()
+      )
+    }
+  }
 
   // ============================================================
   // Voucher processing (comprobante de pago).
@@ -1180,26 +1317,28 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
-  const flowResult = await dispatchInboundToFlows({
-    accountId,
-    userId: configOwnerUserId,
-    contactId: contactRecord.id,
-    conversationId: conversation.id,
-    message:
-      interactiveReplyId
-        ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
-        : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
-    isFirstInboundMessage,
-  })
+  const flowResult = interactiveConsumed
+    ? { consumed: true }
+    : await dispatchInboundToFlows({
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        message:
+          interactiveReplyId
+            ? {
+                kind: 'interactive_reply',
+                reply_id: interactiveReplyId,
+                reply_title: contentText ?? '',
+                meta_message_id: message.id,
+              }
+            : {
+                kind: 'text',
+                text: contentText ?? message.text?.body ?? '',
+                meta_message_id: message.id,
+              },
+        isFirstInboundMessage,
+      })
   const flowConsumed = flowResult.consumed
 
   // Fire any automations that react to this webhook event. All dispatches
@@ -1299,7 +1438,7 @@ async function processMessage(
         } catch (err) { console.error('[attendance] Text error:', err) }
       })()
     )
-  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed, mediaConsumedByVoucher })) {
+  } else if (intentOk && (intentTipo === 'pedido' || intentTipo === 'factura') && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })) {
     console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
     bgTasks.push(
       handleVoiceText({
@@ -1325,7 +1464,7 @@ async function processMessage(
           } catch (err) { console.error('[expense] Text error:', err) }
         })()
       )
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeAttendance(inboundText)) {
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && (hasPendingAttendance || looksLikeAttendance(inboundText))) {
       console.log('[attendance] fallback dispatch -> conversation=%s', conversation.id)
       bgTasks.push(
         (async () => {
@@ -1337,7 +1476,7 @@ async function processMessage(
           } catch (err) { console.error('[attendance] Text error:', err) }
         })()
       )
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, flowConsumed, mediaConsumedByVoucher })) {
+    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })) {
       console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
       bgTasks.push(
         handleVoiceText({

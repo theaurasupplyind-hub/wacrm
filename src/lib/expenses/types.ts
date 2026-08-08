@@ -11,6 +11,11 @@ export interface ParsedExpense {
   date: string | null // YYYY-MM-DD
   isExpenseIntent: boolean
   raw: string
+  /**
+   * True cuando el parser no pudo anclar el monto a una palabra de dinero y
+   * usó la heurística del "número más grande" → candidato a confirmación.
+   */
+  amountAmbiguous?: boolean
 }
 
 export interface PaymentSplit {

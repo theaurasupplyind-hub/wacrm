@@ -1,14 +1,18 @@
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { parseExpense } from './parse-expense'
 import { fuzzyMatchExpense, resolveExpenseCategory } from './fuzzy-match'
 import { executeExpense } from './execute-expense'
-import { buildExpenseConfirmation } from './confirm-expense'
+import { buildExpenseConfirmation, buildExpensePreview } from './confirm-expense'
 import { transcribeExpense } from './transcribe-expense'
 import { extractExpenseData } from './extract-expense'
 import { loadExpenseContext, saveExpenseContext, clearExpenseContext } from './context'
 import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult, PaymentSplit, ExpenseContextState } from './types'
 import type { SupabaseClient } from '@supabase/supabase-js'
+
+export const EXP_CONFIRM_ID = 'exp_confirm'
+export const EXP_CORRECT_ID = 'exp_correct'
+export const EXP_CANCEL_ID = 'exp_cancel'
 
 export interface ProcessExpenseMessageArgs {
   db: SupabaseClient
@@ -131,6 +135,23 @@ async function handleCollectingReply(
     pending.amount = num
   } else if (ctx.missingField === 'category') {
     pending.category = reply
+  } else if (!ctx.missingField) {
+    // Viene de ✏️ Corregir: el usuario elige qué campo tocar.
+    const cleaned = reply.toLowerCase()
+    if (cleaned === 'cancelar' || cleaned === 'no') {
+      await clearExpenseContext(args.db, args.conversationId)
+      return { handled: true, text: 'Listo, no guardé el gasto. 👍' }
+    }
+    if (cleaned.includes('monto') || cleaned.includes('importe') || cleaned.includes('plata')) {
+      await saveExpenseContext(args.db, args.conversationId, { ...ctx, missingField: 'amount' })
+      return { handled: true, text: '¿Cuál es el monto correcto? (solo números)' }
+    }
+    const num = parseFloatSafe(reply)
+    if (num) {
+      pending.amount = num
+    } else {
+      pending.category = reply
+    }
   }
 
   const match = await fuzzyMatchExpense(pending)
@@ -157,6 +178,126 @@ async function handleCollectingReply(
   const text = buildExpenseConfirmation(result)
   await sendTextResponse(args, text)
   return { handled: true, expenseId: result.expenseId, text }
+}
+
+/**
+ * Determina si un gasto parseado necesita confirmación antes de guardarse:
+ * - el parser no pudo anclar el monto a una palabra de dinero (dudoso);
+ * - la categoría fue creada automáticamente (nueva);
+ * - el proveedor/empleado no matcheó con ninguna entidad conocida.
+ */
+function isExpenseAmbiguous(parsed: ParsedExpense, match: ExpenseFuzzyMatch): boolean {
+  if (parsed.amountAmbiguous) return true
+  if (match.categoryWasCreated) return true
+  if (parsed.provider && !match.providerId && !match.employeeId) return true
+  if (parsed.employee && !match.employeeId) return true
+  return false
+}
+
+async function sendExpenseConfirmButtons(args: ProcessExpenseMessageArgs, text: string) {
+  try {
+    await engineSendInteractiveButtons({
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+      bodyText: text,
+      buttons: [
+        { id: EXP_CONFIRM_ID, title: '✅ Confirmar' },
+        { id: EXP_CORRECT_ID, title: '✏️ Corregir' },
+        { id: EXP_CANCEL_ID, title: '❌ Cancelar' },
+      ],
+    })
+  } catch (err) {
+    console.error('[expense] confirm buttons error:', err)
+    await sendTextResponse(args, text)
+  }
+}
+
+async function executeAndConfirmExpense(
+  args: ProcessExpenseMessageArgs,
+  parsed: ParsedExpense,
+  match: ExpenseFuzzyMatch,
+  mediaUrl: string | null,
+): Promise<ProcessExpenseResult> {
+  const result = await executeExpense(parsed, match, {
+    source: 'whatsapp',
+    createdByContactId: parseInt(args.contactId, 10) || null,
+    mediaUrl,
+    mediaId: args.mediaId || null,
+  })
+
+  await createSaldoExpense(parsed, match, result, args, mediaUrl)
+
+  // Auditoría
+  try {
+    await args.db.from('expense_extractions').insert({
+      message_id: args.mediaId || undefined,
+      contact_id: args.contactId,
+      conversation_id: args.conversationId,
+      raw_text: parsed.raw,
+      extracted_amount: parsed.amount,
+      extracted_category: parsed.category,
+      extracted_provider: parsed.provider,
+      extracted_employee: parsed.employee,
+      extracted_payment_method: parsed.payment_method,
+      extracted_reference: parsed.reference,
+      match_status: result.error ? 'error' : 'confirmed',
+      matched_expense_id: result.expenseId,
+      error_message: result.error || undefined,
+    })
+  } catch (auditErr) {
+    console.error('[expense] audit insert error:', auditErr)
+  }
+
+  const text = buildExpenseConfirmation(result)
+  await sendTextResponse(args, text)
+  return { handled: true, expenseId: result.expenseId, text }
+}
+
+/**
+ * Maneja el tap a los botones de confirmación del gasto:
+ * ✅ Confirmar → ejecuta + audita + confirma.
+ * ✏️ Corregir → vuelve a `collecting` y pregunta qué campo tocar.
+ * ❌ Cancelar (o cualquier otra reply) → limpia el contexto.
+ */
+export async function processExpenseConfirmReply(
+  args: ProcessExpenseMessageArgs,
+  replyId: string,
+): Promise<ProcessExpenseResult> {
+  const ctx = await loadExpenseContext(args.db, args.conversationId)
+  if (ctx.stage !== 'confirming' || !ctx.pendingExpense) {
+    return { handled: false }
+  }
+
+  const parsed = ctx.pendingExpense
+  const match = ctx.pendingMatch
+
+  if (replyId === EXP_CONFIRM_ID) {
+    if (!match) {
+      await clearExpenseContext(args.db, args.conversationId)
+      return { handled: true, text: 'No pude recuperar el gasto pendiente. Escribílo de nuevo, por favor.' }
+    }
+    await clearExpenseContext(args.db, args.conversationId)
+    return executeAndConfirmExpense(args, parsed, match, null)
+  }
+
+  if (replyId === EXP_CORRECT_ID) {
+    await saveExpenseContext(args.db, args.conversationId, {
+      ...ctx,
+      stage: 'collecting',
+      awaitingConfirmation: false,
+      missingField: null,
+    })
+    const msg = '¿Qué querés corregir? Escribí el monto (solo números) o la categoría correcta.'
+    await sendTextResponse(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  await clearExpenseContext(args.db, args.conversationId)
+  const msg = 'Listo, no guardé el gasto. 👍'
+  await sendTextResponse(args, msg)
+  return { handled: true, text: msg }
 }
 
 export async function processExpenseMessage(
@@ -229,44 +370,20 @@ export async function processExpenseMessage(
       return { handled: true, text: msg }
     }
 
-    const result = await executeExpense(parsed, match, {
-      source: 'whatsapp',
-      createdByContactId: parseInt(args.contactId, 10) || null,
-      mediaUrl,
-      mediaId: args.mediaId || null,
-    })
-
-    await createSaldoExpense(parsed, match, result, args, mediaUrl)
-
-    // Auditoría
-    try {
-      await args.db.from('expense_extractions').insert({
-        message_id: args.mediaId || undefined,
-        contact_id: args.contactId,
-        conversation_id: args.conversationId,
-        raw_text: parsed.raw,
-        extracted_amount: parsed.amount,
-        extracted_category: parsed.category,
-        extracted_provider: parsed.provider,
-        extracted_employee: parsed.employee,
-        extracted_payment_method: parsed.payment_method,
-        extracted_reference: parsed.reference,
-        match_status: result.error ? 'error' : 'confirmed',
-        matched_expense_id: result.expenseId,
-        error_message: result.error || undefined,
+    // Ambigüedad → confirmación interactiva en lugar de auto-guardar
+    if (isExpenseAmbiguous(parsed, match)) {
+      await saveExpenseContext(args.db, args.conversationId, {
+        stage: 'confirming',
+        pendingExpense: parsed,
+        pendingMatch: match,
+        awaitingConfirmation: true,
       })
-    } catch (auditErr) {
-      console.error('[expense] audit insert error:', auditErr)
+      const preview = buildExpensePreview(parsed)
+      await sendExpenseConfirmButtons(args, preview)
+      return { handled: true, text: preview }
     }
 
-    const text = buildExpenseConfirmation(result)
-    await sendTextResponse(args, text)
-
-    return {
-      handled: true,
-      expenseId: result.expenseId,
-      text,
-    }
+    return executeAndConfirmExpense(args, parsed, match, mediaUrl)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] process error:', msg)
