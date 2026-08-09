@@ -18,6 +18,7 @@ import {
 import {
   parseAttendance,
   looksLikeAttendance,
+  extractAttendanceDate,
   type AttendanceStatusType,
   type ParsedAttendance,
 } from './parse-attendance'
@@ -481,7 +482,7 @@ function extractionToParsedAttendance(extraction: UnifiedExtraction, raw: string
   return {
     employeeName: extraction.empleado,
     time: extraction.hora,
-    date: extraction.fecha || todayString(),
+    date: extractAttendanceDate(raw) || extraction.fecha || todayString(),
     raw,
     isAttendanceIntent: true,
     statusType,

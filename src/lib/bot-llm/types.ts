@@ -61,4 +61,19 @@ export interface UnifiedExtraction {
   dudoso: boolean
   razon_duda: string | null
   raw: string
+  // ── Debug (persistido en router_logs.debug_info.extraction) ──
+  /**
+   * Texto crudo devuelto por el LLM antes de extraer/sanitizar el JSON.
+   * Solo presente cuando extractor_source === 'llm' o cuando el fallback
+   * fue causado por un problema del LLM (no se setea si nunca se llamó).
+   */
+  llm_raw?: string | null
+  /** JSON parseado tal como lo devolvió el LLM, ANTES de sanitizeParsed. */
+  llm_raw_json?: Record<string, unknown> | null
+  /** Motivo por el cual se cayó al fallback regex (o null si el LLM respondió OK). */
+  fallback_reason?: 'llm_call_failed' | 'no_json' | 'invalid_json' | 'schema_out_of_range' | null
+  /** Mensaje de error/detalle asociado al fallback (si aplica). */
+  llm_error?: string | null
+  /** Tokens usados en la llamada al LLM (si se llegó a llamar). */
+  llm_usage?: { prompt_tokens: number; completion_tokens: number } | null
 }

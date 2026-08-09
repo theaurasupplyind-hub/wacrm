@@ -37,6 +37,19 @@ interface RouterLog {
   created_at: string
 }
 
+interface ExtractionDebug {
+  extractor_source?: string | null
+  llm_raw?: string | null
+  llm_raw_json?: unknown
+  fallback_reason?: 'llm_call_failed' | 'no_json' | 'invalid_json' | 'schema_out_of_range' | null
+  llm_error?: string | null
+  llm_usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+  intent?: string | null
+  confianza?: string | null
+  dudoso?: boolean
+  razon_duda?: string | null
+}
+
 interface ExpenseLog {
   id: string
   message_id: string | null
@@ -93,6 +106,13 @@ const WARN = new Set([
   'ambiguous', 'collecting', 'ask_employee', 'ask_time', 'awaiting_correction',
   'pending', 'none', 'fallback', 'fallback_regex', 'otro', 'baja', 'media',
 ])
+
+const FALLBACK_REASON_LABELS: Record<NonNullable<ExtractionDebug['fallback_reason']>, string> = {
+  llm_call_failed: 'la llamada al LLM falló',
+  no_json: 'el LLM no devolvió JSON',
+  invalid_json: 'JSON inválido',
+  schema_out_of_range: 'schema fuera de rango',
+}
 
 function statusVariant(status: string | null | undefined): 'default' | 'secondary' | 'destructive' | 'outline' {
   const s = status || ''
@@ -151,6 +171,8 @@ function DetailBlock({ title, value }: { title: string; value: unknown }) {
 }
 
 function RouterDetail({ row }: { row: RouterLog }) {
+  const extDebug = (row.debug_info?.extraction ?? null) as ExtractionDebug | null
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
       <Field label="Intent" value={row.intent} />
@@ -162,6 +184,28 @@ function RouterDetail({ row }: { row: RouterLog }) {
       <Field label="Dudoso" value={row.dudoso ? 'sí' : 'no'} />
       <Field label="Faltan campos" value={row.faltan_campos?.join(', ')} />
       {row.dispatch_reason && <Field label="Razón" value={row.dispatch_reason} />}
+      {extDebug?.llm_usage && (
+        <Field
+          label="Tokens LLM"
+          value={`prompt=${extDebug.llm_usage.prompt_tokens ?? '?'} complet=${extDebug.llm_usage.completion_tokens ?? '?'}`}
+        />
+      )}
+      {extDebug?.fallback_reason && (
+        <div className="col-span-2 md:col-span-4 bg-destructive/10 text-destructive text-sm px-3 py-2 rounded-lg">
+          ⚠ Fallback: {FALLBACK_REASON_LABELS[extDebug.fallback_reason]}
+          {extDebug.llm_error ? ` — ${extDebug.llm_error}` : ''}
+        </div>
+      )}
+      {extDebug?.llm_raw && (
+        <div className="col-span-2 md:col-span-4">
+          <DetailBlock title="Respuesta cruda del LLM" value={extDebug.llm_raw} />
+        </div>
+      )}
+      {extDebug?.llm_raw_json != null && (
+        <div className="col-span-2 md:col-span-4">
+          <DetailBlock title="JSON crudo del LLM (sin sanitizar)" value={extDebug.llm_raw_json} />
+        </div>
+      )}
       {row.debug_info?.context_text && (
         <div className="col-span-2 md:col-span-4">
           <DetailBlock title="Contexto enviado al LLM" value={row.debug_info.context_text} />

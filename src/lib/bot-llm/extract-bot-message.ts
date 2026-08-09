@@ -78,7 +78,7 @@ Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con su
 - "proveedor": destinatario del pago si se menciona.
 - "empleado_gasto": solo si es pago de sueldo a un empleado. Si hay "empleado_gasto", poné "categoria": null (la categoría correcta es "Sueldos y salarios").
 - "metodo_pago": efectivo, transferencia, débito, crédito, mercado pago, qr, o null.
-- "fecha": YYYY-MM-DD si se menciona ("15/7/26"→"2026-07-15", "ayer", "hoy"); si no, null.
+- "fecha": YYYY-MM-DD si se menciona una fecha explícita ("15/7/26"→"2026-07-15", "ayer", "hoy", "09 del 08", "9 de Agosto"); si el mensaje dice un día de la semana ("el lunes"), dejá "fecha": null.
 
 === faltan_campos ===
 
@@ -203,6 +203,17 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
   }
 }
 
+/**
+ * Adjunta metadatos de debug (respuesta cruda del LLM y/o motivo de fallback)
+ * a una extracción ya resuelta, manteniendo inmutable la base.
+ */
+function withDebug(
+  extraction: UnifiedExtraction,
+  extra: Partial<Pick<UnifiedExtraction, 'llm_raw' | 'llm_raw_json' | 'fallback_reason' | 'llm_error' | 'llm_usage'>>,
+): UnifiedExtraction {
+  return { ...extraction, ...extra }
+}
+
 /** Normaliza un item de "multipleExpenses" devuelto por el LLM. */
 function sanitizeMultiExpenseItem(raw: unknown): MultiExpenseItem | null {
   if (!raw || typeof raw !== 'object') return null
@@ -239,6 +250,7 @@ export async function extractBotMessage(
     : raw
 
   let rawText: string
+  let usage: { prompt_tokens: number; completion_tokens: number } | null = null
   try {
     const result = await callOpenRouter({
       systemPrompt: EXTRACT_PROMPT,
@@ -248,16 +260,24 @@ export async function extractBotMessage(
       maxTokens: 1100,
     })
     rawText = result.text
+    usage = result.usage
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] LLM call failed:', msg)
-    return fallbackExtract(raw)
+    return withDebug(fallbackExtract(raw), {
+      fallback_reason: 'llm_call_failed',
+      llm_error: msg,
+    })
   }
 
   const jsonStr = extractJson(rawText)
   if (!jsonStr) {
     console.error('[extractBotMessage] No JSON in response:', rawText.slice(0, 200))
-    return fallbackExtract(raw)
+    return withDebug(fallbackExtract(raw), {
+      llm_raw: rawText,
+      llm_usage: usage,
+      fallback_reason: 'no_json',
+    })
   }
 
   let parsed: Record<string, unknown>
@@ -265,14 +285,29 @@ export async function extractBotMessage(
     parsed = JSON.parse(jsonStr)
   } catch {
     console.error('[extractBotMessage] Invalid JSON:', jsonStr.slice(0, 200))
-    return fallbackExtract(raw)
+    return withDebug(fallbackExtract(raw), {
+      llm_raw: rawText,
+      llm_usage: usage,
+      fallback_reason: 'invalid_json',
+      llm_error: jsonStr.slice(0, 200),
+    })
   }
 
   try {
-    return sanitizeParsed(parsed, raw)
+    return withDebug(sanitizeParsed(parsed, raw), {
+      llm_raw: rawText,
+      llm_raw_json: parsed,
+      llm_usage: usage,
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] Sanitization failed:', msg)
-    return fallbackExtract(raw)
+    return withDebug(fallbackExtract(raw), {
+      llm_raw: rawText,
+      llm_raw_json: parsed,
+      llm_usage: usage,
+      fallback_reason: 'schema_out_of_range',
+      llm_error: msg,
+    })
   }
 }

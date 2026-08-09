@@ -5,6 +5,27 @@ function today(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+function lastWeekdayIso(idx: number): string {
+  const now = new Date()
+  const diff = (now.getDay() - idx + 7) % 7
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function lastMonday(): string {
+  return lastWeekdayIso(1)
+}
+
+function daysAgo(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function monthDayIso(month: number, day: number, year?: number): string {
+  return `${year ?? new Date().getFullYear()}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
 describe('parseAttendance — llegada', () => {
   it('detects "llegó juan a las 8:30" (nombre después de keyword)', () => {
     const r = parseAttendance('llegó juan a las 8:30')
@@ -102,6 +123,81 @@ describe('parseAttendance — estados', () => {
     const r = parseAttendance('juan ausente hoy')
     expect(r.statusType).toBe('ausente')
     expect(r.employeeName).toBe('juan')
+  })
+})
+
+describe('parseAttendance — fechas', () => {
+  it('"jesus llego a las 11am el lunes" → último lunes + 11:00', () => {
+    const r = parseAttendance('jesus llego a las 11am el lunes')
+    expect(r.isAttendanceIntent).toBe(true)
+    expect(r.statusType).toBe('arrival')
+    expect(r.employeeName).toBe('jesus')
+    expect(r.time).toBe('11:00')
+    expect(r.date).toBe(lastMonday())
+  })
+
+  it('"juan llego a las 8:30 el lunes" → último lunes', () => {
+    const r = parseAttendance('juan llego a las 8:30 el lunes')
+    expect(r.employeeName).toBe('juan')
+    expect(r.time).toBe('08:30')
+    expect(r.date).toBe(lastMonday())
+  })
+
+  it('"juan salio a las 3 pm" → 15:00', () => {
+    const r = parseAttendance('juan salio a las 3 pm')
+    expect(r.statusType).toBe('departure')
+    expect(r.time).toBe('15:00')
+  })
+
+  it('"juan llego el 09 del 08" → fecha exacta', () => {
+    const r = parseAttendance('juan llego el 09 del 08')
+    expect(r.employeeName).toBe('juan')
+    expect(r.date).toBe(monthDayIso(8, 9))
+  })
+
+  it('"juan llego 9 de agosto" → fecha exacta', () => {
+    const r = parseAttendance('juan llego 9 de agosto')
+    expect(r.employeeName).toBe('juan')
+    expect(r.date).toBe(monthDayIso(8, 9))
+  })
+
+  it('"juan llego el 9 de Agosto de 2025" → año explícito', () => {
+    const r = parseAttendance('juan llego el 9 de Agosto de 2025')
+    expect(r.date).toBe('2025-08-09')
+  })
+
+  it('"juan llego 9 del 08 del 25" → año corto 2025', () => {
+    const r = parseAttendance('juan llego 9 del 08 del 25')
+    expect(r.date).toBe('2025-08-09')
+  })
+
+  it('"juan llego 09/08/2026" → fecha con barra', () => {
+    const r = parseAttendance('juan llego 09/08/2026')
+    expect(r.date).toBe('2026-08-09')
+  })
+
+  it('"juan llego ayer" → ayer', () => {
+    const r = parseAttendance('juan llego ayer')
+    expect(r.date).toBe(daysAgo(1))
+  })
+
+  it('fecha exacta gana y corrige el día de semana: "el lunes 09 del 08 llego juan"', () => {
+    const r = parseAttendance('el lunes 09 del 08 llego juan')
+    expect(r.employeeName).toBe('juan')
+    expect(r.date).toBe(monthDayIso(8, 9))
+  })
+
+  it('"juan vacaciones el lunes" → último lunes', () => {
+    const r = parseAttendance('juan vacaciones el lunes')
+    expect(r.statusType).toBe('vacaciones')
+    expect(r.employeeName).toBe('juan')
+    expect(r.date).toBe(lastMonday())
+  })
+
+  it('sin fecha sigue cayendo a hoy: "maria llegó 9:00"', () => {
+    const r = parseAttendance('maria llegó 9:00')
+    expect(r.time).toBe('09:00')
+    expect(r.date).toBe(today())
   })
 })
 

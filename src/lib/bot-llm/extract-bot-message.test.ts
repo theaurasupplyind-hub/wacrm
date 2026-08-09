@@ -111,3 +111,55 @@ describe('extractBotMessage — fallback ante fallos', () => {
     expect(mockedCall).not.toHaveBeenCalled()
   })
 })
+
+describe('extractBotMessage — metadatos de debug', () => {
+  beforeEach(() => {
+    mockedCall.mockClear()
+  })
+
+  it('guarda la respuesta cruda y el JSON sin sanitizar en el éxito', async () => {
+    const payload = {
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    }
+    mockJson(payload)
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.fallback_reason).toBeUndefined()
+    expect(r.llm_raw).toBe(JSON.stringify(payload))
+    expect(r.llm_raw_json).toEqual(payload)
+    expect(r.llm_usage).toEqual({ prompt_tokens: 1, completion_tokens: 1 })
+  })
+
+  it('no_json → fallback con llm_raw y motivo', async () => {
+    mockedCall.mockResolvedValueOnce({
+      text: 'no sé qué responder',
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    })
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.fallback_reason).toBe('no_json')
+    expect(r.llm_raw).toBe('no sé qué responder')
+  })
+
+  it('JSON inválido → fallback con llm_raw, motivo y error', async () => {
+    mockJson('{ "intent": }')
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.fallback_reason).toBe('invalid_json')
+    expect(r.llm_raw).toBe('{ "intent": }')
+    expect(r.llm_error).toBe('{ "intent": }')
+  })
+
+  it('llm_call_failed → fallback con motivo y error', async () => {
+    mockedCall.mockRejectedValueOnce(new Error('timeout'))
+    const r = await extractBotMessage('llegó juan a las 8:30')
+    expect(r.fallback_reason).toBe('llm_call_failed')
+    expect(r.llm_error).toBe('timeout')
+    expect(r.llm_raw).toBeUndefined()
+  })
+
+  it('schema fuera de rango → fallback con JSON crudo y motivo', async () => {
+    mockJson({ intent: 'marciano', confianza: 'alta' })
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.fallback_reason).toBe('schema_out_of_range')
+    expect(r.llm_raw_json).toEqual({ intent: 'marciano', confianza: 'alta' })
+  })
+})
