@@ -193,7 +193,7 @@ function buildStatus(parsed: { statusType: AttendanceStatusType; time: string | 
       const threshold = emp.late_threshold ?? 5
       if (diff > threshold) {
         status = `TARDE-${rawTime}`
-        label = `⏰ ${rawTime} (tarde)`
+        label = `⏰ ${rawTime} · llegó ${diff} min tarde (entrada ${emp.entry_time}, tolerancia ${threshold} min)`
       }
     }
     return { status, label }
