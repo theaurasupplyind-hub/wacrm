@@ -783,6 +783,38 @@ export async function createExpenseCategory(
   return res.json() as Promise<ExpenseCategory>
 }
 
+export interface ExpenseUpdatePayload {
+  date?: string
+  amount?: number
+  description?: string
+  category_id?: number
+  provider_id?: number | null
+  employee_id?: number | null
+  payment_method?: string
+  reference?: string
+  status?: string
+}
+
+export async function updateExpense(
+  expenseId: number,
+  payload: ExpenseUpdatePayload,
+): Promise<Expense> {
+  const url = `${apiUrl()}/expenses/${expenseId}`
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...apiKeyHeader() },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al actualizar gasto${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<Expense>
+}
+
 export async function createExpense(
   payload: ExpenseCreatePayload,
 ): Promise<Expense> {

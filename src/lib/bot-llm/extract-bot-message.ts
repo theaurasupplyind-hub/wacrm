@@ -76,7 +76,7 @@ Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con su
 - "monto": número sin símbolos ni texto ("18 mil"→18000, "18k"→18000, "$18.000,00"→18000, "18,000.00"→18000).
 - "categoria": tipo de gasto (luz, alquiler, insumos, sueldo, etc.).
 - "proveedor": destinatario del pago si se menciona.
-- "empleado_gasto": solo si es pago de sueldo a un empleado.
+- "empleado_gasto": solo si es pago de sueldo a un empleado. Si hay "empleado_gasto", poné "categoria": null (la categoría correcta es "Sueldos y salarios").
 - "metodo_pago": efectivo, transferencia, débito, crédito, mercado pago, qr, o null.
 - "fecha": YYYY-MM-DD si se menciona ("15/7/26"→"2026-07-15", "ayer", "hoy"); si no, null.
 

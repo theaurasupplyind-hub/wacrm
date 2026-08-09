@@ -16,7 +16,7 @@ import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
-import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext } from '@/lib/expenses'
+import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, isCategoryCorrectionCommand } from '@/lib/expenses'
 import {
   processAttendanceMessage,
   processAttendanceConfirmReply,
@@ -1083,8 +1083,9 @@ async function processMessage(
   // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
   const hasPendingExpense =
-    (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple) &&
-    (expenseCtx.stage === 'collecting' || expenseCtx.stage === 'confirming')
+    ((!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple) &&
+      (expenseCtx.stage === 'collecting' || expenseCtx.stage === 'confirming')) ||
+    expenseCtx.correctingCategory === true
 
   // Cargar estado multi-turn de asistencia (empleado pendiente / corrección de hora)
   const attendanceCtx = await loadAttendanceContext(supabaseAdmin(), conversation.id)
@@ -1534,7 +1535,12 @@ async function processMessage(
   let dispatchedTo: string = flowConsumed ? 'flow' : interactiveReplyId ? 'interactive' : 'none'
   let dispatchReason: string = flowConsumed || interactiveReplyId ? 'consumed' : 'none'
 
-  if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
+  if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
+    dispatchedTo = 'expense'
+    dispatchReason = 'category_correction'
+    console.log('[expense] category correction command dispatch -> conversation=%s', conversation.id)
+    pushExpenseTask()
+  } else if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
     dispatchedTo = 'expense'
     dispatchReason = 'pending_multiturn'
     console.log('[expense] pending multi-turn dispatch -> conversation=%s', conversation.id)
@@ -1573,7 +1579,8 @@ async function processMessage(
     pushVoiceTask()
   } else {
     // ── FALLBACK: intent otro/confianza baja o extractor cayó a otro → regex gates ──
-    const isExpenseText = hasPendingExpense || (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikeExpense(inboundText))
+    const isExpenseText = !flowConsumed && !interactiveReplyId &&
+      (hasPendingExpense || (inboundText.trim() && looksLikeExpense(inboundText)))
     if (isExpenseText) {
       dispatchedTo = 'expense'
       dispatchReason = 'fallback_regex'

@@ -1,5 +1,6 @@
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
+import { updateExpense } from '@/lib/facbal/client'
 import { parseExpense } from './parse-expense'
 import { fuzzyMatchExpense, resolveExpenseCategory } from './fuzzy-match'
 import { executeExpense } from './execute-expense'
@@ -7,6 +8,7 @@ import { buildExpenseConfirmation, buildExpensePreview } from './confirm-expense
 import { transcribeExpense } from './transcribe-expense'
 import { extractExpenseData } from './extract-expense'
 import { loadExpenseContext, saveExpenseContext, clearExpenseContext } from './context'
+import { isCategoryCorrectionCommand } from './command'
 import type { ParsedExpense, ExpenseFuzzyMatch, ExpenseExecutionResult, PaymentSplit, ExpenseContextState } from './types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { UnifiedExtraction, MultiExpenseItem } from '@/lib/bot-llm/types'
@@ -259,10 +261,173 @@ async function handleCollectingReply(
   })
 
   await clearExpenseContext(args.db, args.conversationId)
+  await rememberLastExpense(args.db, args.conversationId, result)
 
   const text = buildExpenseConfirmation(result)
   await sendTextResponse(args, text)
   return { handled: true, expenseId: result.expenseId, text }
+}
+
+/**
+ * Recuerda el último gasto confirmado para poder corregirlo después por texto.
+ * Se persiste en expense_context (sin stage pendiente, para no interferir con
+ * los multi-turnos activos).
+ */
+async function rememberLastExpense(
+  db: SupabaseClient,
+  conversationId: string,
+  result: ExpenseExecutionResult,
+) {
+  if (!result.expenseId) return
+  await saveExpenseContext(db, conversationId, {
+    lastExpenseId: result.expenseId,
+    lastExpenseAmount: result.amount,
+    lastCategoryName: result.categoryName,
+  })
+}
+
+/**
+ * Aplica la corrección de categoría a un gasto ya confirmado: matchea la nueva
+ * categoría y la persiste vía PUT /expenses/{id}. Devuelve true si se corrigió.
+ */
+async function applyCategoryCorrection(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+  categoryText: string,
+): Promise<ProcessExpenseResult> {
+  const expenseId = ctx.correctingCategoryExpenseId ?? ctx.lastExpenseId
+  if (!expenseId) {
+    await clearExpenseContext(args.db, args.conversationId)
+    return {
+      handled: true,
+      text: 'No encontré un gasto reciente para corregir. Escribí el gasto de nuevo, por favor.',
+    }
+  }
+
+  let category: Awaited<ReturnType<typeof resolveExpenseCategory>>
+  try {
+    category = await resolveExpenseCategory(categoryText)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[expense] category correction resolve error:', msg)
+    await logExpenseExtraction(args, {
+      status: 'error',
+      rawText: args.text || null,
+      matchedExpenseId: expenseId,
+      errorMessage: msg,
+      debug: { flow: 'category_correction', category: categoryText },
+    })
+    return { handled: true, text: '❌ No pude actualizar la categoría. Intentá de nuevo.' }
+  }
+
+  if (!category.categoryId) {
+    await saveExpenseContext(args.db, args.conversationId, {
+      ...ctx,
+      correctingCategory: true,
+      correctingCategoryExpenseId: expenseId,
+    })
+    return { handled: true, text: 'No encontré esa categoría. ¿Podés intentar con otro nombre?' }
+  }
+
+  try {
+    await updateExpense(expenseId, { category_id: category.categoryId })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[expense] category correction update error:', msg)
+    await logExpenseExtraction(args, {
+      status: 'error',
+      rawText: args.text || null,
+      matchedExpenseId: expenseId,
+      errorMessage: msg,
+      debug: { flow: 'category_correction', category: categoryText },
+    })
+    return { handled: true, text: '❌ No pude actualizar la categoría. Intentá de nuevo.' }
+  }
+
+  await logExpenseExtraction(args, {
+    status: 'category_corrected',
+    rawText: args.text || null,
+    category: category.categoryName,
+    matchedExpenseId: expenseId,
+    debug: { flow: 'category_correction', categoryId: category.categoryId, ctx },
+  })
+
+  await clearExpenseContext(args.db, args.conversationId)
+
+  const parts: string[] = ['✅ Categoría corregida.']
+  if (ctx.lastExpenseAmount) {
+    parts.push(`💰 $${ctx.lastExpenseAmount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`)
+  }
+  parts.push(`📁 ${category.categoryName}`)
+  const msg = parts.join('\n')
+  await sendTextResponse(args, msg)
+  return { handled: true, text: msg }
+}
+
+/**
+ * Arranca la corrección de categoría por texto. Si el mensaje ya trae la
+ * categoría ("la categoría correcta es X") se aplica en un solo turno; si no,
+ * pregunta cuál es la correcta.
+ */
+async function handleCategoryCorrectionStart(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+): Promise<ProcessExpenseResult> {
+  const reply = (args.text || '').trim()
+  const expenseId = ctx.lastExpenseId
+  if (!expenseId) {
+    await clearExpenseContext(args.db, args.conversationId)
+    return {
+      handled: true,
+      text: 'No encontré un gasto reciente para corregir. Escribí el gasto de nuevo, por favor.',
+    }
+  }
+
+  const inline = reply.match(/la\s+categoria\s+(correcta\s+)?es\s+(.+)/i)
+  if (inline) {
+    return applyCategoryCorrection(args, ctx, inline[2].trim())
+  }
+
+  await saveExpenseContext(args.db, args.conversationId, {
+    ...ctx,
+    stage: 'collecting',
+    correctingCategory: true,
+    correctingCategoryExpenseId: expenseId,
+    pendingExpense: null,
+    pendingMultiple: null,
+    missingField: null,
+  })
+  await logExpenseExtraction(args, {
+    status: 'collecting',
+    rawText: args.text || null,
+    matchedExpenseId: expenseId,
+    debug: { flow: 'category_correction_start' },
+  })
+  const msg = '¿Cuál es la categoría correcta? (ej: luz, alquiler, sueldos y salarios)'
+  await sendTextResponse(args, msg)
+  return { handled: true, text: msg }
+}
+
+/**
+ * Maneja la respuesta del usuario cuando está corrigiendo la categoría del
+ * último gasto (contexto con `correctingCategory`).
+ */
+async function handleCategoryCorrectionReply(
+  args: ProcessExpenseMessageArgs,
+  ctx: ExpenseContextState,
+): Promise<ProcessExpenseResult> {
+  const reply = (args.text || '').trim()
+  if (!reply) {
+    return { handled: true, text: '¿Cuál es la categoría correcta? (ej: luz, alquiler, sueldos y salarios)' }
+  }
+  const lower = reply.toLowerCase()
+  if (lower === 'cancelar' || lower === 'no') {
+    await clearExpenseContext(args.db, args.conversationId)
+    const msg = 'Listo, no corregí la categoría. 👍'
+    await sendTextResponse(args, msg)
+    return { handled: true, text: msg }
+  }
+  return applyCategoryCorrection(args, ctx, reply)
 }
 
 /**
@@ -330,6 +495,10 @@ async function executeAndConfirmExpense(
     errorMessage: result.error || undefined,
     debug: { match, result, media_url: mediaUrl },
   })
+
+  if (result.expenseId) {
+    await rememberLastExpense(args.db, args.conversationId, result)
+  }
 
   const text = buildExpenseConfirmation(result)
   await sendTextResponse(args, text)
@@ -768,6 +937,17 @@ export async function processExpenseMessage(
 ): Promise<ProcessExpenseResult> {
   const ctx = await loadExpenseContext(args.db, args.conversationId)
 
+  // Comando por texto "corregir categoría" (se promete en la confirmación de
+  // gastos con categoría nueva). Gana sobre cualquier multi-turno previo.
+  if (args.messageType === 'text' && args.text && isCategoryCorrectionCommand(args.text)) {
+    return handleCategoryCorrectionStart(args, ctx)
+  }
+
+  // Segunda vuelta de la corrección: estamos esperando la categoría correcta.
+  if (ctx.correctingCategory && args.messageType === 'text') {
+    return handleCategoryCorrectionReply(args, ctx)
+  }
+
   // Multi-expense pendiente → responder al flujo (campo faltante / edición / confirmar).
   if (
     ctx.pendingMultiple &&
@@ -959,5 +1139,6 @@ export async function processExpenseMessage(
 }
 
 export { loadExpenseContext, saveExpenseContext, clearExpenseContext, parseExpense }
+export { isCategoryCorrectionCommand } from './command'
 export { looksLikeExpense } from './parse-expense'
 export type { ParsedExpense, ExpenseContextState }

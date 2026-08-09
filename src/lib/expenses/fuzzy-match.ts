@@ -9,7 +9,12 @@ import {
 } from '@/lib/facbal/client'
 import type { ParsedExpense, ExpenseFuzzyMatch } from './types'
 
-function normalize(text: string): string {
+// Substring matches only count for tokens of a meaningful length. Otherwise
+// "Jolden S.A. Grapas" normalizes to tokens ["jolden","s","a","grapas"] and a
+// query like "easy" matches the single letters "s" and "a", inflating the score.
+const MIN_SUBSTR_LEN = 3
+
+export function normalize(text: string): string {
   return text
     .toLowerCase()
     .normalize('NFD')
@@ -19,7 +24,7 @@ function normalize(text: string): string {
     .trim()
 }
 
-function tokenScore(a: string, b: string): number {
+export function tokenScore(a: string, b: string): number {
   const na = normalize(a)
   const nb = normalize(b)
   if (!na || !nb) return 0
@@ -34,14 +39,22 @@ function tokenScore(a: string, b: string): number {
     }
     return 0.95
   }
-  if (na.includes(nb) || nb.includes(na)) return 0.85
+  if (
+    (na.includes(nb) && nb.length >= MIN_SUBSTR_LEN) ||
+    (nb.includes(na) && na.length >= MIN_SUBSTR_LEN)
+  ) {
+    return 0.85
+  }
 
   const tokensA = na.split(' ')
   const tokensB = nb.split(' ')
 
   const stem = (w: string) => w.endsWith('s') ? w.slice(0, -1) : w
-  const matchToken = (ta: string, tb: string) =>
-    ta === tb || stem(ta) === stem(tb) || ta.includes(tb) || tb.includes(ta)
+  const matchToken = (ta: string, tb: string) => {
+    if (ta === tb || stem(ta) === stem(tb)) return true
+    if (ta.length < MIN_SUBSTR_LEN || tb.length < MIN_SUBSTR_LEN) return false
+    return ta.includes(tb) || tb.includes(ta)
+  }
 
   const common = tokensA.filter(t => tokensB.some(bt => matchToken(t, bt)))
   const score = common.length / Math.max(tokensA.length, tokensB.length)

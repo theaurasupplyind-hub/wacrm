@@ -51,6 +51,8 @@ export function buildBotContextText(input: BotContextInput): string {
     } else if (exp.stage === 'confirming') {
       lines.push('Gasto pendiente: el bot mostró un preview con botones [Confirmar / Corregir / Cancelar]. El usuario está respondiendo por texto.')
     }
+  } else if (exp?.correctingCategory && exp.correctingCategoryExpenseId) {
+    lines.push('Gasto: el usuario quiere corregir la categoría del último gasto registrado. Se está esperando la categoría correcta (ej: luz, alquiler, sueldos y salarios).')
   }
 
   const att = input.attendanceCtx

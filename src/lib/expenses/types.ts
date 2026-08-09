@@ -60,9 +60,17 @@ export interface ExpenseContextState {
   pendingExpense?: ParsedExpense | null
   pendingMatch?: ExpenseFuzzyMatch | null
   lastExpenseId?: number | null
+  /** Monto del último gasto confirmado, para armar el mensaje de corrección. */
+  lastExpenseAmount?: number | null
+  /** Nombre de la categoría del último gasto confirmado. */
+  lastCategoryName?: string | null
   awaitingConfirmation?: boolean
   stage?: ExpenseStage
   missingField?: 'amount' | 'category' | null
+  /** True mientras el usuario está corrigiendo la categoría del último gasto. */
+  correctingCategory?: boolean
+  /** Id del gasto cuya categoría se está corrigiendo. */
+  correctingCategoryExpenseId?: number | null
   /** Multi-expense: lista de gastos detectados en un solo mensaje. */
   pendingMultiple?: MultiExpenseItem[] | null
   /** Índice (0-based) del gasto incompleto cuyo campo se está esperando. */
