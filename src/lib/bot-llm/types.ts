@@ -27,6 +27,7 @@ export type MissingField =
 export interface MultiExpenseItem {
   amount: number | null
   category: string | null
+  tipo_gasto: 'compra' | 'pago' | 'gasto' | null
   provider: string | null
   employee: string | null
   payment_method: string | null
@@ -50,6 +51,8 @@ export interface UnifiedExtraction {
   // gasto
   monto: number | null
   categoria: string | null
+  tipo_gasto: 'compra' | 'pago' | 'gasto' | null
+  saldo_pendiente: number | null
   proveedor: string | null
   empleado_gasto: string | null
   metodo_pago: string | null

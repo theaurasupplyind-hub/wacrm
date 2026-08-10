@@ -54,6 +54,27 @@ describe('fallbackExtract', () => {
     expect(r.intent).toBe('gasto')
   })
 
+  it('reconoce compra a proveedor y pago a empleado', () => {
+    const purchase = fallbackExtract('compramos tela a Textil Muñoz valor de 56089')
+    expect(purchase.intent).toBe('gasto')
+    expect(purchase.tipo_gasto).toBe('compra')
+    expect(purchase.proveedor).toBe('Textil Muñoz')
+
+    const employee = fallbackExtract('pagué a Jesus (es un empleado) 89000')
+    expect(employee.tipo_gasto).toBe('pago')
+    expect(employee.empleado_gasto).toBe('Jesus')
+  })
+
+  it('separa compra y pago del mismo proveedor', () => {
+    const result = fallbackExtract('Compramos tela a Textil Muñoz valor de 56089, pagamos 4000')
+    expect(result.intent).toBe('multi_expense')
+    expect(result.multipleExpenses).toHaveLength(2)
+    expect(result.multipleExpenses?.[0].tipo_gasto).toBe('compra')
+    expect(result.multipleExpenses?.[0].provider).toBe('Textil Muñoz')
+    expect(result.multipleExpenses?.[1].tipo_gasto).toBe('pago')
+    expect(result.multipleExpenses?.[1].provider).toBe('Textil Muñoz')
+  })
+
   it('"pagué el pedido" NO es gasto → otro', () => {
     const r = fallbackExtract('pagué el pedido')
     expect(r.intent).toBe('otro')

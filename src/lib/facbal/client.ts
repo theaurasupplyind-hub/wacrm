@@ -581,6 +581,8 @@ export interface ExpenseCreatePayload {
   employee_id?: number | null
   payment_method?: string
   payments?: PaymentSplit[]
+  mov_type?: 'PURCHASE' | 'PAYMENT'
+  mode?: string
   reference?: string
   source?: string
   created_by_user_id?: number | null

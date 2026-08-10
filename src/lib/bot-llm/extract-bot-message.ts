@@ -14,6 +14,8 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
   "estado": "vacaciones" | "licencia" | "ausente" | null,
   "monto": número o null,
   "categoria": "categoría del gasto o null",
+  "tipo_gasto": "compra" | "pago" | "gasto" | null,
+  "saldo_pendiente": número o null,
   "proveedor": "nombre del proveedor o null",
   "empleado_gasto": "nombre del empleado si es pago de sueldo, o null",
   "metodo_pago": "efectivo" | "transferencia" | "debito" | "credito" | "mercado pago" | "qr" | null,
@@ -22,6 +24,8 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
     {
       "monto": número o null,
       "categoria": "categoría o null",
+      "tipo_gasto": "compra" | "pago" | "gasto" | null,
+      "saldo_pendiente": número o null,
       "proveedor": "proveedor o null",
       "empleado": "empleado o null",
       "metodo_pago": "método o null",
@@ -49,6 +53,10 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 
 - "compré N [producto]" (ej: "compré 3 bastidores 60x40") → pedido, NUNCA gasto. Si menciona cantidades, medidas o productos del catálogo (bastidor, acrílico, circular, tela, lienzo, marco, moldura) → pedido.
 - "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto.
+- "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela. Solo es pedido si parece una solicitud de cliente con cantidad/medida o sin proveedor.
+- "pagué/pagamos a [proveedor]" → gasto con tipo_gasto "pago".
+- "pagué/pagamos a [persona] (es un empleado)" o sueldo/adelanto → empleado_gasto y tipo_gasto "pago".
+- "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
 - "pagué el pedido" → pedido (confirmación de pedido), NO gasto.
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/puse plata para factura/comprobante" → voucher, NUNCA gasto.
@@ -64,6 +72,7 @@ Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con su
 - "pagué 18 mil de luz" → gasto simple (UN monto), NO multi_expense.
 - "pagué 5.000 por transferencia y 2.000 en efectivo" → gasto simple con split de pago (mismo gasto, dos métodos), NO multi_expense. Devolvé "monto": 7000.
 - "saldo en transferencia es X y saldo en efectivo es Y" → gasto simple con saldo, NO multi_expense.
+- "saldo pendiente/quedó debiendo X" → completar saldo_pendiente con X.
 - Un solo monto → gasto simple, NUNCA multi_expense.
 - Una descripción con varios conceptos pero UN monto ("pago de luz y gas") → gasto simple.
 - Si un gasto de la lista no tiene categoría clara, poné "categoria": null (el bot preguntará).
@@ -78,6 +87,7 @@ Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con su
 - "proveedor": destinatario del pago si se menciona.
 - "empleado_gasto": solo si es pago de sueldo a un empleado. Si hay "empleado_gasto", poné "categoria": null (la categoría correcta es "Sueldos y salarios").
 - "metodo_pago": efectivo, transferencia, débito, crédito, mercado pago, qr, o null.
+- "tipo_gasto": compra si se adquirió mercadería a un proveedor, pago si se abonó una deuda/proveedor/empleado, gasto para gastos operativos.
 - "fecha": YYYY-MM-DD si se menciona una fecha explícita ("15/7/26"→"2026-07-15", "ayer", "hoy", "09 del 08", "9 de Agosto"); si el mensaje dice un día de la semana ("el lunes"), dejá "fecha": null.
 
 === faltan_campos ===
@@ -146,6 +156,7 @@ const VALID_INTENTS: BotIntent[] = [
 const VALID_CONFIDENCE: Confidence[] = ['alta', 'media', 'baja']
 const VALID_MISSING: MissingField[] = ['empleado', 'hora', 'estado', 'monto', 'categoria', 'proveedor']
 const VALID_ESTADOS = ['vacaciones', 'licencia', 'ausente'] as const
+const VALID_EXPENSE_TYPES = ['compra', 'pago', 'gasto'] as const
 
 function strOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
@@ -172,6 +183,10 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
 
   const estado = VALID_ESTADOS.includes(parsed.estado as (typeof VALID_ESTADOS)[number])
     ? (parsed.estado as 'vacaciones' | 'licencia' | 'ausente')
+      : null
+
+  const tipoGasto = VALID_EXPENSE_TYPES.includes(parsed.tipo_gasto as (typeof VALID_EXPENSE_TYPES)[number])
+    ? (parsed.tipo_gasto as (typeof VALID_EXPENSE_TYPES)[number])
     : null
 
   const multipleExpenses = Array.isArray(parsed.multipleExpenses)
@@ -189,6 +204,8 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     estado,
     monto: parseMontoSafe(parsed.monto),
     categoria: strOrNull(parsed.categoria),
+    tipo_gasto: tipoGasto,
+    saldo_pendiente: parseMontoSafe(parsed.saldo_pendiente),
     proveedor: strOrNull(parsed.proveedor),
     empleado_gasto: strOrNull(parsed.empleado_gasto),
     metodo_pago: strOrNull(parsed.metodo_pago),
@@ -221,6 +238,9 @@ function sanitizeMultiExpenseItem(raw: unknown): MultiExpenseItem | null {
   const item: MultiExpenseItem = {
     amount: parseMontoSafe(o.monto),
     category: strOrNull(o.categoria),
+    tipo_gasto: VALID_EXPENSE_TYPES.includes(o.tipo_gasto as (typeof VALID_EXPENSE_TYPES)[number])
+      ? (o.tipo_gasto as (typeof VALID_EXPENSE_TYPES)[number])
+      : null,
     provider: strOrNull(o.proveedor),
     employee: strOrNull(o.empleado),
     payment_method: strOrNull(o.metodo_pago),

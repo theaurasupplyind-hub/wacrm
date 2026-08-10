@@ -211,10 +211,11 @@ function extractAmount(text: string): { amount: number | null; remaining: string
 function detectPaymentMethod(text: string): { method: string | null; remaining: string } {
   const lower = normalize(text)
   for (const [keyword, method] of Object.entries(PAYMENT_METHODS)) {
-    if (lower.includes(keyword)) {
+    const keywordPattern = new RegExp(`(?:^|\\s)${keyword.replace(/\s/g, '\\s+')}(?=\\s|$)`, 'i')
+    if (keywordPattern.test(lower)) {
       return {
         method,
-        remaining: text.replace(new RegExp(keyword.replace(/\s/g, '\\s+'), 'gi'), ' ').replace(/\s+/g, ' ').trim(),
+        remaining: text.replace(new RegExp(`(?:^|\\s)${keyword.replace(/\s/g, '\\s+')}(?=\\s|$)`, 'gi'), ' ').replace(/\s+/g, ' ').trim(),
       }
     }
   }
@@ -311,8 +312,6 @@ function detectEntity(text: string): { provider: string | null; employee: string
   let provider: string | null = null
   let employee: string | null = null
 
-  const lower = normalize(remaining)
-
   // "a proveedor X" o "proveedor X"
   const provMatch = remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ\s]+?)(?=\s+(?:costo|de\s+|por\s+|y\s+|\d|$))/i)
     || remaining.match(/(?:a\s+)?proveedor\s+([a-záéíóúñ]+)/i)
@@ -334,10 +333,28 @@ function detectEntity(text: string): { provider: string | null; employee: string
   }
 
   // "le pagamos a [nombre]" → proveedor
+  const employeePagoMatch = remaining.match(/(?:le\s+)?(?:pagamos|pague|pagué|pago|pagaste|pagar)\s+a\s+([a-záéíóúñ]+)(?=\s*\()/i)
+  if (employeePagoMatch && /\b(?:emplead[oa]|sueldo|salario|adelanto)\b/i.test(remaining)) {
+    employee = cleanEntityName(employeePagoMatch[1].trim())
+    remaining = remaining.replace(employeePagoMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    return { provider, employee, remaining }
+  }
+
   const pagoMatch = remaining.match(/(?:le\s+)?(?:pagamos|pague|pagué|pago|pagaste|pagar)\s+a\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)/i)
   if (pagoMatch) {
-    provider = cleanEntityName(pagoMatch[1].trim())
+    const target = cleanEntityName(pagoMatch[1].trim())
+    const isEmployeePayment = /\b(?:emplead[oa]|sueldo|salario|adelanto)\b/i.test(remaining)
+    if (isEmployeePayment) employee = target
+    else provider = target
     remaining = remaining.replace(pagoMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    return { provider, employee, remaining }
+  }
+
+  // "compramos ... a [proveedor] por/valor ..." → proveedor
+  const compraMatch = remaining.match(/\b(?:compramos|compr[eé]|comprar|compra)\b[\s\S]*?\ba\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,3}?)(?=\s+(?:por|valor|costo|costó)\b|\s+\d|$)/i)
+  if (compraMatch) {
+    provider = cleanEntityName(compraMatch[1].trim())
+    remaining = remaining.replace(compraMatch[0], ' ').replace(/\s+/g, ' ').trim()
     return { provider, employee, remaining }
   }
 
@@ -423,8 +440,8 @@ function parseDateFromText(text: string): { date: string | null; remaining: stri
   // "el 15/7/26" o "15/07/2026" o "15-7-26"
   const dateMatch = text.match(/el\s+(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/i)
   if (dateMatch) {
-    let [_, d, m, y] = dateMatch
-    let year = y.length === 2 ? '20' + y : y
+    const [d, m, y] = dateMatch.slice(1)
+    const year = y.length === 2 ? '20' + y : y
     const dateStr = `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
     return { date: dateStr, remaining: text.replace(dateMatch[0], ' ').replace(/\s+/g, ' ').trim() }
   }
@@ -432,8 +449,8 @@ function parseDateFromText(text: string): { date: string | null; remaining: stri
   // "15/7/26" sin "el"
   const bareDateMatch = text.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/)
   if (bareDateMatch) {
-    let [_, d, m, y] = bareDateMatch
-    let year = y.length === 2 ? '20' + y : y
+    const [d, m, y] = bareDateMatch.slice(1)
+    const year = y.length === 2 ? '20' + y : y
     const dateStr = `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
     return { date: dateStr, remaining: text.replace(bareDateMatch[0], ' ').replace(/\s+/g, ' ').trim() }
   }
@@ -463,20 +480,18 @@ export function parseExpense(text: string): ParsedExpense {
 
   // Extraer fecha primero
   let remaining = raw
-  let date: string | null
-  let parsedDate: { date: string | null; remaining: string }
-  parsedDate = parseDateFromText(remaining)
-  date = parsedDate.date
+  const parsedDate = parseDateFromText(remaining)
+  const date = parsedDate.date
   remaining = parsedDate.remaining
 
   // Extraer datos de saldo
   let saldo: PaymentSplit[] | null = null
-  let saldoResult = parseSaldoStatements(remaining)
+  const saldoResult = parseSaldoStatements(remaining)
   ;({ saldo, remaining } = saldoResult)
 
   // Detectar split payments antes de extraer monto individual
   let payments: PaymentSplit[] | null = null
-  let splitResult = detectSplitPayments(remaining)
+  const splitResult = detectSplitPayments(remaining)
   ;({ payments, remaining } = splitResult)
   let amount: number | null = null
   let amountAmbiguous = false
@@ -496,7 +511,22 @@ export function parseExpense(text: string): ParsedExpense {
 
   // Extraer entidad (proveedor/empleado)
   const { provider, employee, remaining: remaining3 } = detectEntity(remaining)
+  let resolvedProvider = provider
+  let resolvedEmployee = employee
   remaining = remaining3
+
+  // Recover entities from the original sentence when amount extraction removed
+  // the verb context before the regex matcher saw it.
+  if (!resolvedProvider && !resolvedEmployee) {
+    const employeeHint = raw.match(/\b(?:pagu[eé]|pago|pagamos|pagar)\s+a\s+([a-záéíóúñ]+)(?=\s*\()/i)
+      || raw.match(/\b(?:pagu[eé]|pago|pagamos|pagar)\s+a\s+([a-záéíóúñ]+)(?=\s+\d|$)/i)
+    const purchaseHint = raw.match(/\b(?:compramos|compr[eé]|comprar|compra)\b[\s\S]*?\ba\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,3}?)(?=\s+(?:por|valor|costo|costó)\b|\s+\d|$)/i)
+    if (employeeHint && /\b(?:emplead[oa]|sueldo|salario|adelanto)\b/i.test(raw)) {
+      resolvedEmployee = cleanEntityName(employeeHint[1].trim())
+    } else if (purchaseHint) {
+      resolvedProvider = cleanEntityName(purchaseHint[1].trim())
+    }
+  }
 
   // Extraer categoría
   const { category, remaining: remaining4 } = detectCategory(remaining)
@@ -520,17 +550,26 @@ export function parseExpense(text: string): ParsedExpense {
     amount,
     description: description.charAt(0).toUpperCase() + description.slice(1),
     category,
-    provider,
-    employee,
+    tipoGasto: inferExpenseType(raw),
+    provider: resolvedProvider,
+    employee: resolvedEmployee,
     payment_method,
     payments: payments || undefined,
     saldo: saldo || undefined,
+    saldoPendiente: saldo ? saldo.reduce((sum, split) => sum + split.amount, 0) : null,
     reference: null,
     date: date || todayString(),
     isExpenseIntent,
     amountAmbiguous,
     raw,
   }
+}
+
+function inferExpenseType(text: string): ParsedExpense['tipoGasto'] {
+  const normalized = normalize(text)
+  if (/\b(?:compr[ae]|compramos|compraron|compra)\b/.test(normalized)) return 'compra'
+  if (/\b(?:pagu[eé]|pago|pagamos|pagaron|abono|abone|adelanto)\b/.test(normalized)) return 'pago'
+  return 'gasto'
 }
 
 // Palabras de producto del catálogo (normalizadas, sin acentos). Si un verbo de
@@ -552,6 +591,8 @@ function isCatalogOrder(normalized: string): boolean {
   const hasProduct = CATALOG_PRODUCT_WORDS.some(w => normalized.includes(w))
   const hasCompraVerb = ORDER_COMPRA_VERBS.some(v => normalized.includes(v))
   const hasMeasure = /\d{1,4}\s*x\s*\d{1,4}/.test(normalized)
+  const hasProviderAndAmount = /\b(?:a|proveedor)\s+[a-záéíóúñ]+/.test(normalized) && /\d/.test(normalized)
+  if (hasProviderAndAmount && !hasMeasure) return false
   return hasCompraVerb && (hasProduct || hasMeasure)
 }
 

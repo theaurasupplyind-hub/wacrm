@@ -4,11 +4,13 @@ export interface ParsedExpense {
   amount: number | null
   description: string | null
   category: string | null
+  tipoGasto?: 'compra' | 'pago' | 'gasto' | null
   provider: string | null
   employee: string | null
   payment_method: string | null
   payments?: PaymentSplit[] | null  // split payments
   saldo?: PaymentSplit[] | null    // saldo/deuda restante
+  saldoPendiente?: number | null
   reference: string | null
   date: string | null // YYYY-MM-DD
   isExpenseIntent: boolean

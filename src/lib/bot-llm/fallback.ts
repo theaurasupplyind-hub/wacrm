@@ -12,6 +12,8 @@ function empty(raw: string): UnifiedExtraction {
     estado: null,
     monto: null,
     categoria: null,
+    tipo_gasto: null,
+    saldo_pendiente: null,
     proveedor: null,
     empleado_gasto: null,
     metodo_pago: null,
@@ -65,6 +67,7 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
     items.push({
       amount: p.amount,
       category,
+      tipo_gasto: p.tipoGasto || null,
       provider: p.provider,
       employee: p.employee,
       payment_method: p.payment_method,
@@ -72,6 +75,15 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
       date: p.date,
       raw: part,
     })
+  }
+
+  const provider = items.find(item => item.provider)?.provider || null
+  if (provider) {
+    for (let i = 0; i < items.length; i++) {
+      if (!items[i].provider && items[i].tipo_gasto === 'pago') {
+        items[i] = { ...items[i], provider }
+      }
+    }
   }
 
   return items.length >= 2 ? items : null
@@ -97,6 +109,8 @@ export function fallbackExtract(text: string): UnifiedExtraction {
       estado: null,
       monto: null,
       categoria: null,
+      tipo_gasto: null,
+      saldo_pendiente: null,
       proveedor: null,
       empleado_gasto: null,
       metodo_pago: null,
@@ -132,6 +146,8 @@ export function fallbackExtract(text: string): UnifiedExtraction {
       estado: null,
       monto: p.amount,
       categoria: p.category,
+      tipo_gasto: p.tipoGasto || null,
+      saldo_pendiente: p.saldoPendiente || null,
       proveedor: p.provider,
       empleado_gasto: p.employee,
       metodo_pago: p.payment_method,
@@ -187,6 +203,8 @@ export function fallbackExtract(text: string): UnifiedExtraction {
       estado,
       monto: null,
       categoria: null,
+      tipo_gasto: null,
+      saldo_pendiente: null,
       proveedor: null,
       empleado_gasto: null,
       metodo_pago: null,

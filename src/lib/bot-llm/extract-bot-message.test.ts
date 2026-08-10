@@ -33,6 +33,18 @@ describe('extractBotMessage — LLM responde JSON válido', () => {
     expect(r.categoria).toBe('luz')
   })
 
+  it('extrae tipo de compra y saldo pendiente', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: 56089, categoria: null,
+      tipo_gasto: 'compra', saldo_pendiente: 52089, proveedor: 'Textil Muñoz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    const r = await extractBotMessage('compramos tela a Textil Muñoz valor de 56089')
+    expect(r.tipo_gasto).toBe('compra')
+    expect(r.saldo_pendiente).toBe(52089)
+    expect(r.proveedor).toBe('Textil Muñoz')
+  })
+
   it('normaliza "18k" → 18000 y "$18.000,00" → 18000', async () => {
     mockJson({ intent: 'gasto', confianza: 'alta', monto: '18k' })
     expect((await extractBotMessage('gasté 18k en insumos')).monto).toBe(18000)

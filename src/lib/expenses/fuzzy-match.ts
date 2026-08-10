@@ -215,7 +215,13 @@ export async function resolveExpenseEntities(
 
   // Infer category based on resolved entity type when no explicit category
   let categoryNameToUse = parsed.category
-  if (!categoryNameToUse) {
+  if (parsed.tipoGasto === 'compra' && (providerId || providerName)) {
+    categoryNameToUse = 'Compra a proveedor'
+  } else if (parsed.tipoGasto === 'pago' && (employeeId || employeeName)) {
+    categoryNameToUse = 'Sueldos y salarios'
+  } else if (parsed.tipoGasto === 'pago' && (providerId || providerName)) {
+    categoryNameToUse = 'Pago a proveedor'
+  } else if (!categoryNameToUse) {
     if (employeeId || employeeName) {
       categoryNameToUse = 'Sueldos y salarios'
     } else if (providerId || providerName) {

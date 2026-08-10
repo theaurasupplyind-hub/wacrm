@@ -31,6 +31,20 @@ describe('parseExpense', () => {
     expect(result.employee).toBe('Juan')
   })
 
+  it('detects a payment explicitly addressed to an employee', () => {
+    const result = parseExpense('pagué a Jesus (es un empleado) 89000')
+    expect(result.tipoGasto).toBe('pago')
+    expect(result.employee).toBe('Jesus')
+    expect(result.provider).toBeNull()
+  })
+
+  it('detects a purchase from a provider even when the product is catalogued', () => {
+    const result = parseExpense('compramos tela a Textil Muñoz valor de 56089')
+    expect(result.tipoGasto).toBe('compra')
+    expect(result.provider).toBe('Textil Muñoz')
+    expect(looksLikeExpense('compramos tela a Textil Muñoz valor de 56089')).toBe(true)
+  })
+
   it('parses amount with thousands separator', () => {
     const result = parseExpense('pagué 18.000 de luz')
     expect(result.amount).toBe(18000)

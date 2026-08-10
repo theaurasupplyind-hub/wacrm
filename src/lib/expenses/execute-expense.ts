@@ -65,6 +65,10 @@ export async function executeExpense(
     media_id: options.mediaId || null,
   }
 
+  if (parsed.tipoGasto === 'compra') payload.mov_type = 'PURCHASE'
+  if (parsed.tipoGasto === 'pago') payload.mov_type = 'PAYMENT'
+  if (parsed.tipoGasto === 'pago' && match.employeeId) payload.mode = 'Variable'
+
   if (parsed.payments && parsed.payments.length > 1) {
     payload.payments = parsed.payments
   }

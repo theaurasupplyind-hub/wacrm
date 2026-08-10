@@ -75,6 +75,7 @@ async function createSaldoExpense(
     amount: saldoAmount,
     description: `Saldo pendiente${match.providerName ? ` de ${match.providerName}` : ''}`,
     category: 'Compra a proveedor',
+    tipoGasto: 'compra',
     provider: parsed.provider,
     employee: null,
     payment_method: parsed.saldo.length === 1 ? parsed.saldo[0].payment_method : null,
@@ -441,6 +442,8 @@ function isExpenseAmbiguous(parsed: ParsedExpense, match: ExpenseFuzzyMatch): bo
   if (match.categoryWasCreated) return true
   if (parsed.provider && !match.providerId && !match.employeeId) return true
   if (parsed.employee && !match.employeeId) return true
+  if (parsed.tipoGasto === 'compra') return true
+  if (match.employeeId) return true
   return false
 }
 
@@ -596,7 +599,7 @@ function firstIncompleteMulti(items: MultiExpenseItem[]): { index: number; field
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
     if (!it.amount || it.amount <= 0) return { index: i, field: 'amount' }
-    if (!it.category) return { index: i, field: 'category' }
+    if (!it.category && !it.tipo_gasto) return { index: i, field: 'category' }
   }
   return null
 }
@@ -606,10 +609,10 @@ function buildMultiExpensePreview(items: MultiExpenseItem[]): string {
   items.forEach((it, i) => {
     const missing: string[] = []
     if (!it.amount || it.amount <= 0) missing.push('monto')
-    if (!it.category) missing.push('categoría')
+    if (!it.category && !it.tipo_gasto) missing.push('categoría')
     const parts = [
       `💰 $${it.amount ? it.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 }) : '?'}`,
-      `📁 ${it.category || 'Sin categoría'}`,
+      `📁 ${it.category || (it.tipo_gasto === 'compra' ? 'Compra a proveedor' : it.tipo_gasto === 'pago' ? 'Pago a proveedor' : 'Sin categoría')}`,
     ]
     if (it.provider) parts.push(`🏭 ${it.provider}`)
     lines.push(`${i + 1}. ${parts.join(' · ')}${missing.length ? ` ❓ Falta ${missing.join(', ')}` : ''}`)
@@ -703,6 +706,7 @@ async function confirmMultipleExpenses(
       amount: it.amount,
       description: it.description || it.category || `Gasto ${i + 1}`,
       category: it.category,
+      tipoGasto: it.tipo_gasto || 'gasto',
       provider: it.provider,
       employee: it.employee,
       payment_method: it.payment_method,
@@ -981,12 +985,16 @@ export async function processExpenseMessage(
           amount: extraction.monto,
           description: regexParsed.description,
           category: extraction.categoria,
+          tipoGasto: extraction.tipo_gasto,
           provider: extraction.proveedor,
           employee: extraction.empleado_gasto,
           payment_method: extraction.metodo_pago,
           // Merge con regex: conserva split payments y saldo que el LLM no modela.
           payments: regexParsed.payments || undefined,
-          saldo: regexParsed.saldo || undefined,
+          saldo: regexParsed.saldo || (extraction.saldo_pendiente
+            ? [{ amount: extraction.saldo_pendiente, payment_method: extraction.metodo_pago || 'efectivo' }]
+            : undefined),
+          saldoPendiente: extraction.saldo_pendiente || regexParsed.saldoPendiente || null,
           reference: regexParsed.reference,
           date: extraction.fecha || regexParsed.date,
           isExpenseIntent: true,
