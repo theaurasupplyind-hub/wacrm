@@ -9,6 +9,46 @@ import {
 } from '@/lib/facbal/client'
 import type { ParsedExpense, ExpenseFuzzyMatch } from './types'
 
+// Caché en memoria de categorías (TTL corto) para evitar un round-trip a FacBal
+// por cada mensaje de gasto y exponer menos el flujo al cold start del backend.
+let categoriesCache: { data: ExpenseCategory[]; expiresAt: number } | null = null
+const CATEGORIES_TTL_MS = 5 * 60 * 1000
+
+async function getCachedCategories(): Promise<ExpenseCategory[]> {
+  const now = Date.now()
+  if (categoriesCache && categoriesCache.expiresAt > now) {
+    return categoriesCache.data
+  }
+  const data = await listExpenseCategories()
+  categoriesCache = { data, expiresAt: now + CATEGORIES_TTL_MS }
+  return data
+}
+
+function invalidateCategoriesCache() {
+  categoriesCache = null
+}
+
+/**
+ * Búsqueda de entidad resiliente: reintenta una vez ante fallo y, si el backend
+ * sigue sin responder, devuelve [] para que un timeout de FacBal no aborte el
+ * gasto (queda sin entidad y pasa a confirmación interactiva).
+ */
+async function safeEntitySearch<T>(label: string, fn: () => Promise<T[]>): Promise<T[]> {
+  try {
+    return await fn()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[fuzzy-match] ${label} falló (reintentando): ${msg}`)
+    try {
+      return await fn()
+    } catch (err2) {
+      const msg2 = err2 instanceof Error ? err2.message : String(err2)
+      console.error(`[fuzzy-match] ${label} falló dos veces; se continúa sin entidad: ${msg2}`)
+      return []
+    }
+  }
+}
+
 // Substring matches only count for tokens of a meaningful length. Otherwise
 // "Jolden S.A. Grapas" normalizes to tokens ["jolden","s","a","grapas"] and a
 // query like "easy" matches the single letters "s" and "a", inflating the score.
@@ -107,7 +147,7 @@ export async function resolveExpenseCategory(
     return { categoryId: null, categoryName: null, created: false }
   }
 
-  const cats = categories || (await listExpenseCategories())
+  const cats = categories || (await getCachedCategories())
   const target = normalize(categoryName)
   let best: ExpenseCategory | null = null
   let bestScore = 0
@@ -137,12 +177,14 @@ export async function resolveExpenseCategory(
       is_default: 0,
       created_by: null,
     })
+    invalidateCategoriesCache()
     return { categoryId: created.id, categoryName: created.name, created: true }
   } catch (e) {
     // Si falló porque ya existe, intentar listar de nuevo
     const retry = await listExpenseCategories()
     const found = retry.find(c => normalize(c.name) === target || c.slug === slug)
     if (found) {
+      categoriesCache = { data: retry, expiresAt: Date.now() + CATEGORIES_TTL_MS }
       return { categoryId: found.id, categoryName: found.name, created: false }
     }
     throw e
@@ -160,9 +202,9 @@ export async function resolveExpenseEntities(
   const needsMatch = Boolean(parsed.provider || parsed.employee)
   const entityQuery = parsed.provider || parsed.employee || ''
   const [categories, providers, employees] = await Promise.all([
-    listExpenseCategories(),
-    needsMatch && parsed.provider ? searchProviders(entityQuery) : Promise.resolve([]),
-    needsMatch ? searchEmployees(entityQuery) : Promise.resolve([]),
+    getCachedCategories(),
+    needsMatch && parsed.provider ? safeEntitySearch('providers', () => searchProviders(entityQuery)) : Promise.resolve([]),
+    needsMatch ? safeEntitySearch('employees', () => searchEmployees(entityQuery)) : Promise.resolve([]),
   ])
 
   // Cross-match parsed.provider against BOTH lists

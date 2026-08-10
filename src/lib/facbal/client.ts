@@ -691,7 +691,7 @@ export async function searchProviders(q: string): Promise<Provider[]> {
   const url = `${apiUrl()}/providers/search?q=${encodeURIComponent(q)}`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(25_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -738,7 +738,7 @@ export async function searchEmployees(q: string): Promise<Employee[]> {
   const url = `${apiUrl()}/employees/search?q=${encodeURIComponent(q)}`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(25_000),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
