@@ -18,8 +18,8 @@ const mockCategories = [
 ]
 
 vi.mock('@/lib/facbal/client', () => ({
-  listProviders: vi.fn(async () => mockProviders),
-  listEmployees: vi.fn(async () => mockEmployees),
+  searchProviders: vi.fn(async () => mockProviders),
+  searchEmployees: vi.fn(async () => mockEmployees),
   listExpenseCategories: vi.fn(async () => mockCategories),
   createExpenseCategory: vi.fn(async () => {
     throw new Error('should not create category in these tests')

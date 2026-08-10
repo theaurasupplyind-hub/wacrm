@@ -976,6 +976,7 @@ export async function processExpenseMessage(
 
   let parsed: ParsedExpense | null = null
   let mediaUrl: string | null = null
+  let processingStage = 'parse'
 
   try {
     if (args.messageType === 'text' && args.text) {
@@ -1069,6 +1070,7 @@ export async function processExpenseMessage(
       return { handled: true, text: msg }
     }
 
+    processingStage = 'matching'
     const match = await fuzzyMatchExpense(parsed)
 
     // Multi-turn: si falta categoría, guardar contexto y preguntar
@@ -1126,6 +1128,7 @@ export async function processExpenseMessage(
       return { handled: true, text: preview }
     }
 
+    processingStage = 'execution'
     return executeAndConfirmExpense(args, parsed, match, mediaUrl)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -1135,8 +1138,25 @@ export async function processExpenseMessage(
       rawText: args.text || args.mediaId || null,
       extractorSource: parsed?.extractorSource,
       confianza: parsed?.confianza,
+      amount: parsed?.amount,
+      category: parsed?.category,
+      provider: parsed?.provider,
+      employee: parsed?.employee,
       errorMessage: msg,
-      debug: { messageType: args.messageType },
+      debug: {
+        messageType: args.messageType,
+        processingStage,
+        tipoGasto: parsed?.tipoGasto,
+        extraction: extraction
+          ? {
+              intent: extraction.intent,
+              monto: extraction.monto,
+              categoria: extraction.categoria,
+              proveedor: extraction.proveedor,
+              empleado_gasto: extraction.empleado_gasto,
+            }
+          : null,
+      },
     })
     return {
       handled: true,

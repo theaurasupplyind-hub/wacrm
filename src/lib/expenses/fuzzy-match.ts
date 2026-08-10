@@ -1,8 +1,8 @@
 import {
   listExpenseCategories,
   createExpenseCategory,
-  listProviders,
-  listEmployees,
+  searchProviders,
+  searchEmployees,
   type ExpenseCategory,
   type Provider,
   type Employee,
@@ -152,16 +152,18 @@ export async function resolveExpenseCategory(
 export async function resolveExpenseEntities(
   parsed: ParsedExpense,
 ): Promise<ExpenseFuzzyMatch> {
-  const categories = await listExpenseCategories()
-
   let providerId: number | null = null
   let providerName: string | null = null
   let employeeId: number | null = null
   let employeeName: string | null = null
 
   const needsMatch = Boolean(parsed.provider || parsed.employee)
-  const providers = needsMatch ? await listProviders() : []
-  const employees = needsMatch ? await listEmployees() : []
+  const entityQuery = parsed.provider || parsed.employee || ''
+  const [categories, providers, employees] = await Promise.all([
+    listExpenseCategories(),
+    needsMatch && parsed.provider ? searchProviders(entityQuery) : Promise.resolve([]),
+    needsMatch ? searchEmployees(entityQuery) : Promise.resolve([]),
+  ])
 
   // Cross-match parsed.provider against BOTH lists
   if (parsed.provider) {
