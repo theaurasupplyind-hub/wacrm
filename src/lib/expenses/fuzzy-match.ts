@@ -19,7 +19,9 @@ async function getCachedCategories(): Promise<ExpenseCategory[]> {
   if (categoriesCache && categoriesCache.expiresAt > now) {
     return categoriesCache.data
   }
-  const data = await listExpenseCategories()
+  // Las categorías son obligatorias: se reintenta y, si el backend sigue caído,
+  // se lanza un error claro (el flujo lo reporta como tal, no como timeout).
+  const data = await safeEntitySearch('las categorías de gasto', () => listExpenseCategories(), false)
   categoriesCache = { data, expiresAt: now + CATEGORIES_TTL_MS }
   return data
 }
@@ -29,11 +31,17 @@ function invalidateCategoriesCache() {
 }
 
 /**
- * Búsqueda de entidad resiliente: reintenta una vez ante fallo y, si el backend
- * sigue sin responder, devuelve [] para que un timeout de FacBal no aborte el
- * gasto (queda sin entidad y pasa a confirmación interactiva).
+ * Búsqueda resiliente: reintenta una vez ante fallo. Si el backend sigue sin
+ * responder:
+ * - emptyOnFailure=true (entidades): devuelve [] para que un timeout de FacBal
+ *   no aborte el gasto (queda sin entidad y pasa a confirmación interactiva).
+ * - emptyOnFailure=false (categorías, obligatorias): lanza un error descriptivo.
  */
-async function safeEntitySearch<T>(label: string, fn: () => Promise<T[]>): Promise<T[]> {
+async function safeEntitySearch<T>(
+  label: string,
+  fn: () => Promise<T[]>,
+  emptyOnFailure = true,
+): Promise<T[]> {
   try {
     return await fn()
   } catch (err) {
@@ -43,7 +51,8 @@ async function safeEntitySearch<T>(label: string, fn: () => Promise<T[]>): Promi
       return await fn()
     } catch (err2) {
       const msg2 = err2 instanceof Error ? err2.message : String(err2)
-      console.error(`[fuzzy-match] ${label} falló dos veces; se continúa sin entidad: ${msg2}`)
+      console.error(`[fuzzy-match] ${label} falló dos veces: ${msg2}`)
+      if (!emptyOnFailure) throw new Error(`No se pudo cargar ${label} del backend: ${msg2}`)
       return []
     }
   }

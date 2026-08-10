@@ -68,7 +68,7 @@ export interface ExpenseContextState {
   lastCategoryName?: string | null
   awaitingConfirmation?: boolean
   stage?: ExpenseStage
-  missingField?: 'amount' | 'category' | null
+  missingField?: 'amount' | 'category' | 'entity' | null
   /** True mientras el usuario está corrigiendo la categoría del último gasto. */
   correctingCategory?: boolean
   /** Id del gasto cuya categoría se está corrigiendo. */

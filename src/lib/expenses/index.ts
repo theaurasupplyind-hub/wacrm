@@ -196,6 +196,26 @@ async function handleCollectingReply(
     pending.amount = num
   } else if (ctx.missingField === 'category') {
     pending.category = reply
+  } else if (ctx.missingField === 'entity') {
+    // Desambiguación de entidad no encontrada (1 intento): el usuario elige si
+    // es proveedor, empleado, un gasto sin más, o escribe el nombre correcto.
+    const lower = reply.toLowerCase()
+    const original = pending.provider || pending.employee || ''
+    if (lower === 'empleado' || lower === 'empleada') {
+      pending.employee = original
+      pending.provider = null
+    } else if (lower === 'proveedor' || lower === 'proveedora') {
+      pending.provider = original
+      pending.employee = null
+    } else if (lower === 'gasto' || lower === 'ninguno' || lower === 'no' || lower === 'nada'
+      || lower.includes('sin proveedor') || lower.includes('sin empleado')) {
+      pending.provider = null
+      pending.employee = null
+    } else {
+      // Nombre corregido: probar en ambas entidades.
+      pending.provider = reply
+      pending.employee = null
+    }
   } else if (!ctx.missingField) {
     // Viene de ✏️ Corregir: el usuario elige qué campo tocar.
     const cleaned = reply.toLowerCase()
@@ -215,11 +235,49 @@ async function handleCollectingReply(
     }
   }
 
-  const match = await fuzzyMatchExpense(pending)
+  let match = await fuzzyMatchExpense(pending)
 
   if (!match.categoryId) {
     await saveExpenseContext(args.db, args.conversationId, { ...ctx, pendingExpense: pending, pendingMatch: match })
     return { handled: true, text: 'No encontré esa categoría. ¿Podés intentar con otro nombre?' }
+  }
+
+  // 1 solo intento de desambiguación: si la entidad sigue sin resolverse, se
+  // guarda como gasto sin vínculo (proveedor/empleado limpio).
+  if ((pending.provider || pending.employee) && !match.providerId && !match.employeeId) {
+    pending.provider = null
+    pending.employee = null
+    match = await fuzzyMatchExpense(pending)
+  }
+
+  if (!match.categoryId) {
+    await saveExpenseContext(args.db, args.conversationId, { ...ctx, pendingExpense: pending, pendingMatch: match })
+    return { handled: true, text: 'No encontré esa categoría. ¿Podés intentar con otro nombre?' }
+  }
+
+  // Operaciones con consecuencias contables (compra o pago a empleado) → confirmar.
+  if (isExpenseAmbiguous(pending, match)) {
+    await saveExpenseContext(args.db, args.conversationId, {
+      stage: 'confirming',
+      pendingExpense: pending,
+      pendingMatch: match,
+      awaitingConfirmation: true,
+    })
+    const preview = buildExpensePreview(pending, match)
+    await logExpenseExtraction(args, {
+      status: 'ambiguous',
+      rawText: pending.raw,
+      amount: pending.amount,
+      category: pending.category,
+      provider: pending.provider,
+      employee: pending.employee,
+      paymentMethod: pending.payment_method,
+      extractorSource: pending.extractorSource,
+      confianza: pending.confianza,
+      debug: { flow: 'collecting_reply', missingField: ctx.missingField, match, preview },
+    })
+    await sendExpenseConfirmButtons(args, preview)
+    return { handled: true, text: preview }
   }
 
   const result = await executeExpense(pending, match, {
@@ -1098,6 +1156,33 @@ export async function processExpenseMessage(
       return { handled: true, text: msg }
     }
 
+    // Entidad mencionada pero sin resolver → desambiguación (1 intento): el
+    // proveedor puede no existir (quizás es empleado o un gasto sin más).
+    if ((parsed.provider || parsed.employee) && !match.providerId && !match.employeeId) {
+      const entityName = parsed.provider || parsed.employee || ''
+      await saveExpenseContext(args.db, args.conversationId, {
+        stage: 'collecting',
+        pendingExpense: parsed,
+        pendingMatch: match,
+        missingField: 'entity',
+      })
+      await logExpenseExtraction(args, {
+        status: 'collecting',
+        rawText: parsed.raw,
+        amount: parsed.amount,
+        category: parsed.category,
+        provider: parsed.provider,
+        employee: parsed.employee,
+        paymentMethod: parsed.payment_method,
+        extractorSource: parsed.extractorSource,
+        confianza: parsed.confianza,
+        debug: { missingField: 'entity', match },
+      })
+      const msg = `No encontré "${entityName}" en el sistema. ¿Es un proveedor, un empleado o un gasto sin más? (escribí "proveedor", "empleado", "gasto", o el nombre correcto)`
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
+
     // Ambigüedad → confirmación interactiva en lugar de auto-guardar
     if (isExpenseAmbiguous(parsed, match)) {
       await saveExpenseContext(args.db, args.conversationId, {
@@ -1106,7 +1191,7 @@ export async function processExpenseMessage(
         pendingMatch: match,
         awaitingConfirmation: true,
       })
-      const preview = buildExpensePreview(parsed)
+      const preview = buildExpensePreview(parsed, match)
       await logExpenseExtraction(args, {
         status: 'ambiguous',
         rawText: parsed.raw,

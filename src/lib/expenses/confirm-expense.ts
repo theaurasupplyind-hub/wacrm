@@ -1,4 +1,4 @@
-import type { ExpenseExecutionResult } from './types'
+import type { ExpenseExecutionResult, ExpenseFuzzyMatch } from './types'
 
 export function buildExpenseConfirmation(result: ExpenseExecutionResult): string {
   if (result.error) {
@@ -47,22 +47,31 @@ export function buildExpenseConfirmation(result: ExpenseExecutionResult): string
   return lines.join('\n')
 }
 
-export function buildExpensePreview(parsed: {
-  amount: number | null
-  description: string | null
-  category: string | null
-  provider: string | null
-  employee: string | null
-}): string {
+export function buildExpensePreview(
+  parsed: {
+    amount: number | null
+    description: string | null
+    category: string | null
+    provider: string | null
+    employee: string | null
+  },
+  match?: ExpenseFuzzyMatch,
+): string {
   if (!parsed.amount || parsed.amount <= 0) {
     return 'No detecté un monto. ¿Podés repetir con el monto del gasto?'
   }
 
   const lines: string[] = ['Voy a registrar este gasto:']
   lines.push(`💰 $${parsed.amount.toLocaleString('es-AR', { minimumFractionDigits: 2 })}`)
-  lines.push(`📁 ${parsed.category || 'Sin categoría'}`)
-  if (parsed.provider) lines.push(`🏭 Proveedor: ${parsed.provider}`)
-  if (parsed.employee) lines.push(`👷 Empleado: ${parsed.employee}`)
+  lines.push(`📁 ${match?.categoryName || parsed.category || 'Sin categoría'}`)
+  // Mostrar la entidad RESUELTA por el match, no el texto crudo del extractor.
+  if (match?.employeeId && match.employeeName) {
+    lines.push(`👷 Empleado: ${match.employeeName}`)
+  } else if (match?.providerId && match.providerName) {
+    lines.push(`🏭 Proveedor: ${match.providerName}`)
+  } else if (parsed.provider || parsed.employee) {
+    lines.push('⚠️ Entidad sin confirmar (se guardará sin vínculo)')
+  }
   lines.push(`📝 ${parsed.description || 'Gasto'}`)
   lines.push('')
   lines.push('¿Confirmás?')
