@@ -17,7 +17,20 @@ export async function POST(req: NextRequest) {
 
       // Reusa extractor unificado para sacar cliente/monto/metodo
       const ext = await extractBotMessage(text)
-      // Solo nos interesa voucher/efectivo; si es otro intent devolvemos extracción sin pool
+      // Gate: "Le pagamos a X por sueldo" es gasto (egreso), no voucher de factura (ingreso)
+      if (ext.intent === 'gasto' && ext.empleado_gasto) {
+        return NextResponse.json({
+          mode: 'text',
+          dryRun: true,
+          wouldWrite: false,
+          extraction: ext,
+          matchStatus: 'no_match',
+          candidates: [],
+          mensajeRespuesta: `Intent=gasto (sueldo a ${ext.empleado_gasto}) — no es voucher de factura. Usá el tab Asistente para registrar sueldos.`,
+          banner: '🔒 Simulación — no es voucher (es gasto)',
+          debugInfo: { gate: 'gasto_sueldo_no_voucher' },
+        })
+      }
       const monto = ext.monto
       const nombreCliente = ext.proveedor || ext.empleado || ext.empleado_gasto || null
       // Nombre origen/cliente para matching
@@ -53,6 +66,9 @@ export async function POST(req: NextRequest) {
       // Permitir solo texto via FormData también
       if (textFallback.trim()) {
         const ext = await extractBotMessage(textFallback)
+        if (ext.intent === 'gasto' && ext.empleado_gasto) {
+          return NextResponse.json({ mode: 'text', dryRun: true, wouldWrite: false, extraction: ext, matchStatus: 'no_match', candidates: [], mensajeRespuesta: `Intent=gasto (sueldo a ${ext.empleado_gasto}) — no es voucher. Usá Asistente.`, banner: '🔒 No voucher', debugInfo: { gate: 'gasto' } })
+        }
         const dry = await runVoucherDryRun({
           monto: ext.monto ?? null,
           fecha: ext.fecha ?? null,

@@ -4,7 +4,7 @@
 
 import { matchVoucherByName } from '@/lib/facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '@/lib/facbal/client'
-import { findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD } from '@/lib/ai/voucher-matching'
+import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD } from '@/lib/ai/voucher-matching'
 
 export interface VoucherDryInput {
   monto: number | null
@@ -134,7 +134,15 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
         if (nameResult.destination_candidates?.length) allDestinationCandidates.push(...nameResult.destination_candidates)
         const phase3ApiResult = nameCandidates.map(c => ({ factura: c.numero_factura, cliente: c.cliente_nombre, saldo: c.saldo_pendiente, score: c.score }))
         let nameExactCount = 0
-        for (const c of nameCandidates) if (c.score >= NAME_MATCH_THRESHOLD) if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) nameExactCount++
+        for (const c of nameCandidates) {
+          if (c.score < NAME_MATCH_THRESHOLD) continue
+          // Solo considerar si monto coincide (tolerancia) o si no hay monto (nombre puro)
+          if (input.monto && input.monto > 0) {
+            const tol = getMontoTolerancia(input.monto)
+            if (montoDistance(input.monto, c.saldo_pendiente) > tol) continue
+          }
+          if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) nameExactCount++
+        }
         p3steps.push({ step: 'Name match', input: phase3ApiResult, result: { apiCandidates: nameCandidates.length, exactWithName: nameExactCount } })
         debugInfo.phase3 = { apiCall: { nombre_cliente: input.nombre_cliente, nombre_origen: input.nombre_origen, monto: input.monto, tolerancia: 50 }, apiResult: phase3ApiResult, steps: p3steps, result: { apiCandidates: nameCandidates.length, poolAdded: nameExactCount } }
       } catch (err) {
@@ -154,8 +162,13 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
       else p4steps.push({ step: 'Narrow pool by name', result: { narrowedTo: filteredPool.length } })
     }
     if (candidatePool.length === 0 && nameIsReliable) {
-      const bestMatch = nameCandidates.filter(c => c.score >= NAME_MATCH_THRESHOLD).sort((a, b) => b.score - a.score)[0]
-      if (bestMatch) if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) p4steps.push({ step: 'Add best name match', result: { factura: bestMatch.numero_factura, cliente: bestMatch.cliente_nombre, score: bestMatch.score } })
+      const filteredBest = nameCandidates.filter(c => c.score >= NAME_MATCH_THRESHOLD).filter(c => {
+        if (input.monto && input.monto > 0) return montoDistance(input.monto, c.saldo_pendiente) <= getMontoTolerancia(input.monto)
+        return true
+      }).sort((a, b) => b.score - a.score)[0]
+      const bestMatch = filteredBest || null
+      if (bestMatch) if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) p4steps.push({ step: 'Add best name match', result: { factura: bestMatch.numero_factura, cliente: bestMatch.cliente_nombre, score: bestMatch.score, saldo: bestMatch.saldo_pendiente } })
+      else p4steps.push({ step: 'Add best name match', result: { skipped: 'monto no coincide con saldo dentro de tolerancia' } })
     }
     if (candidatePool.length === 0 && !nameIsReliable) {
       matchStatus = 'ambiguous'
@@ -208,7 +221,14 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
           matchedClienteNombre = bestInvoice.cliente_nombre
           matchedSaldoPendiente = bestInvoice.saldo_pendiente
           candidates = entry.invoices
-          mensajeRespuesta = bestInvoice.cliente_nombre ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.` : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
+          if (input.monto && input.monto > 0 && input.monto !== entry.total) {
+            const restante = matchedSaldoPendiente - input.monto
+            mensajeRespuesta = bestInvoice.cliente_nombre
+              ? `Se registraría pago parcial de ${formatMonto(input.monto)} para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
+              : `Se registraría pago parcial de ${formatMonto(input.monto)} para la factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
+          } else {
+            mensajeRespuesta = bestInvoice.cliente_nombre ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.` : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
+          }
         }
       } else {
         matchStatus = 'multi_invoice'
