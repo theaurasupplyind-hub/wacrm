@@ -32,7 +32,16 @@ export async function POST(req: NextRequest) {
         })
       }
       const monto = ext.monto
-      const nombreCliente = ext.proveedor || ext.empleado || ext.empleado_gasto || null
+      let nombreCliente: string | null = ext.proveedor || ext.empleado || ext.empleado_gasto || null
+      // Fallback: texto corto sin verbo ("Delio", "Isabela", "Mathiaz Delio") → usar texto raw como nombre a buscar
+      if (!nombreCliente && (ext.intent === 'otro' || ext.confianza === 'baja')) {
+        const rawWords = text.trim().split(/\s+/).filter(Boolean)
+        const isShortName = rawWords.length >= 1 && rawWords.length <= 3 && !/\d/.test(text) && rawWords.every(w => /^[a-zA-ZáéíóúÁÉÍÓÚñÑ]+$/.test(w))
+        if (isShortName) {
+          const cleaned = text.trim().replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ').replace(/\s+/g, ' ').trim()
+          if (cleaned.length >= 2) nombreCliente = cleaned
+        }
+      }
       // Nombre origen/cliente para matching
       const dry = await runVoucherDryRun({
         monto: monto ?? null,
@@ -69,13 +78,22 @@ export async function POST(req: NextRequest) {
         if (ext.intent === 'gasto' && ext.empleado_gasto) {
           return NextResponse.json({ mode: 'text', dryRun: true, wouldWrite: false, extraction: ext, matchStatus: 'no_match', candidates: [], mensajeRespuesta: `Intent=gasto (sueldo a ${ext.empleado_gasto}) — no es voucher. Usá Asistente.`, banner: '🔒 No voucher', debugInfo: { gate: 'gasto' } })
         }
+        let nombreCliente2: string | null = ext.proveedor || ext.empleado || ext.empleado_gasto || null
+        if (!nombreCliente2 && (ext.intent === 'otro' || ext.confianza === 'baja')) {
+          const rawWords = textFallback.trim().split(/\s+/).filter(Boolean)
+          const isShortName = rawWords.length >= 1 && rawWords.length <= 3 && !/\d/.test(textFallback) && rawWords.every(w => /^[a-zA-ZáéíóúÁÉÍÓÚñÑ]+$/.test(w))
+          if (isShortName) {
+            const cleaned = textFallback.trim().replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ').replace(/\s+/g, ' ').trim()
+            if (cleaned.length >= 2) nombreCliente2 = cleaned
+          }
+        }
         const dry = await runVoucherDryRun({
           monto: ext.monto ?? null,
           fecha: ext.fecha ?? null,
           referencia: null,
           banco: ext.metodo_pago ?? null,
-          nombre_cliente: ext.proveedor || ext.empleado || ext.empleado_gasto || null,
-          nombre_origen: ext.proveedor || ext.empleado || null,
+          nombre_cliente: nombreCliente2,
+          nombre_origen: nombreCliente2,
           nombre_destino: null,
           cbu_destino: null,
           cuit_destino: null,

@@ -125,10 +125,11 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     if (input.nombre_cliente || input.nombre_origen) {
       const p3steps: Record<string, unknown>[] = []
       try {
+        const tol = input.monto && input.monto > 0 ? 50 : 50000
         const nameResult = await matchVoucherByName({
           nombre_cliente: input.nombre_cliente, nombre_origen: input.nombre_origen,
           nombre_destino: input.nombre_destino, cbu_destino: input.cbu_destino, cuit_destino: input.cuit_destino,
-          monto: input.monto, tolerancia: 50,
+          monto: input.monto, tolerancia: tol,
         })
         nameCandidates = nameResult.invoice_candidates || []
         if (nameResult.destination_candidates?.length) allDestinationCandidates.push(...nameResult.destination_candidates)
@@ -144,7 +145,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
           if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) nameExactCount++
         }
         p3steps.push({ step: 'Name match', input: phase3ApiResult, result: { apiCandidates: nameCandidates.length, exactWithName: nameExactCount } })
-        debugInfo.phase3 = { apiCall: { nombre_cliente: input.nombre_cliente, nombre_origen: input.nombre_origen, monto: input.monto, tolerancia: 50 }, apiResult: phase3ApiResult, steps: p3steps, result: { apiCandidates: nameCandidates.length, poolAdded: nameExactCount } }
+        debugInfo.phase3 = { apiCall: { nombre_cliente: input.nombre_cliente, nombre_origen: input.nombre_origen, monto: input.monto, tolerancia: tol }, apiResult: phase3ApiResult, steps: p3steps, result: { apiCandidates: nameCandidates.length, poolAdded: nameExactCount } }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         errorMessage = [errorMessage, `Phase3: ${msg}`].filter(Boolean).join(' | ')

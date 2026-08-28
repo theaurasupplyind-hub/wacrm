@@ -54,7 +54,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "compré N [producto]" (ej: "compré 3 bastidores 60x40") → pedido, NUNCA gasto. Si menciona cantidades, medidas o productos del catálogo (bastidor, acrílico, circular, tela, lienzo, marco, moldura) → pedido.
 - "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto.
 - "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela. Solo es pedido si parece una solicitud de cliente con cantidad/medida o sin proveedor.
-- "[Nombre] pagó/pago/abonó [monto]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo en 3ra, SIN "le"/"a" objeto) → voucher (cliente pagó su factura), nombre_cliente=[Nombre], monto, metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto.
+- "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo"), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo".
 - "Le pagué/pagamos a [persona]" o "a [Nombre] por sueldo/adelanto" (con "le" + "a" como objeto, o mención explícita sueldo/adelanto) → gasto con empleado_gasto=[persona] y tipo_gasto "pago".
 - "pagué/pagamos a [proveedor]" (yo pagué) → gasto con tipo_gasto "pago", proveedor=[proveedor].
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
@@ -147,6 +147,9 @@ Mensaje: "gaste 5000 en luz y 2000 en gas"
 
 Mensaje: "Gastos varios dia lunes: $40 mil nafta, $34.500 bulonera, 38.000 empanadas"
 {"intent":"multi_expense","confianza":"media","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[{"monto":40000,"categoria":"nafta","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"nafta"},{"monto":34500,"categoria":"bulonera","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"bulonera"},{"monto":38000,"categoria":"empanadas","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"empanadas"}],"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "Mathias pago en efectivo todo"
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Mathias","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Marlon Pago 2000000"
 {"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":2000000,"categoria":null,"proveedor":"Marlon","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
