@@ -141,5 +141,15 @@ export function normalizeDate(input: unknown): string | null {
     return `${y}-${mo}-${d}`
   }
 
+  // Día solo sin mes: "26", "el 26", "día 26", "el día del 26" → mes y año actuales (AR)
+  m = s.match(/^(?:el\s+)?(?:día\s+del\s+|dia\s+del\s+|día\s+|dia\s+)?(\d{1,2})$/i)
+  if (m) {
+    const day = parseInt(m[1], 10)
+    if (day >= 1 && day <= 31) {
+      const [y, mo] = todayIso().split('-')
+      return `${y}-${mo}-${String(day).padStart(2, '0')}`
+    }
+  }
+
   return null
 }

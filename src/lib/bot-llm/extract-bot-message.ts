@@ -88,7 +88,7 @@ Usá "multi_expense" SOLO si el mensaje lista DOS O MÁS gastos distintos con su
 - "empleado_gasto": solo si es pago de sueldo a un empleado. Si hay "empleado_gasto", poné "categoria": null (la categoría correcta es "Sueldos y salarios").
 - "metodo_pago": efectivo, transferencia, débito, crédito, mercado pago, qr, o null.
 - "tipo_gasto": compra si se adquirió mercadería a un proveedor, pago si se abonó una deuda/proveedor/empleado, gasto para gastos operativos.
-- "fecha": YYYY-MM-DD si se menciona una fecha explícita ("15/7/26"→"2026-07-15", "ayer", "hoy", "09 del 08", "9 de Agosto"); si el mensaje dice un día de la semana ("el lunes"), dejá "fecha": null.
+- "fecha": YYYY-MM-DD si se menciona una fecha explícita ("15/7/26"→"2026-07-15", "ayer", "hoy", "09 del 08", "9 de Agosto", "el 26"→mes actual + día 26, "el día del 26"→mes actual + día 26); si el mensaje dice un día de la semana ("el lunes"), dejá "fecha": null.
 
 === faltan_campos ===
 
@@ -258,12 +258,20 @@ function sanitizeMultiExpenseItem(raw: unknown): MultiExpenseItem | null {
  * Ante fallo/timeout/JSON inválido/schema fuera de rango cae a `fallbackExtract`
  * (regex) con confianza 'baja'.
  */
+function todayAR(): string {
+  // ISO YYYY-MM-DD en America/Argentina/Buenos_Aires, sin deps
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
+}
+
 export async function extractBotMessage(
   text: string,
   contextText?: string,
 ): Promise<UnifiedExtraction> {
   const raw = (text || '').trim()
   if (!raw) return fallbackExtract(raw)
+
+  const today = todayAR()
+  const systemPrompt = `${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
 
   const userMessage = contextText
     ? `CONTEXTO (últimos mensajes + estado pendiente del bot):\n${contextText}\n\nMENSAJE: ${raw}`
@@ -273,7 +281,7 @@ export async function extractBotMessage(
   let usage: { prompt_tokens: number; completion_tokens: number } | null = null
   try {
     const result = await callOpenRouter({
-      systemPrompt: EXTRACT_PROMPT,
+      systemPrompt,
       userMessage,
       jsonMode: true,
       temperature: 0.1,

@@ -20,6 +20,8 @@ import {
   Search,
   Wrench,
   FileText,
+  Receipt,
+  FileImage,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -43,6 +45,22 @@ interface AssistantDebug {
   logs: { step: string; data: unknown }[]
   toolLogs?: { tool: string; duration_ms: number; resultCount?: number; error?: string }[]
   transcription?: string
+  error?: string
+}
+
+interface VoucherDebug {
+  mode: 'text' | 'file'
+  dryRun: boolean
+  wouldWrite: boolean
+  matchStatus: string
+  candidates: { invoice_id: number; numero_factura: string; cliente_nombre: string; saldo_pendiente: number; score?: number }[]
+  matchedInvoiceId: number | null
+  matchedInvoiceNumero: string | null
+  matchedClienteNombre: string | null
+  mensajeRespuesta: string
+  extraction: unknown
+  debugInfo: Record<string, unknown>
+  banner: string
   error?: string
 }
 
@@ -119,6 +137,16 @@ export default function BotBetaPage() {
   const [assistantDebugTab, setAssistantDebugTab] = useState('extraccion')
   const [assistantAudioBlob, setAssistantAudioBlob] = useState<Blob | null>(null)
 
+  // ─── Vouchers (dryRun copy) state ───
+  const [voucherTurns, setVoucherTurns] = useState<Turn[]>([])
+  const [voucherInput, setVoucherInput] = useState('')
+  const [voucherFile, setVoucherFile] = useState<File | null>(null)
+  const [voucherDebug, setVoucherDebug] = useState<VoucherDebug | null>(null)
+  const [voucherDebugTab, setVoucherDebugTab] = useState('extraccion')
+  const [voucherSending, setVoucherSending] = useState(false)
+  const voucherFileInputRef = useRef<HTMLInputElement>(null)
+  const voucherScrollRef = useRef<HTMLDivElement>(null)
+
   // Audio recording state (shared)
   const [recording, setRecording] = useState(false)
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
@@ -132,6 +160,7 @@ export default function BotBetaPage() {
 
   // Target blob for current mainTab
   const isAsistente = mainTab === 'asistente'
+  const isVouchers = mainTab === 'vouchers'
   const setActiveAudioBlob = isAsistente ? setAssistantAudioBlob : setAudioBlob
   const activeFileInputRef = isAsistente ? assistantFileInputRef : fileInputRef
 
@@ -376,9 +405,91 @@ export default function BotBetaPage() {
     }
   }, [assistantAudioBlob, assistantSending, assistantTurns, phone])
 
+  // ─── Voucher dryRun send ───
+  const sendVoucherText = async () => {
+    const text = voucherInput.trim()
+    if (!text || voucherSending) return
+    const userTurn: Turn = { role: 'user', content: text }
+    const nextTurns = [...voucherTurns, userTurn]
+    setVoucherTurns(nextTurns)
+    setVoucherInput('')
+    setVoucherSending(true)
+    try {
+      const res = await fetch('/api/bot-beta/voucher', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, phone }),
+      })
+      const result = (await res.json()) as VoucherDebug & { error?: string }
+      if (!res.ok) {
+        setVoucherDebug(result as unknown as VoucherDebug)
+        setVoucherTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setVoucherDebugTab('extraccion')
+        scrollToBottom(voucherScrollRef)
+        return
+      }
+      setVoucherDebug(result)
+      const reply = `🔒 Simulación — ${result.mensajeRespuesta}\n${result.matchedInvoiceNumero ? `→ Se registraría en ${result.matchedClienteNombre} FAC ${result.matchedInvoiceNumero} $${(result as unknown as { matchedSaldoPendiente?: number }).matchedSaldoPendiente ?? ''}` : ''}\n${result.candidates.length ? `\nCandidatas: ${result.candidates.length}` : ''}`
+      setVoucherTurns([...nextTurns, { role: 'bot', content: reply }])
+      setVoucherDebugTab('extraccion')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error de conexión'
+      setVoucherTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
+    } finally {
+      setVoucherSending(false)
+      scrollToBottom(voucherScrollRef)
+    }
+  }
+
+  const sendVoucherFile = async () => {
+    if (!voucherFile || voucherSending) return
+    const userTurn: Turn = { role: 'user', content: `📎 ${voucherFile.name} (${(voucherFile.size / 1024).toFixed(0)} KB)` }
+    const nextTurns = [...voucherTurns, userTurn]
+    setVoucherTurns(nextTurns)
+    const file = voucherFile
+    setVoucherFile(null)
+    setVoucherSending(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file, file.name)
+      const res = await fetch('/api/bot-beta/voucher', { method: 'POST', body: fd })
+      const result = (await res.json()) as VoucherDebug & { error?: string; extraction?: unknown }
+      if (!res.ok) {
+        setVoucherDebug(result as unknown as VoucherDebug)
+        setVoucherTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setVoucherDebugTab('extraccion')
+        scrollToBottom(voucherScrollRef)
+        return
+      }
+      setVoucherDebug(result)
+      const reply = `🔒 Simulación — ${result.mensajeRespuesta}${result.matchedInvoiceNumero ? `\n→ Se registraría ${result.matchedClienteNombre} FAC ${result.matchedInvoiceNumero}` : ''}`
+      setVoucherTurns([...nextTurns, { role: 'bot', content: reply }])
+      setVoucherDebugTab('extraccion')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error de conexión'
+      setVoucherTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
+    } finally {
+      setVoucherSending(false)
+      scrollToBottom(voucherScrollRef)
+    }
+  }
+
+  const handleVoucherFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setVoucherFile(f)
+    if (voucherFileInputRef.current) voucherFileInputRef.current.value = ''
+  }
+
   // ─── Reset ───
   const reset = () => {
-    if (isAsistente) {
+    if (isVouchers) {
+      setVoucherTurns([])
+      setVoucherDebug(null)
+      setVoucherDebugTab('extraccion')
+      setVoucherFile(null)
+      setVoucherInput('')
+    } else if (isAsistente) {
       setAssistantTurns([])
       setAssistantDebug(null)
       setAssistantDebugTab('extraccion')
@@ -412,8 +523,15 @@ export default function BotBetaPage() {
     }
   }
 
-  const hasAnyTurns = isAsistente ? assistantTurns.length > 0 : turns.length > 0
-  const isSending = isAsistente ? assistantSending : sending
+  const handleVoucherKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void sendVoucherText()
+    }
+  }
+
+  const hasAnyTurns = isVouchers ? voucherTurns.length > 0 : isAsistente ? assistantTurns.length > 0 : turns.length > 0
+  const isSending = isVouchers ? voucherSending : isAsistente ? assistantSending : sending
 
   return (
     <div>
@@ -431,9 +549,11 @@ export default function BotBetaPage() {
         </Button>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        {isAsistente
-          ? 'Asistente conversacional — probá saludos, consultas y registros. Usa OpenRouter y FacBal reales.'
-          : 'Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje. Usa OpenRouter y FacBal reales.'}
+        {isVouchers
+          ? 'Vouchers — probá texto “Tobi pagó $12k en efectivo” o subí comprobante (imagen/PDF). Copia aislada dryRun, no escribe en backend_gal.'
+          : isAsistente
+            ? 'Asistente conversacional — probá saludos, consultas y registros. Usa OpenRouter y FacBal reales.'
+            : 'Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje. Usa OpenRouter y FacBal reales.'}
       </p>
 
       {/* ─── Teléfono ─── */}
@@ -448,7 +568,7 @@ export default function BotBetaPage() {
         />
       </div>
 
-      {/* ─── Tabs superiores: Asistente | Pedidos ─── */}
+      {/* ─── Tabs superiores: Asistente | Pedidos | Vouchers ─── */}
       <Tabs value={mainTab} onValueChange={setMainTab} className="mt-4">
         <TabsList className="h-9">
           <TabsTrigger value="asistente" className="text-xs gap-1.5">
@@ -456,6 +576,9 @@ export default function BotBetaPage() {
           </TabsTrigger>
           <TabsTrigger value="pedidos" className="text-xs gap-1.5">
             <Volume2 className="h-3.5 w-3.5" /> Pedidos
+          </TabsTrigger>
+          <TabsTrigger value="vouchers" className="text-xs gap-1.5">
+            <Receipt className="h-3.5 w-3.5" /> Vouchers
           </TabsTrigger>
         </TabsList>
 
@@ -971,6 +1094,137 @@ export default function BotBetaPage() {
                         </div>
                       )}
                     </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* ─── Tab Vouchers (copy aislada dryRun) ─── */}
+        <TabsContent value="vouchers" className="mt-4">
+          <div className="flex gap-4" style={{ minHeight: '65vh' }}>
+            {/* Izquierda: Chat Vouchers */}
+            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Conversación — Vouchers</span>
+                <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-500 border-amber-500/30">DRYRUN</Badge>
+              </div>
+              <div ref={voucherScrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
+                {voucherTurns.length === 0 && (
+                  <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
+                    <Receipt className="mb-2 h-8 w-8 text-muted-foreground/60" />
+                    <p>Probá voucher sin escribir en producción.</p>
+                    <p className="mt-1 text-xs">Texto: &quot;Tobi pagó $12.000 en efectivo&quot; o subí imagen/PDF de transferencia.</p>
+                    <p className="mt-1 text-[11px] text-amber-500">🔒 Copia aislada — mismo pool 1-5 prod, sin crear voucher_reviews ni pagos.</p>
+                  </div>
+                )}
+                {voucherTurns.map((t, i) => (
+                  <div key={i} className={cn('flex gap-2', t.role === 'user' ? 'justify-end' : 'justify-start')}>
+                    {t.role === 'bot' && <Bot className="mt-1 h-5 w-5 shrink-0 text-primary" />}
+                    <div className={cn('max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap', t.role === 'user' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted text-foreground')}>{t.content}</div>
+                    {t.role === 'user' && <UserCircle2 className="mt-1 h-5 w-5 shrink-0 text-muted-foreground" />}
+                  </div>
+                ))}
+                {voucherSending && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Bot className="h-5 w-5 text-primary" />
+                    <Loader2 className="h-4 w-4 animate-spin" /> Procesando voucher…
+                  </div>
+                )}
+              </div>
+              <div className="flex items-end gap-2 border-t border-border p-3">
+                <textarea value={voucherInput} onChange={(e) => setVoucherInput(e.target.value)} onKeyDown={handleVoucherKeyDown} placeholder="Ej: Tobi pagó 12000 en efectivo o pegá respuesta A/B" rows={1} disabled={voucherSending} className="flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none focus:border-primary/50" />
+                <Button size="sm" variant="outline" onClick={() => voucherFileInputRef.current?.click()} disabled={voucherSending} className="h-9 w-9 shrink-0 p-0" title="Subir comprobante">
+                  <FileImage className="h-4 w-4" />
+                </Button>
+                <input ref={voucherFileInputRef} type="file" accept="image/*,application/pdf" onChange={handleVoucherFile} className="hidden" />
+                <Button size="sm" onClick={voucherFile ? sendVoucherFile : sendVoucherText} disabled={(!voucherInput.trim() && !voucherFile) || voucherSending} className="h-9 w-9 shrink-0 p-0">
+                  {voucherSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
+              {voucherFile && (
+                <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-muted/30">
+                  <FileImage className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="flex-1 min-w-0 truncate text-xs text-foreground">{voucherFile.name} ({(voucherFile.size / 1024).toFixed(0)} KB)</span>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setVoucherFile(null)}>Cancelar</Button>
+                  <Button size="sm" className="h-7 text-xs" onClick={sendVoucherFile} disabled={voucherSending}>Enviar</Button>
+                </div>
+              )}
+            </div>
+            {/* Derecha: Debug Vouchers */}
+            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Debug — Vouchers (dryRun)</span>
+              </div>
+              <Tabs value={voucherDebugTab} onValueChange={setVoucherDebugTab} className="flex flex-1 flex-col">
+                <div className="border-b border-border px-3">
+                  <TabsList className="h-9">
+                    <TabsTrigger value="extraccion" className="text-xs gap-1.5"><Search className="h-3.5 w-3.5" /> Extracción</TabsTrigger>
+                    <TabsTrigger value="candidatas" className="text-xs gap-1.5"><Receipt className="h-3.5 w-3.5" /> Candidatas</TabsTrigger>
+                    <TabsTrigger value="phases" className="text-xs gap-1.5"><Wrench className="h-3.5 w-3.5" /> Phases</TabsTrigger>
+                    <TabsTrigger value="raw" className="text-xs gap-1.5"><List className="h-3.5 w-3.5" /> Raw</TabsTrigger>
+                  </TabsList>
+                </div>
+                <TabsContent value="extraccion" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!voucherDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Search className="mr-2 h-5 w-5 opacity-50" />Enviá texto o imagen para ver extracción.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-600">{voucherDebug.banner}</div>
+                      <div className="rounded-lg border border-border p-3">
+                        <p className="text-xs font-medium text-muted-foreground mb-1">Extracción</p>
+                        <pre className="text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">{JSON.stringify(voucherDebug.extraction, null, 2)}</pre>
+                      </div>
+                      <div className="rounded-lg border border-border p-3">
+                        <p className="text-xs font-medium text-muted-foreground mb-1">Mensaje</p>
+                        <p className="text-sm whitespace-pre-wrap">{voucherDebug.mensajeRespuesta}</p>
+                        <p className="mt-1 text-xs">Status: <Badge variant="outline" className="text-[10px]">{voucherDebug.matchStatus}</Badge> {voucherDebug.matchedInvoiceNumero ? `→ ${voucherDebug.matchedClienteNombre} ${voucherDebug.matchedInvoiceNumero}` : ''}</p>
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="candidatas" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!voucherDebug || voucherDebug.candidates.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Receipt className="mr-2 h-5 w-5 opacity-50" />Sin candidatas (o pool vacío).</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {voucherDebug.candidates.map((c, i) => (
+                        <div key={i} className="rounded-lg border border-border p-2.5 flex items-center justify-between">
+                          <div>
+                            <p className="text-xs font-medium">{String.fromCharCode(65 + i)}. {c.cliente_nombre} — {c.numero_factura}</p>
+                            <p className="text-[11px] text-muted-foreground">Saldo: ${c.saldo_pendiente?.toLocaleString('es-AR')} {c.score != null ? `· score ${c.score.toFixed(3)}` : ''}</p>
+                          </div>
+                          <Badge variant="outline" className="text-[10px]">ID {c.invoice_id}</Badge>
+                        </div>
+                      ))}
+                      {voucherDebug.matchStatus === 'matched' && <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2 text-xs">🔒 Se registraría {voucherDebug.matchedClienteNombre} FAC {voucherDebug.matchedInvoiceNumero} — NO escrito (dryRun)</div>}
+                    </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="phases" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!voucherDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Wrench className="mr-2 h-5 w-5 opacity-50" />Fases 1-5 idénticas a prod.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {(["phase1","phase2","phase3","phase4","phase5","decision"] as const).map((k) => {
+                        const v = (voucherDebug.debugInfo as Record<string, unknown>)[k]
+                        if (!v) return null
+                        return (
+                          <div key={k} className="rounded-lg border border-border p-2.5">
+                            <p className="text-xs font-medium text-muted-foreground mb-1">{k}</p>
+                            <pre className="text-[10px] font-mono whitespace-pre-wrap overflow-x-auto max-h-[200px]">{JSON.stringify(v, null, 2)}</pre>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="raw" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!voucherDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><List className="mr-2 h-5 w-5 opacity-50" />Raw JSON</div>
+                  ) : (
+                    <pre className="text-[10px] font-mono whitespace-pre-wrap overflow-x-auto">{JSON.stringify(voucherDebug, null, 2)}</pre>
                   )}
                 </TabsContent>
               </Tabs>

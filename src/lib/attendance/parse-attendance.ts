@@ -164,6 +164,26 @@ function extractDate(text: string): { date: string | null; remaining: string } {
 
   const explicitPatterns: { re: RegExp; build: (m: RegExpMatchArray) => string | null }[] = [
     {
+      // "el día del 26", "día 26", "el día 26" (sin mes) → mes actual
+      re: /(?:el\s+)?día\s+del\s+(\d{1,2})\b/i,
+      build: (m) => {
+        const day = parseInt(m[1], 10)
+        if (day < 1 || day > 31) return null
+        const now = new Date()
+        return toIso(now.getFullYear(), now.getMonth() + 1, day)
+      },
+    },
+    {
+      // "dia del 26" sin acento
+      re: /(?:el\s+)?dia\s+del\s+(\d{1,2})\b/i,
+      build: (m) => {
+        const day = parseInt(m[1], 10)
+        if (day < 1 || day > 31) return null
+        const now = new Date()
+        return toIso(now.getFullYear(), now.getMonth() + 1, day)
+      },
+    },
+    {
       // "09 del 08", "9 del 8 del 25", "09 del 08 de 2026"
       re: /(?<!las )(\d{1,2})\s+del\s+(\d{1,2})(?:\s+(?:de|del)\s+(\d{2,4}))?/i,
       build: (m) => {
@@ -197,6 +217,16 @@ function extractDate(text: string): { date: string | null; remaining: string } {
         const mo = parseInt(m[2], 10)
         if (mo < 1 || mo > 12) return null
         return toIso(m[3], mo, parseInt(m[1], 10))
+      },
+    },
+    {
+      // "el 26" solo día sin mes → mes actual (ej: "llego 11:00 el 26"), no si sigue "de <mes/numero>"
+      re: /(?<!las )(?:el\s+)(\d{1,2})\b(?!\s+de\s+(?:\d|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?![:\d\/\-])/i,
+      build: (m) => {
+        const day = parseInt(m[1], 10)
+        if (day < 1 || day > 31) return null
+        const now = new Date()
+        return toIso(now.getFullYear(), now.getMonth() + 1, day)
       },
     },
   ]
