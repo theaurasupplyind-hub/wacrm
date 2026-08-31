@@ -231,10 +231,58 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   const forcedCaption = (args.voucherCaption?.trim() || (args.text && voucherPendingItem ? args.text.trim() : null)) || null
   const forcedMonto = args.voucherExtractedAmount ?? voucherPendingItem?.extraction?.monto ?? null
 
-  // If we have a pending voucher (ambiguous) and the inbound text looks like a client name (not a letter A/B selection),
-  // perform forced client search in dummy only — amount is always extractedAmount.
+  // ── Letter selection for pending voucher (dummy only) — must be before forced client name
   const isLetterSelection = /^[a-zA-Z]\s*$/.test(text.trim()) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(text.trim())
   const looksLikeClientName = forcedCaption && forcedCaption.length >= 3 && !isLetterSelection && /[a-zA-Z]{2,}/.test(forcedCaption)
+
+  // If pending voucher exists and user replies with letter A/B, confirm that candidate (dryRun) and replace extracted name with caption
+  if (voucherPendingItem && isLetterSelection && dummyConversationId && admin) {
+    const candidates = voucherPendingItem.candidates as { cliente_nombre: string; numero_factura: string; saldo_pendiente: number; invoice_id: number }[]
+    const letter = text.trim().toUpperCase()[0]
+    const idx = letter.charCodeAt(0) - 65
+    if (idx >= 0 && idx < candidates.length) {
+      const chosen = candidates[idx]
+      const monto = forcedMonto ?? voucherPendingItem.extraction.monto ?? 0
+      // Remove pending (dryRun) — update voucher_context
+      try {
+        const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
+        const filtered = currentCtx.pending.filter((p) => p.sourceMessageId !== voucherPendingItem.sourceMessageId)
+        await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: filtered })
+        logs.push({ step: 'botbeta_voucher_letter_confirm', data: { letter, chosen, monto, pendingRemoved: true } })
+      } catch (err) {
+        logs.push({ step: 'botbeta_voucher_letter_remove_error', data: { error: err instanceof Error ? err.message : String(err) } })
+      }
+      const restante = chosen.saldo_pendiente - monto
+      // Replace extracted name with caption/pending extraction name — show normal info
+      const reply = `Confirmado (dummy). Pago de $${monto.toLocaleString('es-AR')} para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}${restante > 0 ? ` (queda $${restante.toLocaleString('es-AR')})` : restante < 0 ? ` (excede saldo)` : ''}. [dryRun, nombre extraído reemplazado por "${forcedCaption || voucherPendingItem.extraction.monto}"]`
+      const allLogs = [...logs, { step: 'assistant_response', data: { reply_preview: reply.slice(0, 300) } }]
+      return {
+        reply,
+        dispatchedTo: 'voucher',
+        dispatchReason: 'letter_selection_matched',
+        extraction: extraction,
+        toolResults: { chosen, monto, forcedCaption, candidates },
+        toolLogs: [{ tool: `voucher_letter_${letter}`, duration_ms: 0, resultCount: 1 }],
+        knowledge: [],
+        logs: allLogs,
+        dummyConversationId,
+      }
+    } else {
+      const reply = `No entendí la letra "${text.trim()}". Respondé con ${candidates.map((_, i) => String.fromCharCode(65 + i)).join(', ')}.`
+      const allLogs = [...logs, { step: 'assistant_response', data: { reply_preview: reply } }]
+      return {
+        reply,
+        dispatchedTo: 'voucher',
+        dispatchReason: 'letter_selection_invalid',
+        extraction,
+        toolResults: { candidates },
+        toolLogs: [],
+        knowledge: [],
+        logs: allLogs,
+        dummyConversationId,
+      }
+    }
+  }
 
   if (voucherPendingItem && looksLikeClientName && forcedMonto && forcedMonto > 0) {
     try {
@@ -284,11 +332,29 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
         }
       }
 
-      // Multiple invoices -> show list as ambiguous, same UX as production
+      // Multiple invoices -> show list as ambiguous, same UX as production — also persist pending for letter selection (replace extracted name with caption)
       const clientesUnicos = new Set(forcedCandidates.map((c) => c.cliente_nombre)).size
       const intro = `Recibimos un pago de $${forcedMonto.toLocaleString('es-AR')} para "${forcedCaption}". Hay ${clientesUnicos} clientes/facturas posibles:\n\n`
       const lines = forcedCandidates.map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`).join('\n')
       const reply = `${intro}${lines}\n\nRespondé con la letra (A, B...) [dummy dryRun]`
+      // Persist pending for dummy so next "A" confirms — replace extracted name with caption
+      if (dummyConversationId && admin) {
+        try {
+          const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
+          const newItem = {
+            sourceMessageId: `dummy-${Date.now()}`,
+            extraction: { monto: forcedMonto ?? null, fecha: null, referencia: null, banco: null, nombre_cliente: forcedCaption!, nombre_origen: forcedCaption!, nombre_destino: null, cbu_destino: null, cuit_destino: null },
+            candidates: forcedCandidates as never,
+            bestDestination: null,
+            mediaBase64: '',
+            mediaMimeType: 'image/jpeg',
+          }
+          await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: [...currentCtx.pending, newItem as never] })
+          logs.push({ step: 'botbeta_voucher_pending_saved', data: { caption: forcedCaption, monto: forcedMonto, candidates: forcedCandidates.length } })
+        } catch (err) {
+          logs.push({ step: 'botbeta_voucher_pending_save_error', data: { error: err instanceof Error ? err.message : String(err) } })
+        }
+      }
       const allLogs = [...logs, { step: 'assistant_response', data: { reply_preview: reply.slice(0, 300) } }]
       return {
         reply,
@@ -307,7 +373,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   }
 
   // Single-message image+caption (no pending yet) — also handle caption as forced client in dummy
-  // If text looks like "FAC 00123 Acme SRL" or "Acme SRL" and intent is voucher with monto, try forced search pre-assistant
+  // If text looks like "FAC 00123 Acme SRL" or "Acme SRL" and intent is voucher with monto, try forced search pre-assistant — replace extracted name with caption
   const captionInSameMessage = args.voucherCaption && args.voucherExtractedAmount
   if (captionInSameMessage && !voucherPendingItem && extraction?.intent === 'voucher' && looksLikeClientName) {
     try {
@@ -319,10 +385,28 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
       })
       const forcedCandidates = forcedResult.invoice_candidates || []
       if (forcedCandidates.length > 0) {
+        if (forcedCandidates.length > 1 && dummyConversationId && admin) {
+          // Persist pending for letter selection — extraction name replaced by caption
+          try {
+            const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
+            const newItem = {
+              sourceMessageId: `dummy-${Date.now()}`,
+              extraction: { monto: args.voucherExtractedAmount ?? null, fecha: null, referencia: null, banco: null, nombre_cliente: args.voucherCaption!.trim(), nombre_origen: args.voucherCaption!.trim(), nombre_destino: null, cbu_destino: null, cuit_destino: null },
+              candidates: forcedCandidates as never,
+              bestDestination: null,
+              mediaBase64: '',
+              mediaMimeType: 'image/jpeg',
+            }
+            await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: [...currentCtx.pending, newItem as never] })
+            logs.push({ step: 'botbeta_voucher_caption_pending_saved', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount } })
+          } catch (err) {
+            logs.push({ step: 'botbeta_voucher_caption_pending_error', data: { error: err instanceof Error ? err.message : String(err) } })
+          }
+        }
         const intro = `Recibimos un pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para "${args.voucherCaption!.trim()}".\n\n`
         const lines = forcedCandidates.slice(0, 15).map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`).join('\n')
         const reply = forcedCandidates.length === 1
-          ? `Confirmado (dummy). Pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para ${forcedCandidates[0].cliente_nombre} — Factura ${forcedCandidates[0].numero_factura}. [dryRun]`
+          ? `Confirmado (dummy). Pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para ${forcedCandidates[0].cliente_nombre} — Factura ${forcedCandidates[0].numero_factura}. [dryRun, nombre reemplazado por caption]`
           : `${intro}${lines}\n\nRespondé con la letra (A, B...) [dummy dryRun]`
         const allLogs = [...logs, { step: 'botbeta_voucher_caption_forced', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount, candidates: forcedCandidates.length } }]
         return {
