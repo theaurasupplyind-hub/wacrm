@@ -24,8 +24,8 @@ import {
   loadAttendanceContext,
 } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
-import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
+import { decideDispatch } from '@/lib/bot/router'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -1482,11 +1482,6 @@ async function processMessage(
     console.log('[intent] intent=%s confianza=%s dudoso=%s text=%s', intent, confianza, extraction.dudoso, inboundText.slice(0, 80))
   }
 
-  const isAsistenciaIntent = (i: BotIntent | undefined): boolean =>
-    i === 'asistencia_llegada' || i === 'asistencia_salida' || i === 'asistencia_estado'
-
-  const suppressVoice = !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })
-
   const pushExpenseTask = (ex?: UnifiedExtraction) => {
     bgTasks.push(
       (async () => {
@@ -1529,74 +1524,41 @@ async function processMessage(
     )
   }
 
-  // Primary dispatch: elige UN handler según la intención extraída.
-  // Mientras hay un multi-turno pendiente, las respuestas cortas van al
-  // handler de ese bot aunque el LLM no las haya resuelto (fallback conservador).
-  let dispatchedTo: string = flowConsumed ? 'flow' : interactiveReplyId ? 'interactive' : 'none'
-  let dispatchReason: string = flowConsumed || interactiveReplyId ? 'consumed' : 'none'
+  // Primary dispatch — now via shared router. Keep logging same as before.
+  const routerDecision = decideDispatch({
+    hasPendingExpense,
+    hasPendingAttendance,
+    hasPendingVoucher,
+    flowConsumed,
+    interactiveReplyId,
+    inboundText,
+    extraction,
+    mediaConsumedByVoucher,
+  })
+  let dispatchedTo: string = routerDecision.dispatchedTo
+  let dispatchReason: string = routerDecision.dispatchReason
 
-  if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
-    dispatchedTo = 'expense'
-    dispatchReason = 'category_correction'
-    console.log('[expense] category correction command dispatch -> conversation=%s', conversation.id)
-    pushExpenseTask()
-  } else if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
-    dispatchedTo = 'expense'
-    dispatchReason = 'pending_multiturn'
-    console.log('[expense] pending multi-turn dispatch -> conversation=%s', conversation.id)
-    pushExpenseTask()
-  } else if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent)) {
-    dispatchedTo = 'attendance'
-    dispatchReason = 'pending_multiturn'
-    console.log('[attendance] pending multi-turn dispatch -> conversation=%s', conversation.id)
-    pushAttendanceTask()
-  } else if (intent === 'multi_expense') {
-    dispatchedTo = 'expense'
-    dispatchReason = 'multi_expense'
-    console.log('[expense] multi-expense intent dispatch -> conversation=%s', conversation.id)
-    pushExpenseTask(extraction ?? undefined)
-  } else if (intent === 'gasto') {
-    dispatchedTo = 'expense'
-    dispatchReason = 'intent'
-    console.log('[expense] intent dispatch -> conversation=%s', conversation.id)
-    pushExpenseTask(extraction ?? undefined)
-  } else if (isAsistenciaIntent(intent)) {
-    dispatchedTo = 'attendance'
-    dispatchReason = 'intent'
-    console.log('[attendance] intent dispatch -> conversation=%s', conversation.id)
-    pushAttendanceTask(extraction ?? undefined)
-  } else if (intent === 'voucher') {
-    dispatchedTo = 'voucher'
-    dispatchReason = 'intent'
-    // Voucher: se consume sin dispatch para que expense/voice NO lo capturen.
-    // El bloque inferior maneja pendingTexts y las respuestas a comprobantes
-    // pendientes (grieta corregida: "transferí para la factura 001" ya no es gasto).
-    console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
-  } else if ((intent === 'pedido' || intent === 'factura') && confianza !== 'baja' && suppressVoice) {
-    dispatchedTo = 'voice'
-    dispatchReason = 'intent'
-    console.log('[voice] intent dispatch -> conversation=%s', conversation.id)
-    pushVoiceTask()
-  } else {
-    // ── FALLBACK: intent otro/confianza baja o extractor cayó a otro → regex gates ──
-    const isExpenseText = !flowConsumed && !interactiveReplyId &&
-      (hasPendingExpense || (inboundText.trim() && looksLikeExpense(inboundText)))
-    if (isExpenseText) {
-      dispatchedTo = 'expense'
-      dispatchReason = 'fallback_regex'
-      console.log('[expense] fallback dispatch -> conversation=%s', conversation.id)
-      pushExpenseTask()
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && (hasPendingAttendance || looksLikeAttendance(inboundText))) {
-      dispatchedTo = 'attendance'
-      dispatchReason = 'fallback_regex'
-      console.log('[attendance] fallback dispatch -> conversation=%s', conversation.id)
-      pushAttendanceTask()
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {
-      dispatchedTo = 'voice'
-      dispatchReason = 'fallback_regex'
-      console.log('[voice] fallback dispatch -> conversation=%s', conversation.id)
+  switch (routerDecision.dispatchedTo) {
+    case 'expense':
+      console.log('[%s] dispatch -> conversation=%s', dispatchReason === 'pending_multiturn' ? 'expense' : dispatchReason === 'category_correction' ? 'expense' : 'expense', conversation.id)
+      pushExpenseTask(extraction ?? undefined)
+      break
+    case 'attendance':
+      console.log('[attendance] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
+      pushAttendanceTask(extraction ?? undefined)
+      break
+    case 'voucher':
+      console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
+      break
+    case 'voice':
+      console.log('[voice] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
       pushVoiceTask()
-    }
+      break
+    case 'flow':
+    case 'interactive':
+    case 'none':
+    default:
+      break
   }
 
   // Auditoría: registrar la decisión del router en router_logs (fire-and-forget).

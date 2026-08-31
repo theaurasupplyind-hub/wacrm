@@ -117,8 +117,8 @@ function formatVoiceResult(result: VoiceOrderResult): string {
 }
 
 export default function BotBetaPage() {
-  // Top-level tab: asistente vs pedidos
-  const [mainTab, setMainTab] = useState('asistente')
+  // Top-level tab: unificado (base prod + asistente) is default; legacy tabs kept behind ?legacy=1
+  const [mainTab, setMainTab] = useState('unificado')
 
   // ─── Pedidos (legacy) state ───
   const [turns, setTurns] = useState<Turn[]>([])
@@ -129,7 +129,15 @@ export default function BotBetaPage() {
   const [sending, setSending] = useState(false)
   const [debugTab, setDebugTab] = useState('voice_logs')
 
-  // ─── Asistente state ───
+  // ─── Unificado (base prod + asistente) state — phone dummy aislado
+  const [unifiedTurns, setUnifiedTurns] = useState<Turn[]>([])
+  const [unifiedInput, setUnifiedInput] = useState('')
+  const [unifiedSending, setUnifiedSending] = useState(false)
+  const [unifiedDebug, setUnifiedDebug] = useState<(AssistantDebug & { dispatchedTo?: string; dispatchReason?: string; dummyConversationId?: string | null }) | null>(null)
+  const [unifiedDebugTab, setUnifiedDebugTab] = useState('extraccion')
+  const [unifiedAudioBlob, setUnifiedAudioBlob] = useState<Blob | null>(null)
+
+  // ─── Asistente state (legacy, kept for ?legacy) ───
   const [assistantTurns, setAssistantTurns] = useState<Turn[]>([])
   const [assistantInput, setAssistantInput] = useState('')
   const [assistantSending, setAssistantSending] = useState(false)
@@ -159,13 +167,15 @@ export default function BotBetaPage() {
   const pendingInvoiceRef = useRef<VoiceOrderResult['pendingInvoice']>(undefined)
 
   // Target blob for current mainTab
+  const isUnificado = mainTab === 'unificado'
   const isAsistente = mainTab === 'asistente'
   const isVouchers = mainTab === 'vouchers'
-  const setActiveAudioBlob = isAsistente ? setAssistantAudioBlob : setAudioBlob
-  const activeFileInputRef = isAsistente ? assistantFileInputRef : fileInputRef
+  const setActiveAudioBlob = isUnificado ? setUnifiedAudioBlob : isAsistente ? setAssistantAudioBlob : setAudioBlob
+  const activeFileInputRef = isUnificado ? assistantFileInputRef : isAsistente ? assistantFileInputRef : fileInputRef
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const assistantScrollRef = useRef<HTMLDivElement>(null)
+  const unifiedScrollRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = (ref: React.RefObject<HTMLDivElement | null>) => {
     setTimeout(() => {
@@ -226,7 +236,47 @@ export default function BotBetaPage() {
     }
   }
 
-  // ─── Assistant text send ───
+  // ─── Unified text send (base prod + asistente, dummy phone) ───
+  const sendUnifiedText = async () => {
+    const text = unifiedInput.trim()
+    if (!text || unifiedSending) return
+
+    const userTurn: Turn = { role: 'user', content: text }
+    const nextTurns = [...unifiedTurns, userTurn]
+    setUnifiedTurns(nextTurns)
+    setUnifiedInput('')
+    setUnifiedSending(true)
+
+    try {
+      const res = await fetch('/api/bot-beta/unified', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          history: nextTurns.map((t) => ({ role: t.role, content: t.content })),
+        }),
+      })
+      const result: AssistantDebug & { dispatchedTo?: string; dispatchReason?: string; error?: string; dummyConversationId?: string | null } = await res.json()
+      if (!res.ok) {
+        setUnifiedDebug(result)
+        setUnifiedTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setUnifiedDebugTab('logs')
+        scrollToBottom(unifiedScrollRef)
+        return
+      }
+      setUnifiedDebug(result)
+      setUnifiedTurns([...nextTurns, { role: 'bot', content: result.reply }])
+      setUnifiedDebugTab('extraccion')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error de conexión'
+      setUnifiedTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
+    } finally {
+      setUnifiedSending(false)
+      scrollToBottom(unifiedScrollRef)
+    }
+  }
+
+  // ─── Assistant text send (legacy) ───
   const sendAssistantText = async () => {
     const text = assistantInput.trim()
     if (!text || assistantSending) return
@@ -363,7 +413,48 @@ export default function BotBetaPage() {
     }
   }, [audioBlob, sending, turns, phone])
 
-  // ─── Send assistant audio ───
+  // ─── Send unified audio (dummy phone, base prod) ───
+  const sendUnifiedAudio = useCallback(async () => {
+    if (!unifiedAudioBlob || unifiedSending) return
+
+    const userTurn: Turn = { role: 'user', content: '🎤 Audio enviado' }
+    const nextTurns = [...unifiedTurns, userTurn]
+    setUnifiedTurns(nextTurns)
+    setUnifiedAudioBlob(null)
+    setUnifiedSending(true)
+
+    try {
+      const formData = new FormData()
+      formData.append('audio', unifiedAudioBlob, 'audio.webm')
+      formData.append('history', JSON.stringify(nextTurns.map((t) => ({ role: t.role, content: t.content }))))
+
+      const res = await fetch('/api/bot-beta/unified', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const result: AssistantDebug & { dispatchedTo?: string; error?: string } = await res.json()
+      if (!res.ok) {
+        setUnifiedDebug(result)
+        setUnifiedTurns([...nextTurns, { role: 'bot', content: `Error: ${result.error || 'Error inesperado'}` }])
+        setUnifiedDebugTab('logs')
+        scrollToBottom(unifiedScrollRef)
+        return
+      }
+      setUnifiedDebug(result)
+      const transcriptionNote = result.transcription ? `📝 "${result.transcription}"\n\n` : ''
+      setUnifiedTurns([...nextTurns, { role: 'bot', content: transcriptionNote + result.reply }])
+      setUnifiedDebugTab('extraccion')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error de conexión'
+      setUnifiedTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
+    } finally {
+      setUnifiedSending(false)
+      scrollToBottom(unifiedScrollRef)
+    }
+  }, [unifiedAudioBlob, unifiedSending, unifiedTurns])
+
+  // ─── Send assistant audio (legacy) ───
   const sendAssistantAudio = useCallback(async () => {
     if (!assistantAudioBlob || assistantSending) return
 
@@ -483,7 +574,13 @@ export default function BotBetaPage() {
 
   // ─── Reset ───
   const reset = () => {
-    if (isVouchers) {
+    if (isUnificado) {
+      setUnifiedTurns([])
+      setUnifiedDebug(null)
+      setUnifiedDebugTab('extraccion')
+      setUnifiedAudioBlob(null)
+      setUnifiedInput('')
+    } else if (isVouchers) {
       setVoucherTurns([])
       setVoucherDebug(null)
       setVoucherDebugTab('extraccion')
@@ -523,6 +620,13 @@ export default function BotBetaPage() {
     }
   }
 
+  const handleUnifiedKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void sendUnifiedText()
+    }
+  }
+
   const handleVoucherKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -530,8 +634,8 @@ export default function BotBetaPage() {
     }
   }
 
-  const hasAnyTurns = isVouchers ? voucherTurns.length > 0 : isAsistente ? assistantTurns.length > 0 : turns.length > 0
-  const isSending = isVouchers ? voucherSending : isAsistente ? assistantSending : sending
+  const hasAnyTurns = isUnificado ? unifiedTurns.length > 0 : isVouchers ? voucherTurns.length > 0 : isAsistente ? assistantTurns.length > 0 : turns.length > 0
+  const isSending = isUnificado ? unifiedSending : isVouchers ? voucherSending : isAsistente ? assistantSending : sending
 
   return (
     <div>
@@ -549,28 +653,42 @@ export default function BotBetaPage() {
         </Button>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        {isVouchers
-          ? 'Vouchers — probá texto “Tobi pagó $12k en efectivo” o subí comprobante (imagen/PDF). Copia aislada dryRun, no escribe en backend_gal.'
-          : isAsistente
-            ? 'Asistente conversacional — probá saludos, consultas y registros. Usa OpenRouter y FacBal reales.'
-            : 'Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje. Usa OpenRouter y FacBal reales.'}
+        {isUnificado
+          ? 'Unificado — base producción (router + phone dummy 11 9999 9999, dryRun) + asistente conversacional. Espeja el pipeline de WhatsApp.'
+          : isVouchers
+            ? 'Vouchers — probá texto “Tobi pagó $12k en efectivo” o subí comprobante (imagen/PDF). Copia aislada dryRun, no escribe en backend_gal.'
+            : isAsistente
+              ? 'Asistente conversacional — probá saludos, consultas y registros. Usa OpenRouter y FacBal reales.'
+              : 'Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje. Usa OpenRouter y FacBal reales.'}
       </p>
 
       {/* ─── Teléfono ─── */}
-      <div className="mt-4 max-w-xs">
-        <label className="text-xs font-medium text-muted-foreground mb-1 block">Teléfono del cliente simulado</label>
-        <Input
-          value={phone}
+      {isUnificado ? (
+        <div className="mt-4 flex items-center gap-2">
+          <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/30">DUMMY 11 9999 9999</Badge>
+          <span className="text-xs text-muted-foreground">Conversación aislada por account · dryRun · no toca inbox real</span>
+          {unifiedDebug?.dummyConversationId && <span className="text-[10px] font-mono text-muted-foreground">{unifiedDebug.dummyConversationId.slice(0, 8)}</span>}
+          {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px]">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason}</Badge>}
+        </div>
+      ) : (
+        <div className="mt-4 max-w-xs">
+          <label className="text-xs font-medium text-muted-foreground mb-1 block">Teléfono del cliente simulado</label>
+          <Input
+            value={phone}
           onChange={(e) => setPhone(formatPhone(e.target.value))}
           placeholder="1145678901"
           disabled={isSending}
           className="font-mono text-sm"
         />
-      </div>
+        </div>
+      )}
 
-      {/* ─── Tabs superiores: Asistente | Pedidos | Vouchers ─── */}
+      {/* ─── Tabs superiores: Unificado | Asistente | Pedidos | Vouchers ─── */}
       <Tabs value={mainTab} onValueChange={setMainTab} className="mt-4">
         <TabsList className="h-9">
+          <TabsTrigger value="unificado" className="text-xs gap-1.5">
+            <Bot className="h-3.5 w-3.5" /> Unificado
+          </TabsTrigger>
           <TabsTrigger value="asistente" className="text-xs gap-1.5">
             <MessageCircle className="h-3.5 w-3.5" /> Asistente
           </TabsTrigger>
@@ -582,7 +700,155 @@ export default function BotBetaPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* ─── Tab Asistente ─── */}
+        {/* ─── Tab Unificado (base prod + asistente, dummy phone) ─── */}
+        <TabsContent value="unificado" className="mt-4">
+          <div className="flex gap-4" style={{ minHeight: '65vh' }}>
+            {/* Columna izquierda: Chat Unificado */}
+            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Conversación — Unificado</span>
+                {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px]">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason}</Badge>}
+              </div>
+
+              <div ref={unifiedScrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
+                {unifiedTurns.length === 0 && (
+                  <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
+                    <Bot className="mb-2 h-8 w-8 text-muted-foreground/60" />
+                    <p>Unificado — espeja producción.</p>
+                    <p className="mt-1 text-xs">Probá: &quot;hola&quot;, &quot;pagué 18k luz&quot;, &quot;llegó juan 8:30&quot;, &quot;¿cuánto gasté hoy?&quot; · dummy 11 9999 9999</p>
+                  </div>
+                )}
+
+                {unifiedTurns.map((t, i) => (
+                  <div key={i} className={cn('flex gap-2', t.role === 'user' ? 'justify-end' : 'justify-start')}>
+                    {t.role === 'bot' && <Bot className="mt-1 h-5 w-5 shrink-0 text-primary" />}
+                    <div
+                      className={cn(
+                        'max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap',
+                        t.role === 'user' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted text-foreground',
+                      )}
+                    >
+                      {t.content}
+                    </div>
+                    {t.role === 'user' && <UserCircle2 className="mt-1 h-5 w-5 shrink-0 text-muted-foreground" />}
+                  </div>
+                ))}
+
+                {unifiedSending && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Bot className="h-5 w-5 text-primary" />
+                    <Loader2 className="h-4 w-4 animate-spin" /> Procesando…
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-end gap-2 border-t border-border p-3">
+                <textarea
+                  value={unifiedInput}
+                  onChange={(e) => setUnifiedInput(e.target.value)}
+                  onKeyDown={handleUnifiedKeyDown}
+                  placeholder="Unificado: 'hola', 'pagué 18k luz', 'llegó juan 8:30', '¿cuánto gasté hoy?'"
+                  rows={1}
+                  disabled={unifiedSending}
+                  className="flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
+                />
+                <Button size="sm" variant={recording ? 'destructive' : 'outline'} onClick={recording ? stopRecording : startRecording} disabled={unifiedSending} className="h-9 w-9 shrink-0 p-0" title={recording ? 'Detener grabación' : 'Grabar audio'}>
+                  {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => assistantFileInputRef.current?.click()} disabled={unifiedSending} className="h-9 w-9 shrink-0 p-0" title="Subir audio">
+                  <Upload className="h-4 w-4" />
+                </Button>
+                <input ref={assistantFileInputRef} type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" />
+                <Button size="sm" onClick={unifiedAudioBlob ? sendUnifiedAudio : sendUnifiedText} disabled={(!unifiedInput.trim() && !unifiedAudioBlob) || unifiedSending} className="h-9 w-9 shrink-0 p-0">
+                  {unifiedSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
+
+              {unifiedAudioBlob && (
+                <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-muted/30">
+                  <Volume2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <audio controls className="h-8 flex-1 min-w-0">
+                    <source src={URL.createObjectURL(unifiedAudioBlob)} type={unifiedAudioBlob.type} />
+                  </audio>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setUnifiedAudioBlob(null)}>Cancelar</Button>
+                </div>
+              )}
+            </div>
+
+            {/* Columna derecha: Debug Unificado (4 tabs) */}
+            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Debug — Unificado</span>
+                {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">{unifiedDebug.dispatchedTo}</Badge>}
+              </div>
+
+              <Tabs value={unifiedDebugTab} onValueChange={setUnifiedDebugTab} className="flex flex-1 flex-col">
+                <div className="border-b border-border px-3">
+                  <TabsList className="h-9">
+                    <TabsTrigger value="extraccion" className="text-xs gap-1.5"><Search className="h-3.5 w-3.5" /> Extracción</TabsTrigger>
+                    <TabsTrigger value="tools" className="text-xs gap-1.5"><Wrench className="h-3.5 w-3.5" /> Tools</TabsTrigger>
+                    <TabsTrigger value="respuesta" className="text-xs gap-1.5"><FileText className="h-3.5 w-3.5" /> Respuesta</TabsTrigger>
+                    <TabsTrigger value="logs" className="text-xs gap-1.5"><List className="h-3.5 w-3.5" /> Logs</TabsTrigger>
+                  </TabsList>
+                </div>
+
+                <TabsContent value="extraccion" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!unifiedDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Search className="mr-2 h-5 w-5 opacity-50" />Enviá un mensaje.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {unifiedDebug.transcription && <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3"><p className="text-xs font-medium text-sky-400 mb-1">Transcripción</p><p className="text-sm text-foreground">{unifiedDebug.transcription}</p></div>}
+                      <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">UnifiedExtraction</p><pre className="text-[11px] text-foreground/80 font-mono whitespace-pre-wrap overflow-x-auto">{JSON.stringify(unifiedDebug.extraction, null, 2) || 'null'}</pre></div>
+                      {unifiedDebug.extraction?.fallback_reason && <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /><span className="text-xs text-foreground">Fallback: {unifiedDebug.extraction.fallback_reason} — {unifiedDebug.extraction.llm_error || ''}</span></div>}
+                      <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">Router</p><pre className="text-[11px] font-mono">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason} · dummy:{unifiedDebug.dummyConversationId?.slice(0, 8) || '—'}</pre></div>
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="tools" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!unifiedDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Wrench className="mr-2 h-5 w-5 opacity-50" />Tools solo si factual.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {unifiedDebug.toolLogs && unifiedDebug.toolLogs.length > 0 ? (
+                        <div className="rounded-lg border border-border overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead className="bg-muted/50"><tr><th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Tool</th><th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Duración</th><th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Count</th></tr></thead>
+                            <tbody>{unifiedDebug.toolLogs.map((t, i) => (<tr key={i} className="border-t border-border"><td className="px-3 py-1.5 font-mono text-foreground">{t.tool}</td><td className="px-3 py-1.5 text-right font-mono text-muted-foreground">{t.duration_ms}ms</td><td className="px-3 py-1.5 text-right font-mono text-muted-foreground">{t.error ? <span className="text-red-400">{t.error.slice(0, 60)}</span> : (t.resultCount ?? '—')}</td></tr>))}</tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">No se ejecutaron tools (chitchat).</div>
+                      )}
+                      {unifiedDebug.toolResults && Object.keys(unifiedDebug.toolResults).length > 0 && <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">toolResults (preview)</p><pre className="text-[10px] text-foreground/70 font-mono whitespace-pre-wrap overflow-x-auto max-h-[400px]">{JSON.stringify(unifiedDebug.toolResults, null, 2).slice(0, 8000)}</pre></div>}
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="respuesta" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!unifiedDebug ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><FileText className="mr-2 h-5 w-5 opacity-50" />Respuesta acá.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="text-xs font-medium text-emerald-400 mb-1">Reply</p><p className="text-sm text-foreground whitespace-pre-wrap">{unifiedDebug.reply}</p></div>
+                      {unifiedDebug.knowledge.length > 0 && <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">Knowledge ({unifiedDebug.knowledge.length})</p>{unifiedDebug.knowledge.map((k, i) => (<p key={i} className="text-xs text-foreground/70 whitespace-pre-wrap border-b border-border py-1 last:border-0">{k.slice(0, 500)}</p>))}</div>}
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="logs" className="flex-1 overflow-y-auto p-4 m-0">
+                  {!unifiedDebug || unifiedDebug.logs.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><List className="mr-2 h-5 w-5 opacity-50" />Logs pipeline.</div>
+                  ) : (
+                    <div className="space-y-1.5">{unifiedDebug.logs.map((log, i) => { const meta = VOICE_STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }; return (<div key={i} className="rounded-lg border border-border p-2.5"><div className="flex items-center gap-2 flex-wrap"><Badge variant="outline" className={`text-[10px] ${meta.color}`}>{meta.label}</Badge></div><pre className="mt-1 text-[10px] text-foreground/70 font-mono whitespace-pre-wrap overflow-x-auto">{JSON.stringify(log.data, null, 2)}</pre></div>) })}</div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* ─── Tab Asistente (legacy) ─── */}
         <TabsContent value="asistente" className="mt-4">
           <div className="flex gap-4" style={{ minHeight: '65vh' }}>
             {/* Columna izquierda: Chat Asistente */}
