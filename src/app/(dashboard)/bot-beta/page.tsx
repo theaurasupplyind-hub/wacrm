@@ -162,6 +162,8 @@ export default function BotBetaPage() {
   const chunksRef = useRef<Blob[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const assistantFileInputRef = useRef<HTMLInputElement>(null)
+  const unifiedVoucherInputRef = useRef<HTMLInputElement>(null)
+  const [unifiedVoucherFile, setUnifiedVoucherFile] = useState<File | null>(null)
   const pendingVariantRef = useRef<VoiceOrderResult['pendingVariantItems']>(undefined)
   const pendingClientRef = useRef<string | null | undefined>(undefined)
   const pendingInvoiceRef = useRef<VoiceOrderResult['pendingInvoice']>(undefined)
@@ -579,6 +581,7 @@ export default function BotBetaPage() {
       setUnifiedDebug(null)
       setUnifiedDebugTab('extraccion')
       setUnifiedAudioBlob(null)
+      setUnifiedVoucherFile(null)
       setUnifiedInput('')
     } else if (isVouchers) {
       setVoucherTurns([])
@@ -759,11 +762,22 @@ export default function BotBetaPage() {
                   <Upload className="h-4 w-4" />
                 </Button>
                 <input ref={assistantFileInputRef} type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" />
-                <Button size="sm" onClick={unifiedAudioBlob ? sendUnifiedAudio : sendUnifiedText} disabled={(!unifiedInput.trim() && !unifiedAudioBlob) || unifiedSending} className="h-9 w-9 shrink-0 p-0">
+                <Button size="sm" variant="outline" onClick={() => unifiedVoucherInputRef.current?.click()} disabled={unifiedSending} className="h-9 w-9 shrink-0 p-0" title="Subir voucher (imagen/PDF) + caption">
+                  <FileImage className="h-4 w-4" />
+                </Button>
+                <input ref={unifiedVoucherInputRef} type="file" accept="image/*,application/pdf" onChange={(e) => { const f = e.target.files?.[0]; if (f) setUnifiedVoucherFile(f); if (unifiedVoucherInputRef.current) unifiedVoucherInputRef.current.value = '' }} className="hidden" />
+                <Button size="sm" onClick={() => { if (unifiedVoucherFile) { const f = unifiedVoucherFile; const nextTurns = [...unifiedTurns, { role: 'user' as const, content: `📎 ${f.name}` }]; setUnifiedTurns(nextTurns); const fd = new FormData(); fd.append('file', f); fd.append('caption', unifiedInput); fd.append('history', JSON.stringify(nextTurns.map((t) => ({ role: t.role, content: t.content })))); setUnifiedVoucherFile(null); const capText = unifiedInput; setUnifiedInput(''); setUnifiedSending(true); fetch('/api/bot-beta/unified', { method: 'POST', body: fd }).then(async (res) => { const result = await res.json(); if (!res.ok) { setUnifiedDebug(result); setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${result.error || 'Error'}` }]); setUnifiedDebugTab('logs'); } else { setUnifiedDebug(result); const cap = result.caption ? `[caption: "${result.caption}"] ` : ''; setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `${cap}${result.reply}` }]); setUnifiedDebugTab('extraccion'); } }).catch((err) => setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${err instanceof Error ? err.message : String(err)}` }])).finally(() => setUnifiedSending(false)); } else if (unifiedAudioBlob) { void sendUnifiedAudio(); } else { void sendUnifiedText(); } }} disabled={(!unifiedVoucherFile && !unifiedInput.trim() && !unifiedAudioBlob) || unifiedSending} className="h-9 w-9 shrink-0 p-0">
                   {unifiedSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
 
+              {unifiedVoucherFile && (
+                <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-amber-500/10">
+                  <FileImage className="h-4 w-4 text-amber-400 shrink-0" />
+                  <span className="text-xs text-foreground truncate flex-1">{unifiedVoucherFile.name} ({(unifiedVoucherFile.size / 1024).toFixed(0)} KB){unifiedInput.trim() ? ` · caption: "${unifiedInput.trim().slice(0, 40)}"` : ' · sin caption (agregá nombre cliente)'}</span>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setUnifiedVoucherFile(null)}>Quitar</Button>
+                </div>
+              )}
               {unifiedAudioBlob && (
                 <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-muted/30">
                   <Volume2 className="h-4 w-4 text-muted-foreground shrink-0" />
