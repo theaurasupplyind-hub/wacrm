@@ -31,10 +31,12 @@ export async function POST(req: NextRequest) {
         const mimeType = voucherFile.type || 'image/jpeg'
         const base64 = buffer.toString('base64')
         let extractedAmount: number | null = null
+        let extractedFecha: string | null = null
         let voucherCaption: string | null = captionRaw?.trim() || null
         try {
           const extracted = await extractVoucherData({ base64, mimeType })
           extractedAmount = extracted.monto
+          extractedFecha = extracted.fecha
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           return NextResponse.json({ error: `No se pudo leer el voucher: ${msg}`, logs: [] }, { status: 500 })
@@ -54,8 +56,9 @@ export async function POST(req: NextRequest) {
           history,
           voucherCaption,
           voucherExtractedAmount: extractedAmount,
+          voucherExtractedFecha: extractedFecha,
         })
-        return NextResponse.json({ ...result, extractedAmount, caption: voucherCaption })
+        return NextResponse.json({ ...result, extractedAmount, extractedFecha, caption: voucherCaption })
       }
 
       if (audioFile && audioFile instanceof File) {
@@ -90,6 +93,7 @@ export async function POST(req: NextRequest) {
       history?: { role: string; content: string }[]
       voucherCaption?: string | null
       voucherExtractedAmount?: number | null
+      voucherExtractedFecha?: string | null
     }
 
     if (!body.text || !body.text.trim()) {
@@ -111,6 +115,7 @@ export async function POST(req: NextRequest) {
       history: body.history || [],
       voucherCaption: body.voucherCaption ?? null,
       voucherExtractedAmount: body.voucherExtractedAmount ?? null,
+      voucherExtractedFecha: body.voucherExtractedFecha ?? null,
     })
 
     return NextResponse.json(result)

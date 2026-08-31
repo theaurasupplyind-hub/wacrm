@@ -87,6 +87,7 @@ export interface UnifiedRunArgs {
   /** Dummy-only: when image+caption is sent as single message, caption is text here and file contains voucher. But for dummy we handle caption as forced client name + extractedAmount is sole amount. */
   voucherCaption?: string | null
   voucherExtractedAmount?: number | null
+  voucherExtractedFecha?: string | null
 }
 
 export interface UnifiedRunResult {
@@ -231,11 +232,17 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   const forcedCaption = (args.voucherCaption?.trim() || (args.text && voucherPendingItem ? args.text.trim() : null)) || null
   const forcedMonto = args.voucherExtractedAmount ?? voucherPendingItem?.extraction?.monto ?? null
 
+  // Voucher-only date/time rules: fecha = extracted/caption || today, hora = now (America/Argentina/Buenos_Aires)
+  const todayAR = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
+  const horaAR = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit' })
+  const voucherFechaExtraida = args.voucherExtractedFecha ?? (voucherPendingItem?.extraction as { fecha?: string | null } | null)?.fecha ?? extraction?.fecha ?? null
+  const voucherFecha = voucherFechaExtraida || todayAR
+
   // ── Letter selection for pending voucher (dummy only) — must be before forced client name
   const isLetterSelection = /^[a-zA-Z]\s*$/.test(text.trim()) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(text.trim())
   const looksLikeClientName = forcedCaption && forcedCaption.length >= 3 && !isLetterSelection && /[a-zA-Z]{2,}/.test(forcedCaption)
 
-  // If pending voucher exists and user replies with letter A/B, confirm that candidate (dryRun) and replace extracted name with caption
+  // If pending voucher exists and user replies with letter A/B, confirm that candidate (dryRun) and replace extracted name with caption — voucher only uses hora=now, fecha=extraida
   if (voucherPendingItem && isLetterSelection && dummyConversationId && admin) {
     const candidates = voucherPendingItem.candidates as { cliente_nombre: string; numero_factura: string; saldo_pendiente: number; invoice_id: number }[]
     const letter = text.trim().toUpperCase()[0]
@@ -248,20 +255,20 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
         const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
         const filtered = currentCtx.pending.filter((p) => p.sourceMessageId !== voucherPendingItem.sourceMessageId)
         await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: filtered })
-        logs.push({ step: 'botbeta_voucher_letter_confirm', data: { letter, chosen, monto, pendingRemoved: true } })
+        logs.push({ step: 'botbeta_voucher_letter_confirm', data: { letter, chosen, monto, fecha: voucherFecha, hora: horaAR, pendingRemoved: true } })
       } catch (err) {
         logs.push({ step: 'botbeta_voucher_letter_remove_error', data: { error: err instanceof Error ? err.message : String(err) } })
       }
       const restante = chosen.saldo_pendiente - monto
-      // Replace extracted name with caption/pending extraction name — show normal info
-      const reply = `Confirmado (dummy). Pago de $${monto.toLocaleString('es-AR')} para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}${restante > 0 ? ` (queda $${restante.toLocaleString('es-AR')})` : restante < 0 ? ` (excede saldo)` : ''}. [dryRun, nombre extraído reemplazado por "${forcedCaption || voucherPendingItem.extraction.monto}"]`
+      // Replace extracted name with caption/pending extraction name — show normal info, voucher date = extracted, hora = now
+      const reply = `Confirmado (dummy). Pago de $${monto.toLocaleString('es-AR')} para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura} el ${voucherFecha} a las ${horaAR}${restante > 0 ? ` (queda $${restante.toLocaleString('es-AR')})` : restante < 0 ? ` (excede saldo)` : ''}. [dryRun, nombre extraído reemplazado por "${forcedCaption || chosen.cliente_nombre}"]`
       const allLogs = [...logs, { step: 'assistant_response', data: { reply_preview: reply.slice(0, 300) } }]
       return {
         reply,
         dispatchedTo: 'voucher',
         dispatchReason: 'letter_selection_matched',
         extraction: extraction,
-        toolResults: { chosen, monto, forcedCaption, candidates },
+        toolResults: { chosen, monto, fecha: voucherFecha, hora: horaAR, forcedCaption, candidates },
         toolLogs: [{ tool: `voucher_letter_${letter}`, duration_ms: 0, resultCount: 1 }],
         knowledge: [],
         logs: allLogs,
@@ -315,16 +322,17 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
       if (forcedCandidates.length === 1) {
         const inv = forcedCandidates[0]
         const restante = inv.saldo_pendiente - forcedMonto
+        // Voucher: fecha extraída, hora now
         const reply = inv.cliente_nombre
-          ? `Confirmado (dummy). Pago de $${forcedMonto.toLocaleString('es-AR')} para ${inv.cliente_nombre} — Factura ${inv.numero_factura}${restante > 0 ? ` (queda $${restante.toLocaleString('es-AR')})` : restante < 0 ? ` (excede saldo)` : ''}. [dryRun, no registra]`
-          : `Confirmado (dummy). Pago de $${forcedMonto.toLocaleString('es-AR')} para factura ${inv.numero_factura}. [dryRun]`
+          ? `Confirmado (dummy). Pago de $${forcedMonto.toLocaleString('es-AR')} para ${inv.cliente_nombre} — Factura ${inv.numero_factura} el ${voucherFecha} a las ${horaAR}${restante > 0 ? ` (queda $${restante.toLocaleString('es-AR')})` : restante < 0 ? ` (excede saldo)` : ''}. [dryRun, nombre reemplazado por "${forcedCaption}"]`
+          : `Confirmado (dummy). Pago de $${forcedMonto.toLocaleString('es-AR')} para factura ${inv.numero_factura} el ${voucherFecha} a las ${horaAR}. [dryRun]`
         const allLogs = [...logs, { step: 'assistant_response', data: { reply_preview: reply.slice(0, 200) } }]
         return {
           reply,
           dispatchedTo: 'voucher',
           dispatchReason: 'forced_client_matched',
           extraction: extraction,
-          toolResults: { forcedCaption, forcedMonto, forcedCandidates },
+          toolResults: { forcedCaption, forcedMonto, fecha: voucherFecha, hora: horaAR, forcedCandidates },
           toolLogs: [{ tool: `matchVoucherByName(${forcedCaption})`, duration_ms: 0, resultCount: 1 }],
           knowledge: [],
           logs: allLogs,
@@ -343,14 +351,14 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
           const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
           const newItem = {
             sourceMessageId: `dummy-${Date.now()}`,
-            extraction: { monto: forcedMonto ?? null, fecha: null, referencia: null, banco: null, nombre_cliente: forcedCaption!, nombre_origen: forcedCaption!, nombre_destino: null, cbu_destino: null, cuit_destino: null },
+            extraction: { monto: forcedMonto ?? null, fecha: voucherFecha, referencia: null, banco: null, nombre_cliente: forcedCaption!, nombre_origen: forcedCaption!, nombre_destino: null, cbu_destino: null, cuit_destino: null },
             candidates: forcedCandidates as never,
             bestDestination: null,
             mediaBase64: '',
             mediaMimeType: 'image/jpeg',
           }
           await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: [...currentCtx.pending, newItem as never] })
-          logs.push({ step: 'botbeta_voucher_pending_saved', data: { caption: forcedCaption, monto: forcedMonto, candidates: forcedCandidates.length } })
+          logs.push({ step: 'botbeta_voucher_pending_saved', data: { caption: forcedCaption, monto: forcedMonto, fecha: voucherFecha, hora: horaAR, candidates: forcedCandidates.length } })
         } catch (err) {
           logs.push({ step: 'botbeta_voucher_pending_save_error', data: { error: err instanceof Error ? err.message : String(err) } })
         }
@@ -389,32 +397,34 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
           // Persist pending for letter selection — extraction name replaced by caption
           try {
             const currentCtx = await loadVoucherContext(admin!, dummyConversationId)
+            const fechaForCaption = args.voucherExtractedFecha || todayAR
             const newItem = {
               sourceMessageId: `dummy-${Date.now()}`,
-              extraction: { monto: args.voucherExtractedAmount ?? null, fecha: null, referencia: null, banco: null, nombre_cliente: args.voucherCaption!.trim(), nombre_origen: args.voucherCaption!.trim(), nombre_destino: null, cbu_destino: null, cuit_destino: null },
+              extraction: { monto: args.voucherExtractedAmount ?? null, fecha: fechaForCaption, referencia: null, banco: null, nombre_cliente: args.voucherCaption!.trim(), nombre_origen: args.voucherCaption!.trim(), nombre_destino: null, cbu_destino: null, cuit_destino: null },
               candidates: forcedCandidates as never,
               bestDestination: null,
               mediaBase64: '',
               mediaMimeType: 'image/jpeg',
             }
             await saveVoucherContext(admin!, dummyConversationId, { ...currentCtx, pending: [...currentCtx.pending, newItem as never] })
-            logs.push({ step: 'botbeta_voucher_caption_pending_saved', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount } })
+            logs.push({ step: 'botbeta_voucher_caption_pending_saved', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount, fecha: fechaForCaption, hora: horaAR } })
           } catch (err) {
             logs.push({ step: 'botbeta_voucher_caption_pending_error', data: { error: err instanceof Error ? err.message : String(err) } })
           }
         }
+        const fechaForCaptionSingle = args.voucherExtractedFecha || todayAR
         const intro = `Recibimos un pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para "${args.voucherCaption!.trim()}".\n\n`
         const lines = forcedCandidates.slice(0, 15).map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`).join('\n')
         const reply = forcedCandidates.length === 1
-          ? `Confirmado (dummy). Pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para ${forcedCandidates[0].cliente_nombre} — Factura ${forcedCandidates[0].numero_factura}. [dryRun, nombre reemplazado por caption]`
+          ? `Confirmado (dummy). Pago de $${args.voucherExtractedAmount!.toLocaleString('es-AR')} para ${forcedCandidates[0].cliente_nombre} — Factura ${forcedCandidates[0].numero_factura} el ${fechaForCaptionSingle} a las ${horaAR}. [dryRun, nombre reemplazado por caption]`
           : `${intro}${lines}\n\nRespondé con la letra (A, B...) [dummy dryRun]`
-        const allLogs = [...logs, { step: 'botbeta_voucher_caption_forced', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount, candidates: forcedCandidates.length } }]
+        const allLogs = [...logs, { step: 'botbeta_voucher_caption_forced', data: { caption: args.voucherCaption, monto: args.voucherExtractedAmount, fecha: fechaForCaptionSingle, hora: horaAR, candidates: forcedCandidates.length } }]
         return {
           reply,
           dispatchedTo: 'voucher',
           dispatchReason: forcedCandidates.length === 1 ? 'forced_client_matched' : 'forced_client_ambiguous',
           extraction: extraction,
-          toolResults: { forcedCaption: args.voucherCaption, forcedMonto: args.voucherExtractedAmount, forcedCandidates },
+          toolResults: { forcedCaption: args.voucherCaption, forcedMonto: args.voucherExtractedAmount, fecha: fechaForCaptionSingle, hora: horaAR, forcedCandidates },
           toolLogs: [{ tool: `matchVoucherByName(${args.voucherCaption})`, duration_ms: 0, resultCount: forcedCandidates.length }],
           knowledge: [],
           logs: allLogs,
