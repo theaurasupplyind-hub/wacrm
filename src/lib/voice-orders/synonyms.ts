@@ -15,12 +15,20 @@ export const SINONIMOS_CATEGORIA: Record<string, string> = {
 export const SINONIMOS_VARIANTE: Record<string, string> = {
   caja: 'Doble 4cm',
   cajon: 'Doble 4cm',
+  'onda caja': 'Doble 4cm',
   'doble': 'Doble 4cm',
   '4cm': 'Doble 4cm',
   '4 cm': 'Doble 4cm',
+  '4.5cm': 'Doble 4cm',
+  '4,5cm': 'Doble 4cm',
+  '4.5 cm': 'Doble 4cm',
+  '4,5 cm': 'Doble 4cm',
   'lo mas ancho': 'Doble 4cm',
   'lo más ancho': 'Doble 4cm',
+  'lo mas anchos': 'Doble 4cm',
+  'lo más anchos': 'Doble 4cm',
   ancho: 'Doble 4cm',
+  anchos: 'Doble 4cm',
   lp: 'Lienzo Profesional',
   'con tela': 'Lienzo Profesional',
 }
@@ -55,8 +63,19 @@ export function expandirSinonimos(text: string): string {
 }
 
 export function getSinonimoVariante(descripcion: string): string | null {
-  const lower = descripcion.toLowerCase()
-  if (lower.includes('cajon') || lower.includes('caja') || lower.includes('lo mas ancho') || lower.includes('lo más ancho') || lower.includes('4cm') || lower.includes('4 cm')) {
+  let lower = descripcion.toLowerCase()
+  // Normalizar coma decimal para 4,5cm → 4.5cm
+  const normalized = lower.replace(/4\s*,\s*5/g, '4.5')
+  if (normalized.includes('4.5cm') || normalized.includes('4.5 cm') || normalized.includes('4.5')) {
+    // Solo si está cerca de cm o caja/grosor (evitar falsos positivos de "4.5" suelto no es bastidor?)
+    if (normalized.includes('cm') || normalized.includes('caja') || normalized.includes('cajon') || normalized.includes('doble') || normalized.includes('grosor') || normalized.includes('grueso') || normalized.includes('ancho') || normalized.includes('40x40') || normalized.includes('bastidor')) {
+      return 'Doble 4cm'
+    }
+  }
+  // Expansión para 4, 5 cm con coma intermedia (plural)
+  const has4y5 = /4\s*,\s*5\s*cm/.test(lower) || /4\s*y\s*5\s*cm/.test(lower) || /4\s*-\s*5\s*cm/.test(lower)
+  if (has4y5) return 'Doble 4cm'
+  if (lower.includes('cajon') || lower.includes('caja') || lower.includes('onda caja') || lower.includes('lo mas ancho') || lower.includes('lo más ancho') || lower.includes('lo mas anchos') || lower.includes('lo más anchos') || lower.includes('4cm') || lower.includes('4 cm') || lower.includes('anchos')) {
     return 'Doble 4cm'
   }
   if (lower.includes('marco')) return null // marco es categoria tapacanto, no variante
@@ -65,10 +84,11 @@ export function getSinonimoVariante(descripcion: string): string | null {
 
 export const SINONIMOS_PROMPT_BLOCK = `
 === SINÓNIMOS DE CATÁLOGO (MAPEO NO INVENTIVO) ===
-- "cajón", "caja", "lo más ancho", "4cm/5cm de profundidad", "onda caja" → variante "Doble 4cm" (bastidor grueso). Ej: "9 bastidores 40x40 caja 4cm" → categoria bastidor, medida 40x40, variante Doble 4cm.
+- "cajón", "caja", "onda caja", "lo más ancho/anchos", "4cm/5cm de profundidad", "4,5cm/4.5cm" → variante "Doble 4cm" (bastidor grueso). Ej: "9 bastidores 40x40 caja 4,5cm" → categoria bastidor, medida 40x40, variante Doble 4cm. "40x40 4,5cm" o "40x40 4.5 cm" → Doble 4cm sin preguntar.
+- "grosor", "más grueso", "grueso", "ancho profundo" SIN variante explícita → NO asumas Doble 4cm; poné variante null, faltan_campos ["variante"], dudoso true, razon "grosor sin variante - preguntar Sin tela / Lienzo Profesional".
 - "marco", "marcos" → categoria "tapacanto" (no bastidor). Ej: "2 marcos 60x80" → tapacanto 60x80.
 - "acrílico verde viridiano chico" → acrilico Serie 2 60cc. "acrílico blanco grande" / "viridiano grande" → acrilico Serie 2 200cc. Si dice "viridiano" o "acrílico" sin tamaño claro, poné variante null y categoria acrilico.
-- "rollo 1,5 x 5" / "rollo" → categoria "producto" o null, medida 150x500 aprox (1,5m x 5m). Si no hay medida clara poné null.
-- "lienzo", "lona", "tela" solos sin 4cm → variante según mención explícita, si no null.
-NUNCA inventes variante si el sinónimo no está explícito. Si dice "lo más ancho posible, onda caja, si pueden ser de 4-5cm ideal" → variante Doble 4cm con dudoso=false pero confianza alta porque hay pista fuerte.
+- "rollo 1,5 x 5" / "rollo" → categoria "ROLLO DE TELA", medida 2 x 5 si dice 2x5 exacto, sino la que diga (1,5x5 → ROLLO DE TELA 1,5x5 faltante). Solo 2x5 tiene referencia limpia.
+- "con tela" == "Lienzo Profesional". Solo preguntar Sin tela / Lienzo Profesional (no Lona Preparada) cuando pregunte por grosor.
+NUNCA inventes variante si el sinónimo no está explícito salvo 4,5cm→Doble 4cm. Si dice "lo más ancho posible, onda caja, si pueden ser de 4-5cm ideal" → variante Doble 4cm con dudoso=false.
 `

@@ -66,12 +66,17 @@ export async function resolveItems(
       const firstDetalle = result.detalles?.[0]
 
       // Detectar variantes disponibles desde sugerencias
-      const variantes = [...new Set(
+      let variantes = [...new Set(
         (result.sugerencias ?? [])
           .map(s => s.variante?.trim().toLowerCase())
           .filter(Boolean)
       )]
       const descLower = item.descripcion.toLowerCase()
+      // Si es grosor sin variante, solo ofrecer Sin tela / Lienzo (no Lona)
+      const isGrosorQuery = /grosor|grueso|gruesa/.test(descLower) && !/(sin tela|lienzo|lona)/i.test(item.descripcion)
+      if (isGrosorQuery) {
+        variantes = variantes.filter(v => v === 'sin tela' || v === 'lienzo profesional')
+      }
       const varianteMencionada = variantes.some(v => descLower.includes(v))
       const hasMultipleVariants = !varianteMencionada && variantes.length > 1
 
@@ -112,6 +117,7 @@ export async function resolveItems(
         continue
       }
       if (hasMultipleVariants && variantes.length > 0 && firstDetalle) {
+        // Para grosor, mensaje específico Sin tela / Lienzo
         const cat = entidadCategoria || firstDetalle.categoria || 'BASTIDOR'
         resolved.push({
           descripcion: item.descripcion,
