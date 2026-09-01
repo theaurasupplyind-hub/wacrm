@@ -22,6 +22,7 @@ export interface ResolvedItem {
   faltante: boolean
   necesita_variante?: boolean
   variantes_disponibles?: string[]
+  necesita_precio?: boolean
 }
 
 export type ParsedOrderType = 'presupuesto' | 'respuesta_variante' | 'respuesta_confirmacion' | 'respuesta_cancelacion'
@@ -34,6 +35,9 @@ export interface ParsedOrder {
   items: VoiceOrderItem[]
   entidades: ParsedOrderItem[]
   variante_respuesta: string | null
+  faltan_campos: string[]
+  dudoso: boolean
+  razon_duda: string | null
 }
 
 export interface IntentClassification {
@@ -99,4 +103,5 @@ export interface TextOrderArgs {
   pendingVariantItems?: ResolvedItem[]
   pendingClientName?: string | null
   pendingInvoice?: PendingInvoice | null
+  historyText?: string
 }

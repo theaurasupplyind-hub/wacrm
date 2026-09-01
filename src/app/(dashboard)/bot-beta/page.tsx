@@ -197,6 +197,7 @@ export default function BotBetaPage() {
     setSending(true)
 
     try {
+      const historyText = nextTurns.slice(-6).map(t => `${t.role}: ${t.content}`).join('\n')
       const res = await fetch('/api/bot-beta/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -206,6 +207,7 @@ export default function BotBetaPage() {
           pendingVariantItems: pendingVariantRef.current,
           pendingClientName: pendingClientRef.current,
           pendingInvoice: pendingInvoiceRef.current,
+          historyText,
         }),
       })
       const result: VoiceOrderResult & { error?: string } = await res.json()
@@ -1246,7 +1248,7 @@ export default function BotBetaPage() {
                       {voiceResult.parsedOrder && (
                         <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
                           <p className="text-xs font-medium text-blue-400 mb-1">Orden detectada</p>
-                          <p className="text-xs text-foreground">Cliente: {voiceResult.parsedOrder.cliente_nombre}</p>
+                          <p className="text-xs text-foreground">Cliente: {voiceResult.parsedOrder.cliente_nombre} · confianza: {voiceResult.parsedOrder.confianza}</p>
                           <div className="mt-1 space-y-0.5">
                             {voiceResult.parsedOrder.items.map((item, i) => (
                               <p key={i} className="text-xs text-muted-foreground">
@@ -1254,6 +1256,25 @@ export default function BotBetaPage() {
                               </p>
                             ))}
                           </div>
+                          {voiceResult.parsedOrder.entidades && voiceResult.parsedOrder.entidades.length > 0 && (
+                            <div className="mt-2 border-t border-blue-500/20 pt-2 space-y-0.5">
+                              <p className="text-[10px] font-medium text-blue-300">Entidades (grounding)</p>
+                              {voiceResult.parsedOrder.entidades.map((e, i) => (
+                                <p key={i} className="text-[11px] font-mono text-foreground/80">
+                                  {e.cantidad}x {e.categoria ?? '—'} {e.medida ?? '—'} {e.variante ? `(${e.variante})` : ''} <span className="text-muted-foreground">← {e.descripcion_original}</span>
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          {(voiceResult.parsedOrder.dudoso || (voiceResult.parsedOrder.faltan_campos && voiceResult.parsedOrder.faltan_campos.length > 0)) && (
+                            <div className="mt-2 flex items-start gap-1.5 rounded border border-amber-500/20 bg-amber-500/10 p-2">
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 shrink-0" />
+                              <div className="text-xs">
+                                {voiceResult.parsedOrder.faltan_campos?.length ? <p className="text-amber-300">Falta: {voiceResult.parsedOrder.faltan_campos.join(', ')}</p> : null}
+                                {voiceResult.parsedOrder.razon_duda && <p className="text-amber-200/80">{voiceResult.parsedOrder.razon_duda}</p>}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 

@@ -1,6 +1,7 @@
-import type { VoiceOrderLog, PricedItem, ResolvedItem, VoiceOrderItem, ClientInfo } from './types'
+import type { VoiceOrderLog, PricedItem, ResolvedItem, VoiceOrderItem, ClientInfo, ParsedOrderItem } from './types'
 import { searchClients, createClient, bulkPrice, suggestPrice, createInvoice } from '../facbal/client'
 import type { BulkPriceItem } from '../facbal/client'
+import { expandirSinonimos, getSinonimoVariante } from './synonyms'
 
 function extractOriginalMedida(descripcion: string): string {
   const m = descripcion.match(/(\d+)\s*(?:[xX×]|por)\s*(\d+)/)
@@ -34,13 +35,33 @@ export async function searchOrCreateClient(
 export async function resolveItems(
   items: VoiceOrderItem[],
   logs: VoiceOrderLog[],
+  entidades?: ParsedOrderItem[],
 ): Promise<ResolvedItem[]> {
   const t0 = Date.now()
   const resolved: ResolvedItem[] = []
 
-  for (const item of items) {
+  // Map entidades by descripcion_original for grounding
+  const entidadByDesc = new Map<string, ParsedOrderItem>()
+  for (const e of entidades ?? []) {
+    if (e.descripcion_original) entidadByDesc.set(e.descripcion_original, e)
+  }
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx]
+    // Priorizar entidades LLM si existen (medida/variante ya normalizadas)
+    const entidad = entidadByDesc.get(item.descripcion) ?? entidades?.[idx] ?? null
+    // Query expandida con sinónimos (cajón→doble 4cm, marco→tapacanto, viridiano→Serie 2)
+    const expandedQuery = expandirSinonimos(item.descripcion)
+    const sinonimoVariante = getSinonimoVariante(item.descripcion)
+    // Si entidad trae variante sinónimo no detectada en texto, inyectarla en query
+    let queryForSuggest = expandedQuery
+    if (entidad?.variante && !expandedQuery.toLowerCase().includes(entidad.variante.toLowerCase())) {
+      queryForSuggest = `${expandedQuery} ${entidad.variante}`
+    } else if (sinonimoVariante && entidad?.variante == null && !expandedQuery.toLowerCase().includes(sinonimoVariante.toLowerCase())) {
+      queryForSuggest = `${expandedQuery} ${sinonimoVariante}`
+    }
     try {
-      const result = await suggestPrice(item.descripcion)
+      const result = await suggestPrice(queryForSuggest)
       const sug = result.items?.[0]
       const firstDetalle = result.detalles?.[0]
 
@@ -54,14 +75,20 @@ export async function resolveItems(
       const varianteMencionada = variantes.some(v => descLower.includes(v))
       const hasMultipleVariants = !varianteMencionada && variantes.length > 1
 
+      // Entidad grounded: si LLM ya dio medida/variante/categoria, usarlos para resolver
+      const entidadMedida = entidad?.medida || null
+      const entidadVariante = entidad?.variante || sinonimoVariante || null
+      const entidadCategoria = entidad?.categoria || null
+      const medidaParaResolver = entidadMedida || extractOriginalMedida(item.descripcion) || extractOriginalMedida(queryForSuggest) || sug?.medida || ''
+
       // Caso 1: precio único resuelto (sin ambigüedad de variante)
       if (sug && sug.categoria && sug.precio != null && !sug.faltante && !hasMultipleVariants) {
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
-          categoria: sug.categoria,
-          medida: extractOriginalMedida(item.descripcion) || sug.medida,
-          variante: sug.variante || '',
+          categoria: entidadCategoria || sug.categoria,
+          medida: medidaParaResolver || sug.medida,
+          variante: entidadVariante || sug.variante || '',
           precio_base: sug.precio,
           medida_referencia: result.medida_encontrada,
           faltante: false,
@@ -69,14 +96,28 @@ export async function resolveItems(
         continue
       }
 
-      // Caso 2: múltiples variantes disponibles (pedir que especifique)
+      // Si entidad ya trae variante sinónima, no pedir variante aunque haya múltiples
+      const entidadYaResolvioVariante = !!entidadVariante && variantes.some(v => v === entidadVariante.toLowerCase())
+      if (entidadYaResolvioVariante && firstDetalle && firstDetalle.precio != null) {
+        resolved.push({
+          descripcion: item.descripcion,
+          cantidad: item.cantidad,
+          categoria: entidadCategoria || firstDetalle.categoria || sug?.categoria || 'BASTIDOR',
+          medida: medidaParaResolver || result.medida_encontrada || '',
+          variante: entidadVariante || '',
+          precio_base: firstDetalle.precio,
+          medida_referencia: result.medida_encontrada,
+          faltante: false,
+        })
+        continue
+      }
       if (hasMultipleVariants && variantes.length > 0 && firstDetalle) {
-        const cat = firstDetalle.categoria || 'BASTIDOR'
+        const cat = entidadCategoria || firstDetalle.categoria || 'BASTIDOR'
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
           categoria: cat,
-          medida: extractOriginalMedida(item.descripcion) || result.medida_encontrada || '',
+          medida: medidaParaResolver || result.medida_encontrada || '',
           variante: '',
           precio_base: firstDetalle.precio,
           medida_referencia: result.medida_encontrada,
@@ -89,12 +130,15 @@ export async function resolveItems(
 
       // Caso 3: la medida existe pero hay data en sugerencias (índice de catálogo)
       if (result.sugerencias?.length > 0 && firstDetalle) {
+        const varianteFinal = entidadVariante || firstDetalle.variante || ''
+        const categoriaFinal = (entidadCategoria as string) || firstDetalle.categoria || 'BASTIDOR'
+        const medidaFinal = medidaParaResolver || result.medida_encontrada || ''
         resolved.push({
           descripcion: item.descripcion,
           cantidad: item.cantidad,
-          categoria: firstDetalle.categoria || 'BASTIDOR',
-          medida: extractOriginalMedida(item.descripcion) || result.medida_encontrada || '',
-          variante: firstDetalle.variante || '',
+          categoria: categoriaFinal,
+          medida: medidaFinal,
+          variante: varianteFinal,
           precio_base: firstDetalle.precio,
           medida_referencia: result.medida_encontrada,
           faltante: firstDetalle.precio == null,
@@ -147,6 +191,25 @@ export async function resolveItems(
         }
       }
 
+      // Si es ROLLO DE TELA con medida distinta a 2x5, marcar necesita_precio (dueño debe decir precio)
+      const isRollo = (entidad?.categoria?.toLowerCase() === 'rollo de tela' || /rollo/i.test(item.descripcion))
+      if (isRollo) {
+        const medidaNorm = (entidad?.medida || extractOriginalMedida(item.descripcion) || '').replace(/\s/g,'').toLowerCase()
+        if (medidaNorm && medidaNorm !== '2x5' && medidaNorm !== '2x5' ) {
+          resolved.push({
+            descripcion: item.descripcion,
+            cantidad: item.cantidad,
+            categoria: 'ROLLO DE TELA',
+            medida: entidad?.medida || extractOriginalMedida(item.descripcion) || '',
+            variante: '',
+            precio_base: null,
+            medida_referencia: null,
+            faltante: false,
+            necesita_precio: true,
+          })
+          continue
+        }
+      }
       resolved.push({
         descripcion: item.descripcion,
         cantidad: item.cantidad,
