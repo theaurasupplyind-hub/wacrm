@@ -6,8 +6,12 @@ import {
   searchEmployees,
   getAttendance,
   listExpenseCategories,
-  buscarProductos,
+  suggestPrice,
+  bulkPrice,
 } from '@/lib/facbal/client'
+import { parseOrder } from '@/lib/voice-orders/parse-order'
+import { resolveItems, priceItems } from '@/lib/voice-orders/execute-order'
+import type { VoiceOrderLog } from '@/lib/voice-orders/types'
 
 export type ToolLog = { tool: string; duration_ms: number; resultCount?: number; error?: string }
 
@@ -78,9 +82,39 @@ export async function fetchCategories(): Promise<{ data: unknown; log: ToolLog }
   return { data, log }
 }
 
+export async function fetchPreciosReferencia(q: string): Promise<{ data: unknown; log: ToolLog }> {
+  // Solo precios_referencia vía suggestPrice/bulkPrice (tabla limpia), nunca productos sucia
+  const logs: VoiceOrderLog[] = []
+  const t0 = Date.now()
+  try {
+    // Parsear el texto como pedido para extraer items/entidades limpios
+    const parsed = await parseOrder(q, '000', logs)
+    if (!parsed.items.length) {
+      return { data: [], log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: 0 } }
+    }
+    const resolved = await resolveItems(parsed.items, logs, parsed.entidades)
+    const pricing = await priceItems(resolved, logs)
+    const data = pricing.items.map(p => ({
+      medida_solicitada: p.medida_solicitada,
+      medida_referencia: p.medida_referencia,
+      categoria: p.categoria,
+      variante: p.variante,
+      precio: p.precio,
+      precio_base: p.precio_base,
+      faltante: p.faltante,
+      regla: p.regla_aplicada,
+      descripcion: `${p.categoria} ${p.medida_solicitada}${p.variante ? ` ${p.variante}` : ''}`,
+    }))
+    return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: data.length } }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { data: null, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, error: msg } }
+  }
+}
+
 export async function fetchProducts(q: string): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming(`buscarProductos(${q})`, () => buscarProductos(q))
-  return { data, log }
+  // deprecated: redirige a preciosReferencia para no usar productos sucia
+  return fetchPreciosReferencia(q)
 }
 
 /**
@@ -125,7 +159,7 @@ export async function runToolsForQuery(args: {
 
   const needsProviders = !!args.proveedor || q.includes('proveedor') || q.includes('debo a') || q.includes('pagué a') || q.includes('pague a')
   const needsEmployees = !!args.empleado || q.includes('empleado') || q.includes('sueldo')
-  const needsProducts = args.intent === 'pedido' || q.includes('bastidor') || q.includes('presupuesto') || q.includes('precio')
+  const needsProducts = args.intent === 'pedido' || q.includes('bastidor') || q.includes('presupuesto') || q.includes('precio') || q.includes('tapacanto') || q.includes('pintura') || q.includes('rollo') || q.includes(' x ') || /\d+\s*x\s*\d+/i.test(q)
 
   if (needsExpenses) {
     const isYesterday = q.includes('ayer')
@@ -170,9 +204,11 @@ export async function runToolsForQuery(args: {
   }
 
   if (needsProducts) {
-    // query corto para productos; usamos texto original truncado
-    const prodQ = args.text.slice(0, 80)
-    pending.push(fetchProducts(prodQ).then((r) => ({ key: 'products', data: r.data, log: r.log })))
+    // Producto limpio: precios_referencia + pricing_rules vía suggestPrice/bulkPrice
+    const prodQ = args.text.slice(0, 120)
+    pending.push(fetchPreciosReferencia(prodQ).then((r) => ({ key: 'precios_referencia', data: r.data, log: r.log })))
+    // Mantener key legacy 'products' para prompts viejos, pero apuntando a limpia
+    pending.push(fetchPreciosReferencia(prodQ).then((r) => ({ key: 'products', data: r.data, log: r.log })))
   }
 
   // Sin heurística => al menos intentar gastos hoy si es consulta factual genérica
