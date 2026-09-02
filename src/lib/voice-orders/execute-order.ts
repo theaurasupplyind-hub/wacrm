@@ -72,18 +72,23 @@ export async function resolveItems(
           .filter(Boolean)
       )]
       const descLower = item.descripcion.toLowerCase()
-      // Si es grosor sin variante, solo ofrecer Sin tela / Lienzo (no Lona)
+      // Entidad grounded: si LLM ya dio medida/variante/categoria, usarlos para resolver
+      const entidadMedida = entidad?.medida || null
+      const entidadVariante = entidad?.variante || sinonimoVariante || null
+      const entidadCategoria = entidad?.categoria || null
+      // Para bastidor sin variante, solo ofrecer Sin tela / Lienzo (no Lona) — dueña pidió
+      const isBastidorSinVariante = (entidadCategoria?.toLowerCase() === 'bastidor' || /bastidor/i.test(item.descripcion) || !entidadCategoria) && !/(sin tela|lienzo|lona|doble)/i.test(item.descripcion) && !entidadVariante
+      if (isBastidorSinVariante) {
+        const filtered = variantes.filter(v => v === 'sin tela' || v === 'lienzo profesional')
+        if (filtered.length > 0) variantes = filtered
+      }
+      // Además para grosor explícito asegurar filtro
       const isGrosorQuery = /grosor|grueso|gruesa/.test(descLower) && !/(sin tela|lienzo|lona)/i.test(item.descripcion)
       if (isGrosorQuery) {
         variantes = variantes.filter(v => v === 'sin tela' || v === 'lienzo profesional')
       }
       const varianteMencionada = variantes.some(v => descLower.includes(v))
       const hasMultipleVariants = !varianteMencionada && variantes.length > 1
-
-      // Entidad grounded: si LLM ya dio medida/variante/categoria, usarlos para resolver
-      const entidadMedida = entidad?.medida || null
-      const entidadVariante = entidad?.variante || sinonimoVariante || null
-      const entidadCategoria = entidad?.categoria || null
       const medidaParaResolver = entidadMedida || extractOriginalMedida(item.descripcion) || extractOriginalMedida(queryForSuggest) || sug?.medida || ''
 
       // Caso 1: precio único resuelto (sin ambigüedad de variante)

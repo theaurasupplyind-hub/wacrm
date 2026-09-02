@@ -4,11 +4,12 @@ import { parseOrder } from './parse-order'
 import { searchOrCreateClient, resolveItems, priceItems, createPresupuesto } from './execute-order'
 import { createClient, suggestPrice } from '../facbal/client'
 
-function askConfirmMsg(pricing: { items: { cantidad: number; categoria: string; medida_solicitada: string; variante: string; precio: number | null }[]; total: number }, clientName: string): string {
+function askConfirmMsg(pricing: { items: { cantidad: number; categoria: string; medida_solicitada: string; medida_referencia: string; variante: string; precio: number | null }[]; total: number }, clientName: string): string {
   let s = `📋 Presupuesto para ${clientName}\n\n`
   for (const item of pricing.items) {
     if (item.precio != null) {
-      s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
+      const ref = item.medida_referencia && item.medida_referencia !== item.medida_solicitada ? ` (precio de ${item.medida_referencia})` : ''
+      s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}${ref}\n`
     } else {
       s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada} → SIN PRECIO\n`
     }
@@ -192,11 +193,11 @@ async function runPipeline(
   const needsVar = resolvedItems.filter(i => i.necesita_variante)
   if (needsVar.length > 0) {
     const msgs = needsVar.map(i =>
-      `"${i.descripcion}" — variantes: ${i.variantes_disponibles?.join(', ') ?? 'varias'}`
+      `"${i.descripcion}" (${i.categoria} ${i.medida}) — ¿Con tela (Lienzo Profesional) o Sin tela?`
     )
     logs.push({
       step: 'voice_error',
-      data: { reason: 'necesita_variante', items: needsVar.map(i => ({ descripcion: i.descripcion, variantes: i.variantes_disponibles })) },
+      data: { reason: 'necesita_variante', items: needsVar.map(i => ({ descripcion: i.descripcion, variantes: i.variantes_disponibles, medida: i.medida })) },
     })
     return {
       transcription, parsedOrder, resolvedItems, client,
