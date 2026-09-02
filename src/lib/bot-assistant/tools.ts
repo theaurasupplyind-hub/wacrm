@@ -83,11 +83,98 @@ export async function fetchCategories(): Promise<{ data: unknown; log: ToolLog }
 }
 
 export async function fetchPreciosReferencia(q: string): Promise<{ data: unknown; log: ToolLog }> {
-  // Solo precios_referencia vía suggestPrice/bulkPrice (tabla limpia), nunca productos sucia
-  const logs: VoiceOrderLog[] = []
   const t0 = Date.now()
+  const logs: VoiceOrderLog[] = []
+  const isRolloQ = /rollo/i.test(q)
+  const medidaQRaw = (q.match(/(\d+(?:[.,]\d+)?)\s*(?:[xX×]|por)\s*(\d+(?:[.,]\d+)?)/)?.[0] || '').replace(/\s/g,'').toLowerCase().replace(',','.')
+  const isRollo2x5 = isRolloQ && (medidaQRaw === '2x5' || medidaQRaw === '2.0x5')
+  const hasRolloMedida = isRolloQ && !!medidaQRaw
+  // Si es rollo con medida !=2x5, no buscar en precios_referencia: preguntar precio
+  if (isRolloQ && hasRolloMedida && !isRollo2x5) {
+    const medidaSolicitada = medidaQRaw
+    const data = [{
+      medida_solicitada: medidaSolicitada,
+      medida_referencia: null,
+      categoria: 'ROLLO DE TELA',
+      variante: '',
+      precio: null,
+      precio_base: null,
+      faltante: false,
+      necesita_precio: true,
+      regla: null,
+      descripcion: `ROLLO DE TELA ${medidaSolicitada} (solo 2x5 tiene precio $180.000 — ¿a qué precio?)`,
+    }]
+    return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: 1 } }
+  }
+  // Si es consulta de rollo sin medida ("que medidas tienes"), mostrar solo 2x5
+  if (isRolloQ && !hasRolloMedida && /medida|tienes|tienen|disponible/i.test(q)) {
+    try {
+      const direct = await suggestPrice('ROLLO DE TELA 2x5')
+      const sug = direct.items?.[0] || direct.detalles?.[0]
+      if (sug && sug.precio != null) {
+        const data = [{
+          medida_solicitada: '2x5',
+          medida_referencia: direct.medida_encontrada || '2x5',
+          categoria: 'ROLLO DE TELA',
+          variante: sug.variante || '',
+          precio: sug.precio,
+          precio_base: sug.precio,
+          faltante: false,
+          regla: null,
+          descripcion: `ROLLO DE TELA 2x5 — $180.000 (única medida con precio)`,
+        }]
+        return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: 1 } }
+      }
+    } catch { /* fallback */ }
+  }
+  // Genérico: cualquier producto en precios_referencia — suggestPrice directo sin parse restrictivo
   try {
-    // Parsear el texto como pedido para extraer items/entidades limpios
+    const direct = await suggestPrice(q.slice(0, 200))
+    // Si direct trae sugerencias/items válidos, usarlos (genérico, mañana funciona para moldura X nueva)
+    const hasData = (direct.items?.length || 0) > 0 || (direct.sugerencias?.length || 0) > 0 || (direct.detalles?.length || 0) > 0
+    if (hasData) {
+      const validCat = direct.items?.some(i => !i.faltante && i.precio != null) || direct.sugerencias?.some(s => s.precio != null)
+      if (validCat) {
+        // Filtrar rollo bastidor contaminación: si q es rollo y direct devolvió BASTIDOR, forzar rollo 2x5 o necesita_precio
+        const returnedBastidorForRollo = isRolloQ && (direct.items?.[0]?.categoria?.toLowerCase() === 'bastidor' || direct.sugerencias?.[0]?.categoria?.toLowerCase() === 'bastidor')
+        if (returnedBastidorForRollo && !isRollo2x5) {
+          if (hasRolloMedida) {
+            const data = [{
+              medida_solicitada: medidaQRaw,
+              medida_referencia: null,
+              categoria: 'ROLLO DE TELA',
+              variante: '',
+              precio: null,
+              precio_base: null,
+              faltante: false,
+              necesita_precio: true,
+              regla: null,
+              descripcion: `ROLLO DE TELA ${medidaQRaw} (solo 2x5 tiene precio — ¿a qué precio?)`,
+            }]
+            return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: 1 } }
+          }
+        } else {
+          const data = (direct.items || direct.sugerencias || []).slice(0, 5).map((s: { categoria?: string; variante?: string; medida?: string; precio?: number | null; faltante?: boolean }) => ({
+            medida_solicitada: s.medida || medidaQRaw || '',
+            medida_referencia: direct.medida_encontrada || s.medida || '',
+            categoria: s.categoria || '',
+            variante: s.variante || '',
+            precio: s.precio ?? null,
+            precio_base: s.precio ?? null,
+            faltante: s.faltante ?? (s.precio == null),
+            regla: (direct as { regla_aplicada?: string | null }).regla_aplicada ?? null,
+            descripcion: `${s.categoria || ''} ${s.medida || ''}${s.variante ? ` ${s.variante}` : ''}`.trim(),
+          }))
+          if (data.length > 0) {
+            return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: data.length } }
+          }
+        }
+      }
+    }
+  } catch { /* cae a parse pipeline */ }
+
+  // Fallback: pipeline parseOrder → resolveItems → priceItems (multi-item, variantes, grosor)
+  try {
     const parsed = await parseOrder(q, '000', logs)
     if (!parsed.items.length) {
       return { data: [], log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: 0 } }
@@ -103,8 +190,29 @@ export async function fetchPreciosReferencia(q: string): Promise<{ data: unknown
       precio_base: p.precio_base,
       faltante: p.faltante,
       regla: p.regla_aplicada,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      necesita_precio: (p as any).necesita_precio || (resolved.find(r => r.medida === p.medida_solicitada)?.necesita_precio) || false,
       descripcion: `${p.categoria} ${p.medida_solicitada}${p.variante ? ` ${p.variante}` : ''}`,
     }))
+    // Si algún resolved tiene necesita_precio (rollo otra medida), asegurar flag
+    for (const r of resolved) {
+      if (r.necesita_precio) {
+        const match = (data as { medida_solicitada: string; necesita_precio?: boolean }[]).find(d => d.medida_solicitada === r.medida)
+        if (match) match.necesita_precio = true
+        else data.push({
+          medida_solicitada: r.medida,
+          medida_referencia: null,
+          categoria: r.categoria,
+          variante: r.variante,
+          precio: null,
+          precio_base: null,
+          faltante: false,
+          necesita_precio: true,
+          regla: null,
+          descripcion: `${r.categoria} ${r.medida} (solo 2x5 tiene precio — ¿a qué precio?)`,
+        } as never)
+      }
+    }
     return { data, log: { tool: `preciosReferencia(${q.slice(0,40)})`, duration_ms: Date.now() - t0, resultCount: data.length } }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -204,11 +312,11 @@ export async function runToolsForQuery(args: {
   }
 
   if (needsProducts) {
-    // Producto limpio: precios_referencia + pricing_rules vía suggestPrice/bulkPrice
-    const prodQ = args.text.slice(0, 120)
-    pending.push(fetchPreciosReferencia(prodQ).then((r) => ({ key: 'precios_referencia', data: r.data, log: r.log })))
-    // Mantener key legacy 'products' para prompts viejos, pero apuntando a limpia
-    pending.push(fetchPreciosReferencia(prodQ).then((r) => ({ key: 'products', data: r.data, log: r.log })))
+    const prodQ = args.text.slice(0, 200)
+    // Single call, publicar en ambas keys para compat
+    const preciosPromise = fetchPreciosReferencia(prodQ)
+    pending.push(preciosPromise.then((r) => ({ key: 'precios_referencia', data: r.data, log: r.log })))
+    pending.push(preciosPromise.then((r) => ({ key: 'products', data: r.data, log: { ...r.log, tool: r.log.tool.replace('preciosReferencia','products') } })))
   }
 
   // Sin heurística => al menos intentar gastos hoy si es consulta factual genérica

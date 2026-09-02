@@ -18,8 +18,8 @@ Del texto del cliente extraé la orden y devolvé UNICAMENTE un JSON con esta es
   ],
   "entidades": [
     {
-      "categoria": "bastidor" | "acrilico" | "circular" | "producto" | null,
-      "medida": "medida normalizada (ej: 60x40, 100x120, 2x5)" | null,
+      "categoria": "bastidor" | "acrilico" | "circular" | "rollo de tela" | "producto" | null,
+      "medida": "medida normalizada (ej: 60x40, 100x120, 2x5 para rollo en metros)" | null,
       "variante": "Sin Tela" | "Lienzo Profesional" | "Lona Preparada" | "Doble 4cm" | null,
       "cantidad": número,
       "descripcion_original": "mismo texto que en items.descripcion"
@@ -45,7 +45,7 @@ Del texto del cliente extraé la orden y devolvé UNICAMENTE un JSON con esta es
 - Si dice "a nombre de X" o "para X", ese es el cliente_nombre.
 - confianza: "alta" si el mensaje es claro y sin ambigüedad. "baja" si hay que inferir o si el mensaje es genérico.
 - descripcion en items debe ser TEXTUAL: copiá exactamente lo que dijo el cliente.
-- Normalizá medidas en entidades: "100x0,60" → "60x100", el número mayor primero. Acepta "x", "X", "×", "por", con o sin "cm", con coma decimal. "1,5 x 5" → "150x500" si parece metros (1,5m=150cm).
+ - Normalizá medidas en entidades: "100x0,60" → "60x100", el número mayor primero. Acepta "x", "X", "×", "por", con o sin "cm", con coma decimal. "1,5 x 5" → "150x500" si parece metros (1,5m=150cm), EXCEPTO si es rollo de tela: "2 x 5 metros" → "2x5" literal (metros, no convertir).
 - Si no se puede determinar categoria en entidades, dejá null en lugar de inventar.
 - LITERALIDAD: extraé solo lo explícito. Si dice "cajón/caja/onda caja/ancho 4cm" NO inventes variante "Doble 4cm" si no hay pista textual fuerte; en cambio marcá dudoso según bloque sinónimos. Si la pista es fuerte ("lo más ancho posible, onda caja, 4-5cm ideal") sí mapeá a Doble 4cm.
 - "dos más" / "sumarte dos más, 58x29, 184x95" → SON items separados 1x cada medida, NO 2x la primera. "N de X" sí es N del mismo.
@@ -79,7 +79,13 @@ Mensaje: "cotización por 9 bastidores de 40x40 lo más anchos posibles onda caj
 {"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"9 bastidores 40x40 caja 4cm","cantidad":9}],"entidades":[{"categoria":"bastidor","medida":"40x40","variante":"Doble 4cm","cantidad":9,"descripcion_original":"9 bastidores 40x40 caja 4cm"}],"variante_respuesta":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Tengo 2 obras para embastar 60x80 quiero un rollo de 1,5 x 5 Tenés acrílico verde Viridiano chico y blanco grande"
-{"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"2 obras 60x80 embastar","cantidad":2},{"descripcion":"rollo 1,5 x 5","cantidad":1},{"descripcion":"acrílico verde Viridiano chico","cantidad":1},{"descripcion":"acrílico blanco grande","cantidad":1}],"entidades":[{"categoria":"bastidor","medida":"60x80","variante":null,"cantidad":2,"descripcion_original":"2 obras 60x80 embastar"},{"categoria":"producto","medida":"150x500","variante":null,"cantidad":1,"descripcion_original":"rollo 1,5 x 5"},{"categoria":"acrilico","medida":null,"variante":null,"cantidad":1,"descripcion_original":"acrílico verde Viridiano chico"},{"categoria":"acrilico","medida":null,"variante":null,"cantidad":1,"descripcion_original":"acrílico blanco grande"}],"variante_respuesta":null,"faltan_campos":["variante"],"dudoso":true,"razon_duda":"Acrílicos sin medida, chico=60cc grande=200cc requiere mapeo catálogo"}
+{"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"2 obras 60x80 embastar","cantidad":2},{"descripcion":"rollo 1,5 x 5","cantidad":1},{"descripcion":"acrílico verde Viridiano chico","cantidad":1},{"descripcion":"acrílico blanco grande","cantidad":1}],"entidades":[{"categoria":"bastidor","medida":"60x80","variante":null,"cantidad":2,"descripcion_original":"2 obras 60x80 embastar"},{"categoria":"rollo de tela","medida":"1.5x5","variante":null,"cantidad":1,"descripcion_original":"rollo 1,5 x 5"},{"categoria":"acrilico","medida":null,"variante":null,"cantidad":1,"descripcion_original":"acrílico verde Viridiano chico"},{"categoria":"acrilico","medida":null,"variante":null,"cantidad":1,"descripcion_original":"acrílico blanco grande"}],"variante_respuesta":null,"faltan_campos":["variante"],"dudoso":true,"razon_duda":"Rollo 1.5x5 sin precio - preguntar; Acrílicos chico=60cc grande=200cc"}
+
+Mensaje: "Rollo de tela 2 x 5 metros no tienes?"
+{"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"Rollo de tela 2 x 5 metros","cantidad":1}],"entidades":[{"categoria":"rollo de tela","medida":"2x5","variante":null,"cantidad":1,"descripcion_original":"Rollo de tela 2 x 5 metros"}],"variante_respuesta":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "Rollo de tela que medidas tienes"
+{"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"Rollo de tela que medidas tienes","cantidad":1}],"entidades":[{"categoria":"rollo de tela","medida":null,"variante":null,"cantidad":1,"descripcion_original":"Rollo de tela que medidas tienes"}],"variante_respuesta":null,"faltan_campos":["medida"],"dudoso":true,"razon_duda":"Consulta medidas rollo - solo 2x5 tiene precio"}
 
 Mensaje: "2 marcos 60x80"
 {"tipo":"presupuesto","confianza":"alta","cliente_nombre":null,"items":[{"descripcion":"2 marcos 60x80","cantidad":2}],"entidades":[{"categoria":"tapacanto","medida":"60x80","variante":null,"cantidad":2,"descripcion_original":"2 marcos 60x80"}],"variante_respuesta":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}

@@ -10,6 +10,10 @@ export const SINONIMOS_CATEGORIA: Record<string, string> = {
   marco: 'tapacanto',
   marcos: 'tapacanto',
   tapacantos: 'tapacanto',
+  // rollo
+  rollo: 'ROLLO DE TELA',
+  'rollo de tela': 'ROLLO DE TELA',
+  'rollo tela': 'ROLLO DE TELA',
 }
 
 export const SINONIMOS_VARIANTE: Record<string, string> = {
@@ -88,7 +92,7 @@ export const SINONIMOS_PROMPT_BLOCK = `
 - "grosor", "más grueso", "grueso", "ancho profundo" SIN variante explícita → NO asumas Doble 4cm; poné variante null, faltan_campos ["variante"], dudoso true, razon "grosor sin variante - preguntar Sin tela / Lienzo Profesional".
 - "marco", "marcos" → categoria "tapacanto" (no bastidor). Ej: "2 marcos 60x80" → tapacanto 60x80.
 - "acrílico verde viridiano chico" → acrilico Serie 2 60cc. "acrílico blanco grande" / "viridiano grande" → acrilico Serie 2 200cc. Si dice "viridiano" o "acrílico" sin tamaño claro, poné variante null y categoria acrilico.
-- "rollo 1,5 x 5" / "rollo" → categoria "ROLLO DE TELA", medida 2 x 5 si dice 2x5 exacto, sino la que diga (1,5x5 → ROLLO DE TELA 1,5x5 faltante). Solo 2x5 tiene referencia limpia.
+- "rollo", "rollo de tela" → categoria "rollo de tela". Medida "2x5" literal en metros (NO convertir a cm). "rollo 2 x 5 metros" → medida "2x5". "rollo 1,5 x 5" → medida "1.5x5" faltante. Solo 2x5 tiene referencia limpia ($180k); otra medida de rollo → faltante y preguntar precio al dueño.
 - "con tela" == "Lienzo Profesional". Solo preguntar Sin tela / Lienzo Profesional (no Lona Preparada) cuando pregunte por grosor.
 NUNCA inventes variante si el sinónimo no está explícito salvo 4,5cm→Doble 4cm. Si dice "lo más ancho posible, onda caja, si pueden ser de 4-5cm ideal" → variante Doble 4cm con dudoso=false.
 `

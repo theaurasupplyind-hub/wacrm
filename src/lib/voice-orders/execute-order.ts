@@ -60,6 +60,41 @@ export async function resolveItems(
     } else if (sinonimoVariante && entidad?.variante == null && !expandedQuery.toLowerCase().includes(sinonimoVariante.toLowerCase())) {
       queryForSuggest = `${expandedQuery} ${sinonimoVariante}`
     }
+    // ROLLO: interceptar ANTES de cualquier sugestPrice bastidor — solo 2x5 tiene precio
+    const isRolloDesc = /rollo/i.test(item.descripcion) || (entidad?.categoria?.toLowerCase() === 'rollo de tela')
+    if (isRolloDesc) {
+      const medidaRaw = entidad?.medida || extractOriginalMedida(item.descripcion) || ''
+      const medidaNorm = medidaRaw.replace(/\s/g, '').toLowerCase().replace(',', '.')
+      // Normalizar "2x5" variantes
+      const is2x5 = medidaNorm === '2x5' || medidaNorm === '2.0x5' || medidaNorm === '2x5.0'
+      const hasMedida = !!medidaNorm && /\d/.test(medidaNorm)
+      // Sin medida explícita ("que medidas tienes") -> responder faltante consulta, no bastidor
+      if (!hasMedida) {
+        // Dejar que suggestPrice traiga ROLLO 2x5 limpio como referencia, pero marcar consulta
+        // Se maneja abajo via isRollo sin medida -> necesita_precio consulta
+      } else if (!is2x5) {
+        resolved.push({
+          descripcion: item.descripcion,
+          cantidad: item.cantidad,
+          categoria: 'ROLLO DE TELA',
+          medida: medidaRaw || medidaNorm,
+          variante: '',
+          precio_base: null,
+          medida_referencia: null,
+          faltante: false,
+          necesita_precio: true,
+        })
+        continue
+      }
+      // Si es 2x5, forzar query canónica para traer precio limpio sin contaminación bastidor
+      if (is2x5) {
+        queryForSuggest = 'ROLLO DE TELA 2x5'
+      } else if (!hasMedida) {
+        // consulta sin medida: también query canónica para mostrar el único disponible
+        queryForSuggest = 'ROLLO DE TELA 2x5'
+      }
+    }
+
     try {
       const result = await suggestPrice(queryForSuggest)
       const sug = result.items?.[0]
@@ -159,9 +194,10 @@ export async function resolveItems(
         continue
       }
 
-      // Caso 4: sin resultados — reintentar como bastidor si la descripción tiene medidas
+      // Caso 4: sin resultados — reintentar como bastidor si la descripción tiene medidas (NO para rollo)
       const tieneMedidas = /(?:\d+\s*(?:[xX×]|por)\s*\d+)/.test(item.descripcion)
-      if (tieneMedidas && (!sug || !sug.categoria || sug.faltante)) {
+      const skipBastidorRetry = /rollo/i.test(item.descripcion) || entidad?.categoria?.toLowerCase() === 'rollo de tela'
+      if (!skipBastidorRetry && tieneMedidas && (!sug || !sug.categoria || sug.faltante)) {
         const result2 = await suggestPrice(`bastidor ${item.descripcion}`)
         const sug2 = result2.items?.[0]
         const det2 = result2.detalles?.[0]
@@ -202,16 +238,36 @@ export async function resolveItems(
         }
       }
 
-      // Si es ROLLO DE TELA con medida distinta a 2x5, marcar necesita_precio (dueño debe decir precio)
-      const isRollo = (entidad?.categoria?.toLowerCase() === 'rollo de tela' || /rollo/i.test(item.descripcion))
-      if (isRollo) {
-        const medidaNorm = (entidad?.medida || extractOriginalMedida(item.descripcion) || '').replace(/\s/g,'').toLowerCase()
-        if (medidaNorm && medidaNorm !== '2x5' && medidaNorm !== '2x5' ) {
+      // ROLLO fallback post-result: si vino como ROLLO con medida !=2x5 o consulta sin medida, normalizar a necesita_precio/consulta
+      const isRolloPost = (entidad?.categoria?.toLowerCase() === 'rollo de tela' || /rollo/i.test(item.descripcion))
+      if (isRolloPost) {
+        const medidaRawPost = entidad?.medida || extractOriginalMedida(item.descripcion) || ''
+        const normPost = medidaRawPost.replace(/\s/g, '').toLowerCase().replace(',', '.')
+        const is2x5Post = normPost === '2x5' || normPost === '2.0x5'
+        const hasMedidaPost = !!normPost && /\d/.test(normPost)
+        // Si suggestPrice devolvió BASTIDOR para un rollo, corregir: si no es 2x5 o sin medida, marcar necesita_precio/consulta en vez de bastidor 18x24
+        const returnedBastidorForRollo = sug?.categoria?.toLowerCase() === 'bastidor' || firstDetalle?.categoria?.toLowerCase() === 'bastidor'
+        if (returnedBastidorForRollo && (!hasMedidaPost || !is2x5Post)) {
           resolved.push({
             descripcion: item.descripcion,
             cantidad: item.cantidad,
             categoria: 'ROLLO DE TELA',
-            medida: entidad?.medida || extractOriginalMedida(item.descripcion) || '',
+            medida: medidaRawPost || '',
+            variante: '',
+            precio_base: null,
+            medida_referencia: null,
+            faltante: false,
+            necesita_precio: true,
+          })
+          continue
+        }
+        // Si es consulta "que medidas tienes" sin medida y vino con precio 2x5, dejar pasar (se mostrará solo 2x5), pero si no vino precio, marcar consulta
+        if (!hasMedidaPost && (!sug || sug.faltante)) {
+          resolved.push({
+            descripcion: item.descripcion,
+            cantidad: item.cantidad,
+            categoria: 'ROLLO DE TELA',
+            medida: '',
             variante: '',
             precio_base: null,
             medida_referencia: null,
@@ -232,8 +288,8 @@ export async function resolveItems(
         faltante: true,
       })
     } catch {
-      // Reintentar como bastidor si tiene medidas
-      if (/(?:\d+\s*(?:[xX×]|por)\s*\d+)/.test(item.descripcion)) {
+      // Reintentar como bastidor si tiene medidas (no rollo)
+      if (!/rollo/i.test(item.descripcion) && /(?:\d+\s*(?:[xX×]|por)\s*\d+)/.test(item.descripcion)) {
         try {
           const result2 = await suggestPrice(`bastidor ${item.descripcion}`)
           const sug2 = result2.items?.[0]
