@@ -259,9 +259,27 @@ export async function runToolsForQuery(args: {
   proveedor?: string | null
   empleado?: string | null
   fecha?: string | null
+  historyText?: string | null
 }): Promise<{ toolResults: Record<string, unknown>; toolLogs: ToolLog[] }> {
   const q = args.text.toLowerCase()
   const pending: Promise<{ key: string; data: unknown; log: ToolLog }>[] = []
+
+  function extractDebtFollowUp(hist: string | null | undefined, current: string): string | null {
+    if (!hist) return null
+    const recent = hist.slice(-1500).toLowerCase()
+    const hadDebtAsk = /cu[aá]nto debe|cuanto debe|deuda de un cliente|revisar la deuda|saldo pendiente/i.test(recent)
+    if (!hadDebtAsk) return null
+    const t = current.trim()
+    if (!t) return null
+    if (/^(hola|gracias|si|no|dale|ok|chau)$/i.test(t)) return null
+    if (/^[a-zA-Z]\s*$/.test(t) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+$/.test(t)) return null
+    // 1-2 palabras nombre propio 3-40 chars
+    if (/^[A-Za-zÁÉÍÓÚáéíóúÑñ]{2,}(?:\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]{2,})?$/.test(t) && t.length >= 3 && t.length <= 40) {
+      console.log('[debt-followup] detected follow-up name="%s" from history debt ask', t)
+      return t
+    }
+    return null
+  }
 
   const needsExpenses =
     args.intent === 'gasto' ||
@@ -293,7 +311,9 @@ export async function runToolsForQuery(args: {
   const needsEmployees = !!args.empleado || q.includes('empleado') || q.includes('sueldo')
   const needsProducts = args.intent === 'pedido' || q.includes('bastidor') || q.includes('presupuesto') || q.includes('precio') || q.includes('tapacanto') || q.includes('pintura') || q.includes('rollo') || q.includes(' x ') || /\d+\s*x\s*\d+/i.test(q)
   const isDebtQuery = args.intent === 'factura' || /cu[aá]nto debe|saldo pendiente|deuda de/i.test(args.text)
-  const debtClientName = (args.proveedor?.trim() || (() => {
+  const followUpDebtName = extractDebtFollowUp(args.historyText, args.text)
+  const isDebtQueryEffective = isDebtQuery || !!followUpDebtName
+  const debtClientName = (args.proveedor?.trim() || followUpDebtName || (() => {
     const m = args.text.match(/cu[aá]nto debe\s+(?:el\s+cliente\s+)?(.+?)(?:\?|$)/i)
     if (m) {
       const cand = m[1].trim()
@@ -344,8 +364,16 @@ export async function runToolsForQuery(args: {
     }
   }
 
-  if (isDebtQuery && debtClientName) {
-    pending.push(fetchDebtByClient(debtClientName).then((r) => ({ key: 'deuda_cliente', data: r.data, log: r.log })))
+  if (isDebtQueryEffective && debtClientName) {
+    // timeout 5min via historial: si followUp viene de historial viejo >10 turns no se detecta (history slice -10)
+    console.log('[debt] dispatch deuda_cliente client="%s" via %s', debtClientName, followUpDebtName ? 'followUp' : 'direct')
+    pending.push(fetchDebtByClient(debtClientName).then((r) => {
+      if (r.log.error) console.error('[debt] fetchDebtByClient failed client=%s error=%s', debtClientName, r.log.error)
+      else console.log('[debt] fetchDebtByClient OK client=%s invoices=%s total=%s', debtClientName, (r.data as { invoices?: unknown[] })?.invoices?.length ?? 0, (r.data as { total?: number })?.total)
+      return { key: 'deuda_cliente', data: r.data, log: r.log }
+    }))
+  } else if (isDebtQueryEffective && !debtClientName) {
+    console.log('[debt] deuda query without client name — will ask for name (no tool)')
   }
 
   if (needsProducts) {
@@ -371,6 +399,15 @@ export async function runToolsForQuery(args: {
   for (const s of settled) {
     toolResults[s.key] = s.data
     toolLogs.push(s.log)
+    if (s.log.error) {
+      console.error('[tools] %s failed: %s', s.log.tool, s.log.error)
+    } else {
+      console.log('[tools] %s OK resultCount=%s duration=%sms', s.log.tool, s.log.resultCount ?? 0, s.log.duration_ms)
+    }
+  }
+  // Timeout log: si parecía follow-up de deuda pero no se disparó por falta de historial reciente
+  if (!debtClientName && !followUpDebtName && args.historyText && /cu[aá]nto debe|deuda de un cliente|revisar la deuda/i.test(args.historyText.slice(-800).toLowerCase()) && /^[A-Za-zÁÉÍÓÚáéíóúÑñ]{3,}(?:\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]{2,})?$/.test(args.text.trim()) ) {
+    console.warn('[debt] follow-up name="%s" ignored — deuda ask fuera de ventana 5min/10turns (hist slice)', args.text.trim())
   }
 
   // Si es consulta de asistencia "quién faltó ayer/hoy", expandir attendance por empleado (best-effort, limitado)

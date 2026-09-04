@@ -125,6 +125,7 @@ export async function runAssistant(args: {
         proveedor: extraction.proveedor,
         empleado: extraction.empleado || extraction.empleado_gasto,
         fecha: extraction.fecha,
+        historyText,
       })
       toolResults = r.toolResults
       toolLogs = r.toolLogs
@@ -150,6 +151,7 @@ export async function runAssistant(args: {
           proveedor: extraction.proveedor,
           empleado: extraction.empleado || extraction.empleado_gasto,
           fecha: extraction.fecha,
+          historyText,
         })
         toolResults = r.toolResults
         toolLogs = r.toolLogs
