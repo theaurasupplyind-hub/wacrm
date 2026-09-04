@@ -1617,17 +1617,25 @@ async function processMessage(
       break
     case 'assistant':
       if (!hasPendingVoucher) {
-        console.log('[assistant] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-        bgTasks.push(
-          runAssistantForWebhook({
-            accountId,
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
-            userId: configOwnerUserId,
-            text: inboundText,
-            phone: message.from,
-          }).catch((err) => console.error('[assistant] dispatch error:', err)),
-        )
+        const captionIsForcedVoucher = (message.type === 'image' || message.type === 'document')
+          && !!(message.image?.caption?.trim() || message.document?.caption?.trim())
+          && !/^[a-zA-Z]\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
+          && !/^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
+        if (captionIsForcedVoucher) {
+          console.log('[assistant] suppressed — image caption handled by voucher forcedCaption=%s', (message.image?.caption || message.document?.caption || '').trim().slice(0,60))
+        } else {
+          console.log('[assistant] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
+          bgTasks.push(
+            runAssistantForWebhook({
+              accountId,
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+              userId: configOwnerUserId,
+              text: inboundText,
+              phone: message.from,
+            }).catch((err) => console.error('[assistant] dispatch error:', err)),
+          )
+        }
       }
       break
     case 'flow':

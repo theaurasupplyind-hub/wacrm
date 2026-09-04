@@ -445,9 +445,23 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     )
 
     // Caption siempre gana (pago parcial obligado) — si la imagen vino con "Jesus Daniel" en caption, pisa al extraído
-    const forcedCaption = args.message.caption?.trim() || null
-    const isLetterSelectionCaption = forcedCaption ? /^[a-zA-Z]\s*$/.test(forcedCaption) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(forcedCaption) : false
-    if (forcedCaption && !isLetterSelectionCaption && forcedCaption.length >= 3) {
+    const forcedCaptionRaw = args.message.caption?.trim() || null
+    const isLetterSelectionCaption = forcedCaptionRaw ? /^[a-zA-Z]\s*$/.test(forcedCaptionRaw) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(forcedCaptionRaw) : false
+    const forcedCaption = forcedCaptionRaw && !isLetterSelectionCaption && forcedCaptionRaw.length >= 3 ? forcedCaptionRaw : null
+    function normalizeCaption(s: string): string {
+      return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
+    }
+    function captionMatchesClient(caption: string, cliente: string): boolean {
+      const cap = normalizeCaption(caption)
+      const cli = normalizeCaption(cliente)
+      if (!cap || !cli) return false
+      if (cli.includes(cap) || cap.includes(cli)) return true
+      const capTokens = cap.split(/\s+/).filter(Boolean)
+      const cliTokens = cli.split(/\s+/).filter(Boolean)
+      if (capTokens.length === 0 || cliTokens.length === 0) return false
+      return capTokens.every((t) => cliTokens.some((c) => c.includes(t) || t.includes(c)))
+    }
+    if (forcedCaption) {
       console.log('[voucher] forcedCaption override: "%s" (replaces nombre_cliente="%s")', forcedCaption, voucher.nombre_cliente)
       extractedNombreCliente = forcedCaption
       extractedNombreOrigen = forcedCaption
@@ -516,6 +530,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
         let exactCount = 0
         for (const c of amountCandidatesP1) {
+          if (forcedCaption && !captionMatchesClient(forcedCaption, c.cliente_nombre)) {
+            continue
+          }
           if (montoDistance(voucher.monto!, c.saldo_pendiente) === 0) {
             if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
               exactCount++
@@ -583,6 +600,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         const exactSums = findExactClientSumMatches(voucher.monto, allCandidates)
         let sumCount = 0
         for (const group of exactSums) {
+          if (forcedCaption && !captionMatchesClient(forcedCaption, group.clientName)) {
+            continue
+          }
           if (tryAddToPool({ type: 'sum', invoices: group.invoices, total: group.total, clientName: group.clientName })) {
             sumCount++
           }
@@ -641,7 +661,8 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
         let nameExactCount = 0
         for (const c of nameCandidates) {
-          if (c.score >= NAME_MATCH_THRESHOLD) {
+          const isForcedMatch = forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : false
+          if (c.score >= NAME_MATCH_THRESHOLD || isForcedMatch) {
             if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
               nameExactCount++
             }
@@ -687,15 +708,17 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     const nameIsReliable = nameCandidates.length > 0
       && nameCandidates.some(c => c.score >= NAME_MATCH_THRESHOLD)
+    const forcedReliable = forcedCaption ? nameCandidates.some(c => captionMatchesClient(forcedCaption, c.cliente_nombre)) : false
+    const effectiveReliable = nameIsReliable || forcedReliable
 
-    console.log('[voucher-debug] Phase 4: hasName=%s nameIsReliable=%s nameCands=%d',
-      !!hasName, nameIsReliable, nameCandidates.length)
+    console.log('[voucher-debug] Phase 4: hasName=%s nameIsReliable=%s forcedReliable=%s nameCands=%d',
+      !!hasName, nameIsReliable, forcedReliable, nameCandidates.length)
 
     // CASE A: Pool has multiple entries → narrow down by name
-    if (candidatePool.length > 1 && nameIsReliable) {
+    if (candidatePool.length > 1 && effectiveReliable) {
       const highScoreIds = new Set(
         nameCandidates
-          .filter(c => c.score >= NAME_MATCH_THRESHOLD)
+          .filter(c => forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : c.score >= NAME_MATCH_THRESHOLD)
           .map(c => c.invoice_id)
       )
       const filteredPool = candidatePool.filter(entry =>
@@ -712,10 +735,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
 
     // CASE B: Pool is empty → try to add best name match
-    if (candidatePool.length === 0 && nameIsReliable) {
-      const bestMatch = nameCandidates
-        .filter(c => c.score >= NAME_MATCH_THRESHOLD)
-        .sort((a, b) => b.score - a.score)[0]
+    if (candidatePool.length === 0 && effectiveReliable) {
+      const eligible = nameCandidates.filter(c => forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : c.score >= NAME_MATCH_THRESHOLD)
+      const bestMatch = eligible.sort((a, b) => b.score - a.score)[0]
       if (bestMatch) {
         if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) {
           p4steps.push({ step: 'Add best name match', result: { factura: bestMatch.numero_factura, cliente: bestMatch.cliente_nombre, score: bestMatch.score, saldo: bestMatch.saldo_pendiente, added: true } })
@@ -725,7 +747,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     }
 
     // CASE C: Pool still empty AND name not reliable → ask directly
-    if (candidatePool.length === 0 && !nameIsReliable) {
+    if (candidatePool.length === 0 && !effectiveReliable) {
       matchStatus = 'ambiguous'
       mensajeRespuesta = voucher.monto && voucher.monto > 0
         ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Decinos el nombre exacto del cliente para identificar la factura.`
