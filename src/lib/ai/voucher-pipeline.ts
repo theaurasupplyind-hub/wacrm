@@ -10,6 +10,7 @@ import {
   registrarPago,
 } from '../facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
+import { runVoucherDryRun } from '../bot-beta/voucher-dryrun'
 
 const MEDIA_TIMEOUT_MS = 15_000
 
@@ -1198,6 +1199,125 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   }
 
   console.log('[voucher] END status=%s', matchStatus)
+}
+
+/**
+ * Texto-efectivo: reutiliza los 5 pasos de voucher-dryrun sin imagen.
+ * Para "Jesus Daniel pago 48000 efectivo" — monto+cliente vienen de UnifiedExtraction.
+ */
+export async function processVoucherEfectivoText(args: {
+  messageId: string
+  contactId: string
+  conversationId: string
+  accountId: string
+  userId: string
+  clientName: string
+  monto: number
+  fecha: string | null
+}): Promise<void> {
+  const { messageId, contactId, conversationId, clientName, monto, fecha } = args
+  const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId, contactId }
+  const db = supabaseAdmin()
+  console.log('[voucher-text] START efectivo client=%s monto=%s fecha=%s', clientName, monto, fecha)
+
+  const dry = await runVoucherDryRun({
+    monto,
+    fecha,
+    referencia: null,
+    banco: null,
+    nombre_cliente: clientName,
+    nombre_origen: clientName,
+    nombre_destino: null,
+    cbu_destino: null,
+    cuit_destino: null,
+  })
+
+  const { matchStatus, candidates, matchedInvoiceId, matchedInvoiceNumero, matchedClienteNombre, matchedSaldoPendiente, bestDestination, mensajeRespuesta, debugInfo, errorMessage } = dry
+
+  // Auditoría voucher_extractions para texto-efectivo
+  await saveAttempt({
+    messageId,
+    contactId,
+    matchStatus: matchStatus as MatchStatus,
+    extractedAmount: monto,
+    extractedDate: fecha,
+    matchedInvoiceId,
+    errorMessage,
+    debugInfo,
+  })
+
+  if (matchStatus === 'matched' && matchedInvoiceId) {
+    // Stage + pago real (sin media)
+    try {
+      await createVoucherReview({
+        source_message_id: messageId,
+        wa_id: '',
+        contact_name: clientName,
+        extracted_monto: monto,
+        extracted_fecha: fecha,
+        extracted_referencia: null,
+        extracted_banco: null,
+        extracted_nombre_cliente: clientName,
+        extracted_nombre_origen: clientName,
+        extracted_nombre_destino: null,
+        extracted_cbu_destino: null,
+        extracted_cuit_destino: null,
+        match_status: 'matched',
+        review_status: 'completed',
+        matched_invoice_id: matchedInvoiceId,
+        matched_invoice_numero: matchedInvoiceNumero,
+        matched_cliente_nombre: matchedClienteNombre,
+        matched_saldo_pendiente: matchedSaldoPendiente,
+        entity_type: bestDestination?.entity_type ?? null,
+        entity_id: bestDestination?.entity_id ?? null,
+        entity_name: bestDestination?.entity_name ?? null,
+        candidatas: candidates.map((c) => ({
+          invoice_id: c.invoice_id,
+          numero_factura: c.numero_factura,
+          saldo_pendiente: c.saldo_pendiente,
+          cliente_nombre: c.cliente_nombre,
+          fecha: c.fecha,
+        })),
+        media_mime_type: 'text/efectivo',
+        media_base64: '',
+      })
+    } catch (err) {
+      console.error('[voucher-text] createVoucherReview failed:', err instanceof Error ? err.message : String(err))
+    }
+    try {
+      const fechaPago = normalizeDate(fecha)
+      await registrarPago({
+        invoiceId: matchedInvoiceId,
+        monto,
+        fecha: fechaPago,
+        entityType: bestDestination?.entity_type ?? undefined,
+        entityId: bestDestination?.entity_id ?? undefined,
+      })
+      console.log('[voucher-text] Payment registered OK invoice=%s amount=%s', matchedInvoiceId, monto)
+    } catch (err) {
+      console.error('[voucher-text] registrarPago failed:', err instanceof Error ? err.message : String(err))
+    }
+  } else if (matchStatus === 'ambiguous' || matchStatus === 'multi_invoice') {
+    // Guardar pending para A/B
+    await addPendingVoucher(db, conversationId, {
+      sourceMessageId: messageId,
+      extraction: { monto, fecha, referencia: null, banco: null, nombre_cliente: clientName, nombre_origen: clientName, nombre_destino: null, cbu_destino: null, cuit_destino: null },
+      candidates,
+      bestDestination,
+      mediaBase64: '',
+      mediaMimeType: 'text/efectivo',
+      multiInvoice: matchStatus === 'multi_invoice',
+    })
+    console.log('[voucher-text] ambiguous/multi pending saved candidates=%s', candidates.length)
+  }
+
+  try {
+    await engineSendText({ ...sendCtx, text: mensajeRespuesta })
+    console.log('[voucher-text] reply sent')
+  } catch (err) {
+    console.error('[voucher-text] reply failed:', err instanceof Error ? err.message : String(err))
+  }
+  console.log('[voucher-text] END status=%s', matchStatus)
 }
 
 async function saveAttempt(args: {

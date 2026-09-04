@@ -8,7 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
-import { processVoucherMessage } from '@/lib/ai/voucher-pipeline'
+import { processVoucherMessage, processVoucherEfectivoText } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
@@ -1671,8 +1671,34 @@ async function processMessage(
       }).then(() => {}).catch((err) => console.error('[voucher] Reset reply error:', err))
     )
   } else {
-    // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent ──
-    if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
+    // ── VOUCHER EFECTIVO POR TEXTO (sin imagen) — reutiliza 5 pasos dryRun ──
+    const isEfectivoText =
+      !hasPendingVoucher &&
+      !flowConsumed &&
+      !interactiveReplyId &&
+      inboundText.trim() &&
+      extraction?.intent === 'voucher' &&
+      extraction.monto != null &&
+      extraction.monto > 0 &&
+      !!extraction.proveedor &&
+      (extraction.metodo_pago === 'efectivo' || inboundText.toLowerCase().includes('efectivo'))
+
+    if (isEfectivoText) {
+      console.log('[voucher-text] efectivo dispatch -> conversation=%s', conversation.id)
+      bgTasks.push(
+        processVoucherEfectivoText({
+          messageId: message.id,
+          contactId: contactRecord.id,
+          conversationId: conversation.id,
+          accountId,
+          userId: configOwnerUserId,
+          clientName: extraction!.proveedor!,
+          monto: extraction!.monto!,
+          fecha: extraction!.fecha ?? null,
+        }).catch((err) => console.error('[voucher-text] error:', err)),
+      )
+    } else if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
+      // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent (A/B de comprobante) ──
       console.log('[voucher] text dispatch -> conversation=%s', conversation.id)
       bgTasks.push(
         processVoucherMessage({
