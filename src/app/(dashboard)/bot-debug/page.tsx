@@ -97,7 +97,7 @@ const TABS: { id: LogType; label: string; icon: typeof MessageSquare }[] = [
 
 const GOOD = new Set([
   'confirmed', 'recorded', 'correction_recorded', 'matched', 'llm',
-  'voucher', 'voice', 'flow', 'interactive', 'intent',
+  'voucher', 'voice', 'flow', 'interactive', 'intent', 'assistant',
 ])
 const BAD = new Set([
   'error', 'cancelled', 'rejected_no_arrival', 'employee_not_found',
