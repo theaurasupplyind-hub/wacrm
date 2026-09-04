@@ -25,6 +25,8 @@ export interface AiConfig {
    *  knowledge base is embedded and semantic retrieval turns on; when
    *  null, retrieval falls back to lexical full-text search. */
   embeddingsApiKey: string | null
+  /** Asistente conversacional (Bot Beta) habilitado por cuenta. */
+  assistantEnabled?: boolean
 }
 
 /** A single conversation turn in the shape both providers accept. */

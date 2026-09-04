@@ -4,7 +4,7 @@ import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
 
-export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'voice' | 'flow' | 'interactive' | 'none'
+export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'voice' | 'flow' | 'interactive' | 'assistant' | 'none'
 export type DispatchReason =
   | 'pending_multiturn'
   | 'category_correction'
@@ -18,6 +18,7 @@ export interface RouterState {
   hasPendingExpense: boolean
   hasPendingAttendance: boolean
   hasPendingVoucher: boolean
+  hasPendingVoice?: boolean
   flowConsumed: boolean
   interactiveReplyId: string | null
   inboundText: string
@@ -35,7 +36,7 @@ function isAsistenciaIntent(intent: BotIntent | undefined): boolean {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, flowConsumed, interactiveReplyId, inboundText, extraction, mediaConsumedByVoucher } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, hasPendingVoice, flowConsumed, interactiveReplyId, inboundText, extraction, mediaConsumedByVoucher } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -66,6 +67,13 @@ export function decideDispatch(state: RouterState): RouterDecision {
   }
   if (intent === 'voucher') {
     return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
+  }
+  // Guard de confirmación: si hay presupuesto/variante pendiente, la confirmación no debe ir al asistente
+  if (hasPendingVoice) {
+    return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
+  }
+  if (intent === 'otro') {
+    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
   if ((intent === 'pedido' || intent === 'factura') && confianza !== 'baja' && suppressVoice) {
     return { dispatchedTo: 'voice', dispatchReason: 'intent' }

@@ -36,6 +36,7 @@ export async function GET(
   const key = process.env.FACBAL_API_KEY
   if (!base || !key) return new Response('no config', { status: 500 })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let inv: any
   try {
     const r = await fetch(`${base}/invoices/${invoiceId}`, {
@@ -48,6 +49,7 @@ export async function GET(
     return new Response('fetch fail', { status: 502 })
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const items = (inv.items || []).filter((i: any) => i.descripcion?.trim())
   const total = (inv.total || 0) + (inv.envio || 0)
   const subtotal = inv.total || 0
@@ -104,6 +106,7 @@ export async function GET(
             <div style={{ width: 160, display: 'flex', justifyContent: 'flex-end' }}>Total</div>
           </div>
 
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
           {items.map((item: any, i: number) => (
             <div key={i} style={{
               display: 'flex', padding: '12px 0',

@@ -67,7 +67,7 @@ export function expandirSinonimos(text: string): string {
 }
 
 export function getSinonimoVariante(descripcion: string): string | null {
-  let lower = descripcion.toLowerCase()
+  const lower = descripcion.toLowerCase()
   // Normalizar coma decimal para 4,5cm → 4.5cm
   const normalized = lower.replace(/4\s*,\s*5/g, '4.5')
   if (normalized.includes('4.5cm') || normalized.includes('4.5 cm') || normalized.includes('4.5')) {

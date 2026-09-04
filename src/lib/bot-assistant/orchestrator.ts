@@ -38,6 +38,8 @@ export async function runAssistant(args: {
   phone: string
   history: { role: string; content: string }[]
   pendingState?: unknown
+  knowledge?: string[]
+  readonlyExpensePreview?: boolean
 }): Promise<AssistantResult> {
   const logs: { step: string; data: unknown }[] = []
   const historyText = buildHistoryText(args.history)
@@ -58,10 +60,9 @@ export async function runAssistant(args: {
 
   let toolResults: Record<string, unknown> | null = null
   let toolLogs: ToolLog[] = []
-  const knowledge: string[] = []
+  const knowledge: string[] = args.knowledge ?? []
 
-  // Knowledge: best-effort no bloqueante; en Bot Beta sin accountId/supabase no hay KB → vacío
-  // Se deja hook para Fase 3 si hay accountId disponible.
+  // Knowledge ya viene del caller (Fase 3); en Bot Beta dummy sigue []
 
   const needsTools = shouldCallTools(extraction, args.text)
 
@@ -86,7 +87,7 @@ export async function runAssistant(args: {
       confianza: ext.confianza,
     }
     try {
-      const match = await fuzzyMatchExpense(parsed)
+      const match = await fuzzyMatchExpense(parsed, { readonly: !!args.readonlyExpensePreview })
       // Normalizamos: si matcheó empleado, forzamos preview de sueldo aunque LLM no haya puesto categoría
       const inferredIsSalary = !!match.employeeId || !!match.employeeName
       const inferredCategory = match.categoryName || (inferredIsSalary ? 'Sueldos y salarios' : null)

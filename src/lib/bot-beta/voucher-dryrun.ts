@@ -49,7 +49,8 @@ function formatMultiInvoiceMessage(candidates: MatchVoucherCandidate[], monto: n
 }
 
 export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherDryResult> {
-  let extractedAmount = input.monto
+  // extractedAmount kept for future logging; use input.monto directly
+  void input.monto
   let matchStatus: VoucherDryResult['matchStatus'] = 'no_match'
   let matchedInvoiceId: number | null = null
   let matchedInvoiceNumero: string | null = null

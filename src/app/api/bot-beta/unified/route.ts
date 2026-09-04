@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
         const base64 = buffer.toString('base64')
         let extractedAmount: number | null = null
         let extractedFecha: string | null = null
-        let voucherCaption: string | null = captionRaw?.trim() || null
+        const voucherCaption: string | null = captionRaw?.trim() || null
         try {
           const extracted = await extractVoucherData({ base64, mimeType })
           extractedAmount = extracted.monto

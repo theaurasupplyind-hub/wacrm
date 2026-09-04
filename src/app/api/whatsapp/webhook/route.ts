@@ -26,6 +26,8 @@ import {
 import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import { decideDispatch } from '@/lib/bot/router'
+import { detectPastedConversation } from '@/lib/voice-orders/pasted-conversation'
+import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -1445,18 +1447,68 @@ async function processMessage(
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
 
-  // AI auto-reply. Runs only for plain-text inbound the deterministic
-  // flow runner did NOT consume (flows win over the LLM), and only when
-  // the account has enabled it. Awaited inside `after()` (same reason as
-  // the webhook dispatch below); `dispatchInboundToAiReply` owns its
-  // eligibility gates + try/catch and never throws.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    await dispatchInboundToAiReply({
-      accountId,
-      conversationId: conversation.id,
-      contactId: contactRecord.id,
-      configOwnerUserId,
-    })
+  // AI auto-reply movido a fallback del asistente (production.ts).
+  // El bloque await previo se removió para que 'assistant' sea primero
+  // y auto-reply solo corra si el asistente calla (fallback interno).
+
+  // ── Conversación pegada (WhatsApp export ambos lados) → atajo a voice-orders ──
+  // Antes del extractor para no pagar LLM por bloque pegado.
+  const hasPendingVoice = !!(
+    voiceCtx.pendingVariantItems?.length ||
+    voiceCtx.pendingInvoice ||
+    voiceCtx.pendingClientName
+  )
+  const pasted = !hasPendingVoucher && !hasPendingVoice && !flowConsumed && !interactiveReplyId && inboundText.trim()
+    ? detectPastedConversation(inboundText)
+    : null
+  if (pasted) {
+    console.log('[pasted] detected speaker=%s lines=%s -> voice proposal', pasted.speaker, pasted.customerText.slice(0, 60))
+    bgTasks.push(
+      (async () => {
+        try {
+          const textForOrder = `${pasted.customerText}\nA nombre de ${pasted.speaker}`
+          const r = await processTextOrder({
+            text: textForOrder,
+            senderPhone: message.from,
+            senderName: contact.profile.name,
+            commit: false,
+            pendingVariantItems: voiceCtx.pendingVariantItems,
+            pendingClientName: voiceCtx.pendingClientName,
+            pendingInvoice: voiceCtx.pendingInvoice,
+          })
+          await saveVoiceContext(conversation.id, r)
+          const sendCtx = {
+            accountId,
+            userId: configOwnerUserId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+          }
+          await sendVoiceResponse(sendCtx, r)
+        } catch (err) {
+          console.error('[pasted] handler error:', err)
+        }
+      })(),
+    )
+    // Log como pasted_conversation y no seguir a extractor/router para este mensaje
+    bgTasks.push(
+      (async () => {
+        await logRouterDecision({
+          messageId: message.id,
+          contactId: contactRecord.id,
+          conversationId: conversation.id,
+          accountId,
+          rawText: inboundText,
+          source: message.type,
+          flowConsumed,
+          interactive: !!interactiveReplyId,
+          hadContext: true,
+          extraction: null,
+          dispatchedTo: 'voice',
+          dispatchReason: 'pasted_conversation',
+          contextText: pasted.customerText.slice(0, 1500),
+        })
+      })(),
+    )
   }
 
   // ── EXTRACTOR UNIFICADO (LLM): intent + campos + faltan_campos + dudoso ──
@@ -1467,7 +1519,7 @@ async function processMessage(
     voiceCtx,
   })
   let extraction: UnifiedExtraction | null = null
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (!pasted && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
     try {
       extraction = await extractBotMessage(inboundText, contextText)
     } catch (err) {
@@ -1525,18 +1577,22 @@ async function processMessage(
   }
 
   // Primary dispatch — now via shared router. Keep logging same as before.
-  const routerDecision = decideDispatch({
-    hasPendingExpense,
-    hasPendingAttendance,
-    hasPendingVoucher,
-    flowConsumed,
-    interactiveReplyId,
-    inboundText,
-    extraction,
-    mediaConsumedByVoucher,
-  })
-  let dispatchedTo: string = routerDecision.dispatchedTo
-  let dispatchReason: string = routerDecision.dispatchReason
+  // Si es bloque pegado ya se dispatchó arriba como voice/pasted — no volver a decidir
+  const routerDecision = pasted
+    ? { dispatchedTo: 'voice' as const, dispatchReason: 'pasted_conversation' as const }
+    : decideDispatch({
+        hasPendingExpense,
+        hasPendingAttendance,
+        hasPendingVoucher,
+        hasPendingVoice,
+        flowConsumed,
+        interactiveReplyId,
+        inboundText,
+        extraction,
+        mediaConsumedByVoucher,
+      })
+  const dispatchedTo: string = routerDecision.dispatchedTo
+  const dispatchReason: string = routerDecision.dispatchReason
 
   switch (routerDecision.dispatchedTo) {
     case 'expense':
@@ -1551,8 +1607,26 @@ async function processMessage(
       console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
       break
     case 'voice':
-      console.log('[voice] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-      pushVoiceTask()
+      // Si ya es pasted, el task ya se pusheó arriba; no duplicar
+      if (!pasted) {
+        console.log('[voice] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
+        pushVoiceTask()
+      }
+      break
+    case 'assistant':
+      if (!hasPendingVoucher) {
+        console.log('[assistant] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
+        bgTasks.push(
+          runAssistantForWebhook({
+            accountId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+            userId: configOwnerUserId,
+            text: inboundText,
+            phone: message.from,
+          }).catch((err) => console.error('[assistant] dispatch error:', err)),
+        )
+      }
       break
     case 'flow':
     case 'interactive':
@@ -1562,25 +1636,28 @@ async function processMessage(
   }
 
   // Auditoría: registrar la decisión del router en router_logs (fire-and-forget).
-  bgTasks.push(
-    (async () => {
-      await logRouterDecision({
-        messageId: message.id,
-        contactId: contactRecord.id,
-        conversationId: conversation.id,
-        accountId,
-        rawText: inboundText,
-        source: message.type,
-        flowConsumed,
-        interactive: !!interactiveReplyId,
-        hadContext: !!contextText,
-        extraction,
-        dispatchedTo,
-        dispatchReason,
-        contextText,
-      })
-    })(),
-  )
+  // Si es pasted ya se logueó arriba, no duplicar.
+  if (!pasted) {
+    bgTasks.push(
+      (async () => {
+        await logRouterDecision({
+          messageId: message.id,
+          contactId: contactRecord.id,
+          conversationId: conversation.id,
+          accountId,
+          rawText: inboundText,
+          source: message.type,
+          flowConsumed,
+          interactive: !!interactiveReplyId,
+          hadContext: !!contextText,
+          extraction,
+          dispatchedTo,
+          dispatchReason,
+          contextText,
+        })
+      })(),
+    )
+  }
 
   // ── VOUCHER RESET COMMAND ──
   if (inboundText.trim().toLowerCase() === 'jesusdanielllavesecreta') {

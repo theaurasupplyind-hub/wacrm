@@ -151,6 +151,7 @@ function pickIcon(type: string): string {
 export async function resolveExpenseCategory(
   categoryName: string | null,
   categories?: ExpenseCategory[],
+  opts?: { readonly?: boolean },
 ): Promise<{ categoryId: number | null; categoryName: string | null; created: boolean }> {
   if (!categoryName) {
     return { categoryId: null, categoryName: null, created: false }
@@ -171,6 +172,10 @@ export async function resolveExpenseCategory(
 
   if (best && bestScore >= 0.6) {
     return { categoryId: best.id, categoryName: best.name, created: false }
+  }
+
+  if (opts?.readonly) {
+    return { categoryId: null, categoryName: null, created: false }
   }
 
   // Crear categoría automáticamente
@@ -202,6 +207,7 @@ export async function resolveExpenseCategory(
 
 export async function resolveExpenseEntities(
   parsed: ParsedExpense,
+  opts?: { readonly?: boolean },
 ): Promise<ExpenseFuzzyMatch> {
   let providerId: number | null = null
   let providerName: string | null = null
@@ -285,7 +291,7 @@ export async function resolveExpenseEntities(
     }
   }
 
-  const category = await resolveExpenseCategory(categoryNameToUse, categories)
+  const category = await resolveExpenseCategory(categoryNameToUse, categories, { readonly: !!opts?.readonly })
 
   return {
     categoryId: category.categoryId,
@@ -300,6 +306,7 @@ export async function resolveExpenseEntities(
 
 export async function fuzzyMatchExpense(
   parsed: ParsedExpense,
+  opts?: { readonly?: boolean },
 ): Promise<ExpenseFuzzyMatch> {
-  return resolveExpenseEntities(parsed)
+  return resolveExpenseEntities(parsed, opts)
 }
