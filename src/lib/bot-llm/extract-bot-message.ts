@@ -62,8 +62,9 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/puse plata para factura/comprobante" → voucher, NUNCA gasto.
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
-- Si consulta "factura", "deuda", "saldo", "debo", "pendiente" → factura.
-- Ante la duda, usá confianza "baja" o "media".
+ - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). NUNCA pedido.
+ - "qué podés hacer / quién sos / capacidades" → otro (conversacional), NUNCA pedido/factura.
+ - Ante la duda, usá confianza "baja" o "media".
 
 === MULTI-EXPENSE ===
 
@@ -138,6 +139,12 @@ Mensaje: "se fue la luz"
 
 Mensaje: "cuánto debo?"
 {"intent":"factura","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "Necesito saber cuanto debe un cliente"
+{"intent":"factura","confianza":"media","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "qué podés hacer?"
+{"intent":"otro","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "hola"
 {"intent":"otro","confianza":"baja","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[],"faltan_campos":[],"dudoso":false,"razon_duda":null}

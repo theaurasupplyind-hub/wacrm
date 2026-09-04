@@ -8,6 +8,7 @@ import {
   listExpenseCategories,
   suggestPrice,
   bulkPrice,
+  matchVoucherByName,
 } from '@/lib/facbal/client'
 import { parseOrder } from '@/lib/voice-orders/parse-order'
 import { resolveItems, priceItems } from '@/lib/voice-orders/execute-order'
@@ -220,6 +221,29 @@ export async function fetchPreciosReferencia(q: string): Promise<{ data: unknown
   }
 }
 
+export async function fetchDebtByClient(clientName: string): Promise<{ data: unknown; log: ToolLog }> {
+  return withTiming(`deuda_cliente(${clientName.slice(0,40)})`, async () => {
+    const res = await matchVoucherByName({
+      nombre_cliente: clientName,
+      nombre_origen: clientName,
+      nombre_destino: null,
+      cbu_destino: null,
+      cuit_destino: null,
+      monto: 0,
+      tolerancia: 999999999,
+    })
+    const invoices = (res.invoice_candidates || []).map((c) => ({
+      factura: c.numero_factura,
+      cliente: c.cliente_nombre,
+      saldo: c.saldo_pendiente,
+      fecha: c.fecha,
+      score: c.score,
+    }))
+    const total = invoices.reduce((s, i) => s + (i.saldo || 0), 0)
+    return { invoices: invoices.slice(0, 10), total, cliente_buscado: clientName }
+  })
+}
+
 export async function fetchProducts(q: string): Promise<{ data: unknown; log: ToolLog }> {
   // deprecated: redirige a preciosReferencia para no usar productos sucia
   return fetchPreciosReferencia(q)
@@ -268,6 +292,15 @@ export async function runToolsForQuery(args: {
   const needsProviders = !!args.proveedor || q.includes('proveedor') || q.includes('debo a') || q.includes('pagué a') || q.includes('pague a')
   const needsEmployees = !!args.empleado || q.includes('empleado') || q.includes('sueldo')
   const needsProducts = args.intent === 'pedido' || q.includes('bastidor') || q.includes('presupuesto') || q.includes('precio') || q.includes('tapacanto') || q.includes('pintura') || q.includes('rollo') || q.includes(' x ') || /\d+\s*x\s*\d+/i.test(q)
+  const isDebtQuery = args.intent === 'factura' || /cu[aá]nto debe|saldo pendiente|deuda de/i.test(args.text)
+  const debtClientName = (args.proveedor?.trim() || (() => {
+    const m = args.text.match(/cu[aá]nto debe\s+(?:el\s+cliente\s+)?(.+?)(?:\?|$)/i)
+    if (m) {
+      const cand = m[1].trim()
+      if (cand && !/un cliente/i.test(cand) && cand.length >= 3) return cand
+    }
+    return null
+  })())
 
   if (needsExpenses) {
     const isYesterday = q.includes('ayer')
@@ -309,6 +342,10 @@ export async function runToolsForQuery(args: {
     if (needsAttendance && !args.empleado) {
       pending.push(fetchAllEmployees().then((r) => ({ key: 'employees_for_attendance', data: r.data, log: r.log })))
     }
+  }
+
+  if (isDebtQuery && debtClientName) {
+    pending.push(fetchDebtByClient(debtClientName).then((r) => ({ key: 'deuda_cliente', data: r.data, log: r.log })))
   }
 
   if (needsProducts) {

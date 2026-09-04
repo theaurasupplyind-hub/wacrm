@@ -69,13 +69,21 @@ export function decideDispatch(state: RouterState): RouterDecision {
     return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
   }
   // Guard de confirmación: si hay presupuesto/variante pendiente, la confirmación no debe ir al asistente
+  // Conversacional / deuda: "cuanto debe" siempre va al asistente, nunca a voice (evita "No se reconoció ningún producto")
+  const conversationalDebtRe = /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades/i
+  if (inboundText && conversationalDebtRe.test(inboundText) && !hasPendingVoice) {
+    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
+  }
   if (hasPendingVoice) {
     return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
+  }
+  if (intent === 'factura') {
+    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
   if (intent === 'otro') {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
-  if ((intent === 'pedido' || intent === 'factura') && confianza !== 'baja' && suppressVoice) {
+  if (intent === 'pedido' && confianza !== 'baja' && suppressVoice) {
     return { dispatchedTo: 'voice', dispatchReason: 'intent' }
   }
 
@@ -88,6 +96,10 @@ export function decideDispatch(state: RouterState): RouterDecision {
     return { dispatchedTo: 'attendance', dispatchReason: 'fallback_regex' }
   }
   if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {
+    // No atrapar conversacional deuda en fallback voice
+    if (/cu[aá]nto debe|saldo|deuda|qu[eé] pod[eé]s|qui[eé]n sos/i.test(inboundText)) {
+      return { dispatchedTo: 'assistant', dispatchReason: 'fallback_regex' }
+    }
     return { dispatchedTo: 'voice', dispatchReason: 'fallback_regex' }
   }
 
