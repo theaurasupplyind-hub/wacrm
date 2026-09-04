@@ -62,7 +62,7 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
       } as unknown as NonNullable<typeof config>
     }
 
-    // Gates iguales a auto-reply: humano asignado o hilo silenciado
+    // Gate: solo humano asignado bloquea al asistente. ai_autoreply_disabled es del auto-reply legacy y no debe silenciar al asistente (se auto-limpia)
     const { data: conv, error: convErr } = await db
       .from('conversations')
       .select('assigned_agent_id, ai_autoreply_disabled')
@@ -77,8 +77,13 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
       return
     }
     if (conv.ai_autoreply_disabled) {
-      console.warn('[assistant production] blocked: ai_autoreply_disabled=true conv=%s', conversationId.slice(0, 8))
-      return
+      console.warn('[assistant production] ai_autoreply_disabled=true — clearing for assistant conv=%s', conversationId.slice(0, 8))
+      // Auto-limpiar el flag legacy para que el asistente no quede mudo por un handoff viejo
+      try {
+        await db.from('conversations').update({ ai_autoreply_disabled: false }).eq('id', conversationId)
+      } catch (e) {
+        console.warn('[assistant production] clear ai_autoreply_disabled failed:', e instanceof Error ? e.message : String(e))
+      }
     }
 
     // Historial real — últimas N mensajes texto
