@@ -955,7 +955,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     await stageVoucher(stageStatus)
   }
 
-  // If matched, register the actual payment
+  // If matched, register the actual payment — imagen siempre Transferencia
   if (matchStatus === 'matched' && matchedInvoiceId !== null && extractedAmount !== null && extractedAmount > 0) {
     try {
       const fechaPago = normalizeDate(extractedDate)
@@ -963,6 +963,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         invoiceId: matchedInvoiceId,
         monto: extractedAmount,
         fecha: fechaPago,
+        method: 'Transferencia',
         entityType: bestDest?.entity_type ?? undefined,
         entityId: bestDest?.entity_id ?? undefined,
       })
@@ -1290,10 +1291,11 @@ export async function processVoucherEfectivoText(args: {
         invoiceId: matchedInvoiceId,
         monto,
         fecha: fechaPago,
+        method: 'Efectivo',
         entityType: bestDestination?.entity_type ?? undefined,
         entityId: bestDestination?.entity_id ?? undefined,
       })
-      console.log('[voucher-text] Payment registered OK invoice=%s amount=%s', matchedInvoiceId, monto)
+      console.log('[voucher-text] Payment registered OK (Efectivo) invoice=%s amount=%s', matchedInvoiceId, monto)
     } catch (err) {
       console.error('[voucher-text] registrarPago failed:', err instanceof Error ? err.message : String(err))
     }

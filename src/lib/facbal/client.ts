@@ -72,6 +72,7 @@ export async function registrarPago(args: {
   invoiceId: number
   monto: number
   fecha: string
+  method?: string | null
   entityType?: string | null
   entityId?: number | null
 }): Promise<PagoRegistrado> {
@@ -80,7 +81,7 @@ export async function registrarPago(args: {
     invoice_id: args.invoiceId,
     amount: args.monto,
     date: args.fecha,
-    method: 'Transferencia',
+    method: args.method ?? 'Transferencia',
     user_id: 0,
   }
   if (args.entityType && args.entityId) {
