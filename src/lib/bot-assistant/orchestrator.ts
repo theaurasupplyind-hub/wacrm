@@ -19,6 +19,8 @@ export interface AssistantResult {
 function shouldCallTools(extraction: UnifiedExtraction | null, text: string): boolean {
   if (!extraction) return false
   const q = text.toLowerCase()
+  // Identidad: nunca tools (evita listExpenses para "quien sos")
+  if (/quien\s*(sos|eres|es)\b/.test(q) || /\bque\s*sos\b/.test(q) || q.trim() === 'quien sos' || q.trim() === 'quien eres') return false
   const factualKeywords = ['cuanto', 'cuánto', 'cuando', 'cuándo', 'quien', 'quién', 'cuantos', 'qué', 'que paso', 'saldo', 'debo', 'debe', 'gasto', 'gasté', 'gaste', 'hoy', 'ayer', 'factura', 'proveedor', 'empleado', 'asistencia', 'faltó', 'falto', 'llegó', 'precio', 'presupuesto']
   const hasFactualKeyword = factualKeywords.some((k) => q.includes(k))
   // Siempre tools si intent no es "otro" con baja, o si hay keyword factual
