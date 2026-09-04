@@ -269,8 +269,11 @@ export async function runToolsForQuery(args: {
     const recent = hist.slice(-1500).toLowerCase()
     const hadDebtAsk = /cu[aá]nto debe|cuanto debe|deuda de un cliente|revisar la deuda|saldo pendiente/i.test(recent)
     if (!hadDebtAsk) return null
-    const t = current.trim()
+    let t = current.trim()
     if (!t) return null
+    // Permitir "De Aldo" => "Aldo"
+    const deMatch = t.match(/^(?:de|del)\s+(.+)$/i)
+    if (deMatch) t = deMatch[1].trim()
     if (/^(hola|gracias|si|no|dale|ok|chau)$/i.test(t)) return null
     if (/^[a-zA-Z]\s*$/.test(t) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+$/.test(t)) return null
     // 1-2 palabras nombre propio 3-40 chars
@@ -278,6 +281,23 @@ export async function runToolsForQuery(args: {
       console.log('[debt-followup] detected follow-up name="%s" from history debt ask', t)
       return t
     }
+    return null
+  }
+
+  function extractConfirmedDebtName(hist: string | null | undefined, current: string): string | null {
+    if (!hist) return null
+    const t = current.trim().toLowerCase()
+    if (!/^(si|sí|si es|correcto|dale|confirmo|si, es esa|si es esa)$/i.test(t)) return null
+    // Buscar último "Me aparece "X". ¿Es esa la persona?" en historial
+    const m = hist.match(/Me aparece\s+"([^"]+)"\.\s*¿Es esa la persona\?/i)
+    if (m && m[1]) {
+      const name = m[1].trim()
+      console.log('[debt-followup] detected confirmed name="%s" from prior proposal', name)
+      return name
+    }
+    // fallback: última propuesta con comillas
+    const m2 = hist.match(/"([^"]+Chiappe[^"]*)"/i)
+    if (m2 && m2[1]) return m2[1].trim()
     return null
   }
 
@@ -311,7 +331,8 @@ export async function runToolsForQuery(args: {
   const needsEmployees = !!args.empleado || q.includes('empleado') || q.includes('sueldo')
   const needsProducts = args.intent === 'pedido' || q.includes('bastidor') || q.includes('presupuesto') || q.includes('precio') || q.includes('tapacanto') || q.includes('pintura') || q.includes('rollo') || q.includes(' x ') || /\d+\s*x\s*\d+/i.test(q)
   const isDebtQuery = args.intent === 'factura' || /cu[aá]nto debe|saldo pendiente|deuda de/i.test(args.text)
-  const followUpDebtName = extractDebtFollowUp(args.historyText, args.text)
+  const confirmedDebtName = extractConfirmedDebtName(args.historyText, args.text)
+  const followUpDebtName = confirmedDebtName || extractDebtFollowUp(args.historyText, args.text)
   const isDebtQueryEffective = isDebtQuery || !!followUpDebtName
   const debtClientName = (args.proveedor?.trim() || followUpDebtName || (() => {
     const m = args.text.match(/cu[aá]nto debe\s+(?:el\s+cliente\s+)?(.+?)(?:\?|$)/i)
