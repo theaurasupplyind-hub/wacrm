@@ -1270,6 +1270,7 @@ async function processMessage(
 
   if (message.type === 'image' || message.type === 'document') {
     mediaConsumedByVoucher = true
+    const captionForVoucher = message.image?.caption || message.document?.caption || null
     bgTasks.push(
       processVoucherMessage({
         message: {
@@ -1278,6 +1279,7 @@ async function processMessage(
           type: message.type,
           image: message.image ? { id: message.image.id, mime_type: message.image.mime_type } : undefined,
           document: message.document ? { id: message.document.id, mime_type: message.document.mime_type } : undefined,
+          caption: captionForVoucher,
         },
         accessToken,
         accountId,

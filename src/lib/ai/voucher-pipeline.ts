@@ -22,6 +22,7 @@ interface PipelineArgs {
     text?: string
     image?: { id: string; mime_type: string }
     document?: { id: string; mime_type: string }
+    caption?: string | null
   }
   accessToken: string
   accountId: string
@@ -442,6 +443,18 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       '[voucher] Extracted: monto=%s fecha=%s ref=%s banco=%s nombre=%s origen=%s destino=%s cbu=%s cuit=%s',
       voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino, voucher.cbu_destino, voucher.cuit_destino,
     )
+
+    // Caption siempre gana (pago parcial obligado) — si la imagen vino con "Jesus Daniel" en caption, pisa al extraído
+    const forcedCaption = args.message.caption?.trim() || null
+    const isLetterSelectionCaption = forcedCaption ? /^[a-zA-Z]\s*$/.test(forcedCaption) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(forcedCaption) : false
+    if (forcedCaption && !isLetterSelectionCaption && forcedCaption.length >= 3) {
+      console.log('[voucher] forcedCaption override: "%s" (replaces nombre_cliente="%s")', forcedCaption, voucher.nombre_cliente)
+      extractedNombreCliente = forcedCaption
+      extractedNombreOrigen = forcedCaption
+      voucher.nombre_cliente = forcedCaption
+      voucher.nombre_origen = forcedCaption
+      debugInfo.forcedCaption = forcedCaption
+    }
 
     // STEP 3 — Extracted, now match
     // Candidate pool — accumulates unique matches across phases 1-3
