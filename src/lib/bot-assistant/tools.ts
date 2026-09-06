@@ -266,6 +266,11 @@ export async function runToolsForQuery(args: {
 
   function extractDebtFollowUp(hist: string | null | undefined, current: string): string | null {
     if (!hist) return null
+    // No heredar para pregunta genérica "deuda de un cliente" (evita arrastrar Aldo Chiappe viejo)
+    if (/deuda de un cliente|de un cliente\?/i.test(current)) {
+      console.log('[debt] generic debt ask without name — not reusing history (current="%s")', current.slice(0, 60))
+      return null
+    }
     const recent = hist.slice(-1500).toLowerCase()
     const hadDebtAsk = /cu[aá]nto debe|cuanto debe|deuda de un cliente|revisar la deuda|saldo pendiente/i.test(recent)
     if (!hadDebtAsk) return null
