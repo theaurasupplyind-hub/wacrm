@@ -335,10 +335,15 @@ export async function runToolsForQuery(args: {
   const followUpDebtName = confirmedDebtName || extractDebtFollowUp(args.historyText, args.text)
   const isDebtQueryEffective = isDebtQuery || !!followUpDebtName
   const debtClientName = (args.proveedor?.trim() || followUpDebtName || (() => {
-    const m = args.text.match(/cu[aá]nto debe\s+(?:el\s+cliente\s+)?(.+?)(?:\?|$)/i)
+    let m = args.text.match(/cu[aá]nto debe\s+(?:el\s+cliente\s+)?(.+?)(?:\?|$)/i)
     if (m) {
       const cand = m[1].trim()
       if (cand && !/un cliente/i.test(cand) && cand.length >= 3) return cand
+    }
+    m = args.text.match(/(?:deuda|saldo)\s+de\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]{2,}(?:\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]{2,})?)/i)
+    if (m) {
+      const cand = m[1].trim()
+      if (cand && !/un cliente/i.test(cand) && cand.length >= 2) return cand
     }
     return null
   })())

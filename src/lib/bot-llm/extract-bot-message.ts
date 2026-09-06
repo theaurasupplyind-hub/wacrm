@@ -62,7 +62,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/puse plata para factura/comprobante" → voucher, NUNCA gasto.
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
- - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). NUNCA pedido.
+ - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). NUNCA pedido. Si dice "deuda de [Nombre]" / "saldo de [Nombre]" → factura con proveedor="[Nombre]" (ej "Revisemos la deuda de Aldo" → proveedor:"Aldo").
  - "qué podés hacer / quién sos / capacidades" → otro (conversacional), NUNCA pedido/factura.
  - Ante la duda, usá confianza "baja" o "media".
 

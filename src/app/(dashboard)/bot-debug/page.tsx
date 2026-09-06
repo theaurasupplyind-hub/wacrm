@@ -32,7 +32,7 @@ interface RouterLog {
   faltan_campos: string[] | null
   dispatched_to: string | null
   dispatch_reason: string | null
-  debug_info: { context_text?: string | null; extraction?: unknown } | null
+  debug_info: { context_text?: string | null; extraction?: unknown; toolLogs?: { tool: string; duration_ms: number; resultCount?: number; error?: string }[] | null; toolResultsPreview?: Record<string, unknown> | null; debtDecision?: { called: boolean; reason?: string; hasData?: boolean; preview?: string; extraction?: unknown } | null; replyPreview?: string | null; knowledgePreview?: unknown } | null
   error_message: string | null
   created_at: string
 }
@@ -172,6 +172,10 @@ function DetailBlock({ title, value }: { title: string; value: unknown }) {
 
 function RouterDetail({ row }: { row: RouterLog }) {
   const extDebug = (row.debug_info?.extraction ?? null) as ExtractionDebug | null
+  const toolLogs = (row.debug_info as { toolLogs?: { tool: string; duration_ms: number; resultCount?: number; error?: string }[] })?.toolLogs
+  const toolResultsPreview = (row.debug_info as { toolResultsPreview?: Record<string, unknown> })?.toolResultsPreview
+  const debtDecision = (row.debug_info as { debtDecision?: { called: boolean; reason?: string; hasData?: boolean; preview?: string } })?.debtDecision
+  const replyPreview = (row.debug_info as { replyPreview?: string })?.replyPreview
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -194,6 +198,48 @@ function RouterDetail({ row }: { row: RouterLog }) {
         <div className="col-span-2 md:col-span-4 bg-destructive/10 text-destructive text-sm px-3 py-2 rounded-lg">
           ⚠ Fallback: {FALLBACK_REASON_LABELS[extDebug.fallback_reason]}
           {extDebug.llm_error ? ` — ${extDebug.llm_error}` : ''}
+        </div>
+      )}
+      {/* Tools usados por el asistente */}
+      {toolLogs && toolLogs.length > 0 && (
+        <div className="col-span-2 md:col-span-4">
+          <div className="text-xs font-medium mb-1">Tools usados</div>
+          <div className="flex flex-wrap gap-1.5">
+            {toolLogs.map((t, i) => (
+              <Badge key={i} variant={t.error ? 'destructive' : 'default'} className="text-[11px]">
+                {t.tool} {t.error ? `ERR:${t.error.slice(0, 40)}` : `OK:${t.resultCount ?? 0} ${t.duration_ms}ms`}
+              </Badge>
+            ))}
+          </div>
+          {debtDecision && !debtDecision.called && (
+            <div className="mt-2 bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs px-3 py-2 rounded-lg border border-amber-500/20">
+              deuda_cliente no llamado — {debtDecision.reason || 'faltó nombre del cliente (proveedor=null y texto no matchea "deuda de X")'}
+            </div>
+          )}
+          {debtDecision?.called && debtDecision.preview && (
+            <div className="mt-2 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200 text-xs px-3 py-2 rounded-lg border border-emerald-500/20">
+              deuda_cliente OK — {debtDecision.preview.slice(0, 300)}
+            </div>
+          )}
+          {debtDecision?.called && !debtDecision.hasData && (
+            <div className="mt-2 bg-destructive/10 text-destructive text-xs px-3 py-2 rounded-lg">deuda_cliente llamado pero sin datos</div>
+          )}
+        </div>
+      )}
+      {toolLogs && toolLogs.length === 0 && debtDecision && !debtDecision.called && (
+        <div className="col-span-2 md:col-span-4 bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs px-3 py-2 rounded-lg border border-amber-500/20">
+          deuda_cliente no llamado — {debtDecision.reason || 'faltó nombre'}
+        </div>
+      )}
+      {replyPreview && (
+        <div className="col-span-2 md:col-span-4">
+          <div className="text-xs font-medium">Reply preview</div>
+          <div className="bg-muted/40 rounded-lg px-3 py-2 text-xs whitespace-pre-wrap break-words">{replyPreview}</div>
+        </div>
+      )}
+      {toolResultsPreview && (
+        <div className="col-span-2 md:col-span-4">
+          <DetailBlock title="ToolResults preview" value={toolResultsPreview} />
         </div>
       )}
       {extDebug?.llm_raw && (

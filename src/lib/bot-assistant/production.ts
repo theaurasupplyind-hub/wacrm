@@ -113,7 +113,42 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     })
 
     let reply = (result.reply || '').trim()
-    console.log('[assistant production] replyPreview=%s escalation=%s toolLogs=%s', reply.slice(0, 200), /\/bot-escalations/i.test(reply), JSON.stringify(result.toolLogs?.map((t) => t.tool).slice(0, 3)))
+    console.log('[assistant production] replyPreview=%s escalation=%s toolLogs=%s', reply.slice(0, 200), /\/bot-escalations/i.test(reply), JSON.stringify(result.toolLogs?.map((t) => `${t.tool}:${t.error ? 'ERR:'+t.error.slice(0,40) : 'OK'}`)))
+
+    // Persist assistant tool debug for bot-debug UI (fire-and-forget)
+    try {
+      const debtInfo = (result.toolResults as Record<string, unknown> | null)?.['deuda_cliente']
+        ? { called: true, hasData: true, preview: JSON.stringify((result.toolResults as Record<string,unknown>)['deuda_cliente']).slice(0, 600) }
+        : { called: false, reason: result.toolLogs?.some((t) => t.tool.includes('deuda_cliente')) ? 'tool called but empty' : 'no deuda_cliente tool', extraction: result.extraction }
+      await db.from('router_logs').insert({
+        message_id: `assistant-${conversationId}-${Date.now()}`,
+        contact_id: contactId,
+        conversation_id: conversationId,
+        account_id: accountId,
+        raw_text: text,
+        source: 'assistant',
+        flow_consumed: false,
+        interactive: false,
+        had_context: history.length > 0,
+        extractor_source: result.extraction?.extractor_source ?? null,
+        intent: result.extraction?.intent ?? null,
+        confianza: result.extraction?.confianza ?? null,
+        dudoso: result.extraction?.dudoso ?? false,
+        faltan_campos: result.extraction?.faltan_campos ?? null,
+        dispatched_to: 'assistant',
+        dispatch_reason: 'tool_debug',
+        debug_info: {
+          extraction: result.extraction,
+          toolLogs: result.toolLogs,
+          toolResultsPreview: result.toolResults ? Object.fromEntries(Object.entries(result.toolResults).map(([k, v]) => [k, typeof v === 'object' && v !== null ? JSON.stringify(v).slice(0, 1200) : String(v).slice(0, 500)])) : null,
+          debtDecision: debtInfo,
+          knowledgePreview: knowledge.slice(0, 2),
+          replyPreview: reply.slice(0, 400),
+        },
+      })
+    } catch (e) {
+      console.warn('[assistant production] router_logs insert failed:', e instanceof Error ? e.message : String(e))
+    }
     // Fallback a auto-reply solo si realmente no hay texto; si hay escalamiento, stripear y mandar igual (P3)
     const needsEscalation = /\/bot-escalations/i.test(reply)
     if (!reply) {
