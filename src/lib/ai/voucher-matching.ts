@@ -38,6 +38,22 @@ export function sanitizeClientName(raw: string | null | undefined): string | nul
   return v
 }
 
+/**
+ * Sticky Fase 1 (testeable): si al final no se encontró nada pero hay UN
+ * único exacto por monto, se entrega. Con 0 o 2+ exactos, pool no vacío,
+ * o resultado distinto de no_match → null (se mantiene lo decidido).
+ */
+export function pickStickyExact<T>(
+  phase1Exact: T[],
+  matchStatus: MatchStatus,
+  poolSize: number,
+): T | null {
+  if (matchStatus === 'no_match' && poolSize === 0 && phase1Exact.length === 1) {
+    return phase1Exact[0]
+  }
+  return null
+}
+
 export function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }

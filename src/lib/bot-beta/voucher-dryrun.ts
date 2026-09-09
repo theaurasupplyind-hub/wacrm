@@ -4,7 +4,7 @@
 
 import { matchVoucherByName } from '@/lib/facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '@/lib/facbal/client'
-import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD, sanitizeClientName } from '@/lib/ai/voucher-matching'
+import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD, sanitizeClientName, pickStickyExact } from '@/lib/ai/voucher-matching'
 
 export interface VoucherDryInput {
   monto: number | null
@@ -80,6 +80,8 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     }
     let amountCandidatesP1: MatchVoucherCandidate[] = []
     let nameCandidates: MatchVoucherCandidate[] = []
+    // Sticky (igual que prod): exactos de Fase 1 para fallback ante no_match.
+    const phase1Exact: MatchVoucherCandidate[] = []
 
     // Phase 1: Exact amount
     if (input.monto && input.monto > 0) {
@@ -94,7 +96,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
         if (amountResult.destination_candidates?.length) allDestinationCandidates.push(...amountResult.destination_candidates)
         const phase1ApiResult = amountCandidatesP1.map(c => ({ factura: c.numero_factura, cliente: c.cliente_nombre, saldo: c.saldo_pendiente, score: c.score }))
         let exactCount = 0
-        for (const c of amountCandidatesP1) if (montoDistance(input.monto!, c.saldo_pendiente) === 0) if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) exactCount++
+        for (const c of amountCandidatesP1) if (montoDistance(input.monto!, c.saldo_pendiente) === 0) { phase1Exact.push(c); if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) exactCount++ }
         p1steps.push({ step: 'Exact amount', input: phase1ApiResult, result: { apiCandidates: amountCandidatesP1.length, exactMatches: exactCount } })
         debugInfo.phase1 = { apiCall: { monto: input.monto, tolerancia: 50 }, apiResult: phase1ApiResult, steps: p1steps, result: { apiCandidates: amountCandidatesP1.length, poolAdded: exactCount } }
       } catch (err) {
@@ -247,6 +249,19 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
       candidates = candidatePool.flatMap(e => e.invoices)
       const lineas = candidatePool.map((e, i) => e.type === 'single' ? `${String.fromCharCode(65 + i)}. ${e.clientName} — Factura ${e.invoices[0].numero_factura} — Saldo: ${formatMonto(e.total)}` : `${String.fromCharCode(65 + i)}. ${e.clientName} — Suma de ${e.invoices.length} facturas: ${formatMonto(e.total)}`)
       mensajeRespuesta = `Recibimos un pago de ${formatMonto(input.monto ?? candidatePool[0].total)}. ${candidatePool.length} opciones posibles:\n\n` + lineas.join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
+    }
+
+    // Sticky Fase 1 (igual que prod): no_match + pool vacío + 1 exacto → matched.
+    const sticky = pickStickyExact(phase1Exact, matchStatus, candidatePool.length)
+    if (sticky) {
+      matchStatus = 'matched'
+      matchedInvoiceId = sticky.invoice_id
+      matchedInvoiceNumero = sticky.numero_factura
+      matchedClienteNombre = sticky.cliente_nombre
+      matchedSaldoPendiente = sticky.saldo_pendiente
+      candidates = [sticky]
+      mensajeRespuesta = sticky.cliente_nombre ? `Confirmado. Pago de ${formatMonto(sticky.saldo_pendiente)} registrado para ${sticky.cliente_nombre} — Factura ${sticky.numero_factura}.` : `Confirmado. Pago de ${formatMonto(sticky.saldo_pendiente)} registrado para la factura ${sticky.numero_factura}.`
+      debugInfo.stickyFallback = { factura: sticky.numero_factura, cliente: sticky.cliente_nombre, saldo: sticky.saldo_pendiente }
     }
 
     debugInfo.decision = { poolSize: candidatePool.length, entries: candidatePool.map(e => ({ type: e.type, clientName: e.clientName, total: e.total, invoiceCount: e.invoices.length })), finalStatus: matchStatus }

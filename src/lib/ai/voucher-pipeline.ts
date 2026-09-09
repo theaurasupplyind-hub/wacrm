@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName } from './voucher-matching'
+import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName, pickStickyExact } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -502,10 +502,17 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino, voucher.cbu_destino, voucher.cuit_destino,
     )
 
-    // Caption siempre gana (pago parcial obligado) — si la imagen vino con "Jesus Daniel" en caption, pisa al extraído
+    // Caption siempre gana (pago parcial obligado) — si la imagen vino con "Jesus Daniel" en caption, pisa al extraído.
+    // Pero un caption inválido ("Gracias!", "Comprobante") es solo un comentario:
+    // se ignora para no vetar matches exactos (ej. Fase 1 con monto idéntico).
     const forcedCaptionRaw = args.message.caption?.trim() || null
     const isLetterSelectionCaption = forcedCaptionRaw ? /^[a-zA-Z]\s*$/.test(forcedCaptionRaw) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(forcedCaptionRaw) : false
-    const forcedCaption = forcedCaptionRaw && !isLetterSelectionCaption && forcedCaptionRaw.length >= 3 ? forcedCaptionRaw : null
+    const forcedCaptionCandidate = forcedCaptionRaw && !isLetterSelectionCaption && forcedCaptionRaw.length >= 3 ? forcedCaptionRaw : null
+    const forcedCaption = forcedCaptionCandidate && sanitizeClientName(forcedCaptionCandidate) ? forcedCaptionCandidate : null
+    if (forcedCaptionCandidate && !forcedCaption) {
+      console.log('[voucher] forcedCaption descartado como inválido: "%s"', forcedCaptionCandidate)
+      debugInfo.invalidCaption = forcedCaptionCandidate
+    }
     function normalizeCaption(s: string): string {
       return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
     }
@@ -531,13 +538,21 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     // Nombres inválidos ("Gracias!", "Comprobante") nunca son un cliente:
     // se descartan para que el match use el cliente real extraído del
     // voucher (origen/destino) en vez de fallar a "no encontramos factura".
+    // nombre_destino se conserva siempre (titular real de la cuenta destino,
+    // sirve al destination matching aunque no sea el cliente pagador).
     const nombreClienteOriginal = voucher.nombre_cliente
-    const nombreClienteValido = sanitizeClientName(voucher.nombre_cliente)
-    if (nombreClienteOriginal && !nombreClienteValido) {
+    const nombreOrigenOriginal = voucher.nombre_origen
+    if (nombreClienteOriginal && !sanitizeClientName(nombreClienteOriginal)) {
       console.log('[voucher] nombre_cliente descartado como inválido: "%s", se usará origen/destino del voucher', nombreClienteOriginal)
       voucher.nombre_cliente = null
       extractedNombreCliente = null
       debugInfo.invalidClientName = nombreClienteOriginal
+    }
+    if (nombreOrigenOriginal && !sanitizeClientName(nombreOrigenOriginal)) {
+      console.log('[voucher] nombre_origen descartado como inválido: "%s"', nombreOrigenOriginal)
+      voucher.nombre_origen = null
+      extractedNombreOrigen = null
+      debugInfo.invalidOriginName = nombreOrigenOriginal
     }
 
     // STEP 3 — Extracted, now match
@@ -564,6 +579,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     // Store Phase 1 candidates for Phase 2 reuse
     let amountCandidatesP1: MatchVoucherCandidate[] = []
+    // Sticky: exactos de Fase 1 (monto idéntico, post-filtro de caption).
+    // Si al final no se encontró nada, un único exacto se entrega.
+    const phase1Exact: MatchVoucherCandidate[] = []
     // Store Phase 3 candidates for name-based disambiguation (Phase 4)
     let nameCandidates: MatchVoucherCandidate[] = []
 
@@ -604,6 +622,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             continue
           }
           if (montoDistance(voucher.monto!, c.saldo_pendiente) === 0) {
+            phase1Exact.push(c)
             if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
               exactCount++
             }
@@ -1011,6 +1030,24 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       const intro = `Recibimos un pago de ${formatMonto(voucher.monto ?? candidatePool[0].total)}. ${candidatePool.length} opciones posibles:\n\n`
       mensajeRespuesta = intro + lineas.join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
       console.log('[voucher-debug] Decision: ambiguous (%d pool entries)', candidatePool.length)
+    }
+
+    // Sticky Fase 1: si no se encontró nada pero hay UN único exacto por
+    // monto, se entrega (monto idéntico = señal más fuerte). Con 2+ exactos
+    // o ambigüedad real se mantiene lo decidido arriba (preguntar).
+    const sticky = pickStickyExact(phase1Exact, matchStatus, candidatePool.length)
+    if (sticky) {
+      matchStatus = 'matched'
+      matchedInvoiceId = sticky.invoice_id
+      matchedInvoiceNumero = sticky.numero_factura
+      matchedClienteNombre = sticky.cliente_nombre
+      matchedSaldoPendiente = sticky.saldo_pendiente
+      candidates = [sticky]
+      mensajeRespuesta = sticky.cliente_nombre
+        ? `Confirmado. Pago de ${formatMonto(sticky.saldo_pendiente)} registrado para ${sticky.cliente_nombre} — Factura ${sticky.numero_factura}.`
+        : `Confirmado. Pago de ${formatMonto(sticky.saldo_pendiente)} registrado para la factura ${sticky.numero_factura}.`
+      debugInfo.stickyFallback = { factura: sticky.numero_factura, cliente: sticky.cliente_nombre, saldo: sticky.saldo_pendiente }
+      console.log('[voucher-debug] Decision: matched via sticky Fase 1 exact (invoice=%s)', sticky.numero_factura)
     }
 
     debugInfo.decision = {
