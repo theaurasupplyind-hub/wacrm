@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isVoucherClarificationReply, isCancelReply } from './voucher-pipeline'
+import { isVoucherClarificationReply, isCancelReply, isBareYes } from './voucher-pipeline'
 import type { MatchVoucherCandidate } from '../facbal/client'
 
 function cand(overrides: Partial<MatchVoucherCandidate> = {}): MatchVoucherCandidate {
@@ -36,6 +36,13 @@ describe('isVoucherClarificationReply (Fix 5)', () => {
     expect(isVoucherClarificationReply('opción 2', two)).toBe(true)
   })
 
+  it('acepta selección múltiple y "ambas"', () => {
+    expect(isVoucherClarificationReply('A y B', two)).toBe(true)
+    expect(isVoucherClarificationReply('A,B', two)).toBe(true)
+    expect(isVoucherClarificationReply('ambas', two)).toBe(true)
+    expect(isVoucherClarificationReply('las dos', two)).toBe(true)
+  })
+
   it('"sí" confirma con 1 candidato y vale como respuesta multi', () => {
     expect(isVoucherClarificationReply('sí', one)).toBe(true)
     expect(isVoucherClarificationReply('si', two)).toBe(true)
@@ -63,5 +70,20 @@ describe('isCancelReply (confirmación transferencia)', () => {
     expect(isCancelReply('sí')).toBe(false)
     expect(isCancelReply('B')).toBe(false)
     expect(isCancelReply('Jo Pérez')).toBe(false)
+  })
+})
+
+describe('isBareYes (sí pelado vs todas/ambas)', () => {
+  it('"sí/ok" pelado → pregunta cuál (no paga todo)', () => {
+    expect(isBareYes('sí')).toBe(true)
+    expect(isBareYes('si')).toBe(true)
+    expect(isBareYes('ok')).toBe(true)
+  })
+
+  it('"todas/ambas" no son sí pelado (pagan todo)', () => {
+    expect(isBareYes('todas')).toBe(false)
+    expect(isBareYes('ambas')).toBe(false)
+    expect(isBareYes('las dos')).toBe(false)
+    expect(isBareYes('A y B')).toBe(false)
   })
 })

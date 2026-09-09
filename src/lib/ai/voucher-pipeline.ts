@@ -181,20 +181,24 @@ function interpretMultiInvoiceResponse(
 ): MatchVoucherCandidate[] {
   const cleaned = text.trim().toLowerCase()
 
-  // "si", "sí", "confirmar", "ok" → all candidates
-  if (/^(si|sí|confirmo?|ok|dale|adelante|todos|todas)$/i.test(cleaned)) {
+  // "si", "sí", "confirmar", "ok", "todas", "ambas" → all candidates
+  if (/^(si|sí|confirmo?|ok|dale|adelante|todos|todas|ambos|ambas|las dos|los dos)$/i.test(cleaned)) {
     return [...candidates]
   }
 
-  // Try matching by letters (A, B, AB, A,B, a b, etc.)
-  const letterMatch = cleaned.match(/^[a-z\s,.\-]+$/)
-  if (letterMatch) {
-    const chars = cleaned.replace(/[^a-z]/g, '').split('')
-    if (chars.length > 0 && chars.length <= candidates.length) {
-      const indices = chars.map(c => c.charCodeAt(0) - 97).filter(i => i >= 0 && i < candidates.length)
-      if (indices.length > 0) {
-        return [...new Set(indices)].map(i => candidates[i])
-      }
+  // Letras sueltas (A, B, AB, A,B, A y B): cada token debe ser UNA letra,
+  // así "bastidores" no matchea y la "y" de "A y B" se ignora si sobra.
+  const letterTokens = cleaned.split(/[\s,.\-/]+/).filter(Boolean)
+  if (letterTokens.length > 0 && letterTokens.every((t) => /^[a-z]$/.test(t))) {
+    const indices = [
+      ...new Set(
+        letterTokens
+          .map((c) => c.charCodeAt(0) - 97)
+          .filter((i) => i >= 0 && i < candidates.length),
+      ),
+    ]
+    if (indices.length > 0) {
+      return indices.map((i) => candidates[i])
     }
   }
 
@@ -322,12 +326,99 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         )
         await notify({
           ...sendCtx,
-          text: 'No entendimos tu respuesta. Respondé con las letras separadas por coma (ej: A, B) o decí "todas".\n\n' + lines.join('\n'),
+          text: 'No entendimos tu respuesta. Respondé con las letras separadas por coma (ej: A, B), decí "todas" o escribí CANCELAR.\n\n' + lines.join('\n'),
         })
       }
       return
     }
     const chosen = interpretUserResponse(userText, pendingItem.candidates)
+    // "sí" pelado con N candidatos: no se sabe a cuál se refiere → pregunta
+    // cuál, ofreciendo AMBAS. ("todas"/"ambas" sí pagan todo, van abajo.)
+    if (!chosen && isBareYes(userText) && pendingItem.candidates.length > 1) {
+      const lines = pendingItem.candidates.map(
+        (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
+      )
+      await notify({
+        ...sendCtx,
+        text: `¿A cuál te referís? Respondé con la letra (A, B...) o escribí AMBAS si son todas.\n\n${lines.join('\n')}`,
+      })
+      return
+    }
+    // "A y B" / "A,B" / "ambas" sobre un pending single: pagar cada elegida
+    // (sin monto → cada una por su total; con monto → se reparte con tope).
+    const multiChosen = !chosen ? interpretMultiInvoiceResponse(userText, pendingItem.candidates) : []
+    if (!chosen && multiChosen.length > 1) {
+      await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
+      const fechaPago = normalizeDate(pendingItem.extraction.fecha)
+      const metodoPendiente = methodFromMimeType(pendingItem.mediaMimeType)
+      const paidList: string[] = []
+      const errors: string[] = []
+      // Sin monto el total es abierto: cada factura se paga completa.
+      let remaining = pendingItem.extraction.monto ?? Number.POSITIVE_INFINITY
+      for (const inv of multiChosen) {
+        const pago = Math.min(remaining, inv.saldo_pendiente)
+        if (pago <= 0) continue
+        try {
+          await createVoucherReview({
+            source_message_id: pendingItem.sourceMessageId,
+            wa_id: normalizedPhone,
+            contact_name: null,
+            extracted_monto: pago,
+            extracted_fecha: pendingItem.extraction.fecha ?? null,
+            extracted_referencia: null,
+            extracted_banco: null,
+            extracted_nombre_cliente: pendingItem.extraction.nombre_cliente ?? null,
+            extracted_nombre_origen: pendingItem.extraction.nombre_origen ?? null,
+            extracted_nombre_destino: pendingItem.extraction.nombre_destino ?? null,
+            extracted_cbu_destino: null,
+            extracted_cuit_destino: null,
+            match_status: 'matched' as const,
+            matched_invoice_id: inv.invoice_id,
+            matched_invoice_numero: inv.numero_factura,
+            matched_cliente_nombre: inv.cliente_nombre,
+            matched_saldo_pendiente: inv.saldo_pendiente,
+            entity_type: pendingItem.bestDestination?.entity_type ?? null,
+            entity_id: pendingItem.bestDestination?.entity_id ?? null,
+            entity_name: pendingItem.bestDestination?.entity_name ?? null,
+            candidatas: [{
+              invoice_id: inv.invoice_id,
+              numero_factura: inv.numero_factura,
+              saldo_pendiente: inv.saldo_pendiente,
+              cliente_nombre: inv.cliente_nombre,
+              fecha: inv.fecha,
+            }],
+            media_mime_type: pendingItem.mediaMimeType,
+            media_base64: pendingItem.mediaBase64,
+          })
+          await registrarPago({
+            invoiceId: inv.invoice_id,
+            monto: pago,
+            fecha: fechaPago,
+            method: metodoPendiente,
+            entityType: pendingItem.bestDestination?.entity_type ?? undefined,
+            entityId: pendingItem.bestDestination?.entity_id ?? undefined,
+          })
+          paidList.push(`${inv.cliente_nombre} — Factura ${inv.numero_factura}: ${formatMonto(pago)}`)
+          remaining -= pago
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          errors.push(`${inv.numero_factura}: ${msg}`)
+        }
+      }
+      if (paidList.length > 0) {
+        let reply = `Se registraron los pagos:\n${paidList.join('\n')}`
+        if (Number.isFinite(remaining) && remaining > 0) {
+          reply += `\n\nQuedó un saldo de ${formatMonto(remaining)} sin asignar.`
+        }
+        if (errors.length > 0) {
+          reply += `\n\nErrores al registrar:\n${errors.join('\n')}`
+        }
+        await notify({ ...sendCtx, text: reply })
+      } else {
+        await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago.' })
+      }
+      return
+    }
     if (chosen) {
       await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
 
@@ -408,7 +499,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       )
       await notify({
         ...sendCtx,
-        text: 'No entendimos tu respuesta. Respondé con la letra de la opción (A, B, C...).\n\n' + lines.join('\n'),
+        text: 'No entendimos tu respuesta. Respondé con la letra de la opción (A, B, C...); podés elegir varias (ej: A y B) o escribir CANCELAR.\n\n' + lines.join('\n'),
       })
     }
     return
@@ -1453,6 +1544,14 @@ export const VOUCHER_CANCEL_ID = 'voucher_cancel'
 /** "no", "cancelar", "mejor no"... → anula el pending en vez de repreguntar. */
 export function isCancelReply(text: string): boolean {
   return /^(cancelar|cancelo|no|mejor no|todav[ií]a no|despu[eé]s)$/i.test(text.trim())
+}
+
+/**
+ * "sí" pelado (sin letra): con N candidatos no se sabe a cuál se refiere.
+ * ("todas"/"ambas" NO entran acá: esas sí pagan todo.)
+ */
+export function isBareYes(text: string): boolean {
+  return /^(si|sí|confirmo?|ok|dale|adelante)$/i.test(text.trim())
 }
 
 /**
