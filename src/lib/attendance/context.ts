@@ -15,6 +15,11 @@ export interface AttendanceContextState {
   awaitingCorrection?: boolean
   existingEmployeeId?: number | null
   existingStatus?: string | null
+  /**
+   * Timestamp (ms) de la última actualización del contexto.
+   * Se usa para expirar pendientes abandonados (ver PENDING_CONTEXT_TTL_MS).
+   */
+  updatedAt?: number | null
 }
 
 export async function loadAttendanceContext(
@@ -41,7 +46,7 @@ export async function saveAttendanceContext(
   try {
     await db
       .from('conversations')
-      .update({ attendance_context: state })
+      .update({ attendance_context: { ...state, updatedAt: Date.now() } })
       .eq('id', conversationId)
   } catch (err) {
     console.error('[attendance] save context error:', err)

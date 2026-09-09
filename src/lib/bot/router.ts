@@ -7,12 +7,20 @@ import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
 export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'voice' | 'flow' | 'interactive' | 'assistant' | 'none'
 export type DispatchReason =
   | 'pending_multiturn'
+  | 'pending_expired'
   | 'category_correction'
   | 'intent'
   | 'multi_expense'
   | 'fallback_regex'
   | 'consumed'
   | 'none'
+
+/**
+ * Tiempo máximo que un contexto multi-turn (gasto/asistencia) bloquea
+ * mensajes de otro intent. Pasado este TTL el pendiente se considera
+ * abandonado y un intent fuerte lo reemplaza (ver route.ts).
+ */
+export const PENDING_CONTEXT_TTL_MS = 15 * 60 * 1000
 
 export interface RouterState {
   hasPendingExpense: boolean
@@ -49,6 +57,22 @@ export function decideDispatch(state: RouterState): RouterDecision {
   // Primary dispatch — mirrors webhook route.ts:1538-1600
   if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
     return { dispatchedTo: 'expense', dispatchReason: 'category_correction' }
+  }
+  // Escape de intent fuerte: un mensaje completo nuevo (confianza alta/media)
+  // no debe quedar atrapado por un pendiente abandonado de otro dominio.
+  // Sin esto, "Eze llegó 9:15" con un gasto a medio completar iba a
+  // expense/pending_multiturn y nunca se registraba la asistencia.
+  const strongIntent = confianza === 'alta' || confianza === 'media'
+  if (!flowConsumed && !interactiveReplyId && strongIntent) {
+    if (isAsistenciaIntent(intent)) {
+      return { dispatchedTo: 'attendance', dispatchReason: 'intent' }
+    }
+    if (intent === 'gasto' || intent === 'multi_expense') {
+      return { dispatchedTo: 'expense', dispatchReason: 'intent' }
+    }
+    if (intent === 'voucher') {
+      return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
+    }
   }
   if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
     return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }

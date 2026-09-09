@@ -105,3 +105,67 @@ describe('decideDispatch hasPendingVoice guard', () => {
     expect(r.dispatchedTo).toBe('expense')
   })
 })
+
+describe('decideDispatch strong-intent escape (Fix 1)', () => {
+  it('asistencia_llegada alta con gasto pendiente → attendance (no pending_multiturn)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: true,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'Eze llego a las 9.15',
+      extraction: extraction({ intent: 'asistencia_llegada', confianza: 'alta', empleado: 'Eze', hora: '09:15' }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('attendance')
+    expect(r.dispatchReason).toBe('intent')
+  })
+
+  it('asistencia_salida sin empleado con gasto pendiente → attendance (pregunta quién)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: true,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'Se fue a las 17.18',
+      extraction: extraction({ intent: 'asistencia_salida', confianza: 'alta', hora: '17:18', faltan_campos: ['empleado'] }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('attendance')
+  })
+
+  it('gasto alta con asistencia pendiente → expense', () => {
+    const r = decideDispatch({
+      hasPendingExpense: false,
+      hasPendingAttendance: true,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'pagué 5000 de luz',
+      extraction: extraction({ intent: 'gasto', confianza: 'alta', monto: 5000 }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('expense')
+  })
+
+  it('otro con confianza baja y gasto pendiente → expense pending_multiturn (sigue capturando respuestas cortas)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: true,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: '5000',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('expense')
+    expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+})

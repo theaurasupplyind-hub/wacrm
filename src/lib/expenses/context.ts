@@ -25,7 +25,7 @@ export async function saveExpenseContext(
   try {
     await db
       .from('conversations')
-      .update({ expense_context: state })
+      .update({ expense_context: { ...state, updatedAt: Date.now() } })
       .eq('id', conversationId)
   } catch (err) {
     console.error('[expense] save context error:', err)

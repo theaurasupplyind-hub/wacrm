@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD } from './voucher-matching'
+import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -95,20 +95,59 @@ async function notify(args: {
   }
 }
 
+/**
+ * Normaliza respuestas de aclaración A/B/C: minúsculas, sin tildes,
+ * sin artículos ni muletillas ("la B", "opción B", "B de Juan", "2").
+ */
+function normalizeSelectionText(text: string): string {
+  let s = (text || '').trim().toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  s = s.replace(/^(la|el|los|las|opcion|opción)\s+/i, '').trim()
+  s = s.replace(/\s+(de|del|para)\s+.*$/, '').trim()
+  s = s.replace(/^[("'\[]+|[)"'.\]]+$/g, '').trim()
+  return s
+}
+
+/**
+ * ¿El texto parece una respuesta a la aclaración pendiente del voucher
+ * (letra, número, "sí", n° de factura, nombre de candidato)?
+ * Se usa en el webhook para no robar órdenes nuevas (pedidos, gastos,
+ * asistencia) cuando hay un comprobante pendiente.
+ */
+export function isVoucherClarificationReply(
+  text: string,
+  candidates: MatchVoucherCandidate[],
+): boolean {
+  if (candidates.length === 0) return false
+  if (interpretUserResponse(text, candidates)) return true
+  if (interpretMultiInvoiceResponse(text, candidates).length > 0) return true
+  return false
+}
+
 function interpretUserResponse(
   text: string,
   candidates: MatchVoucherCandidate[],
 ): MatchVoucherCandidate | null {
-  const cleaned = text.trim().toLowerCase()
+  if (candidates.length === 0) return null
+  const cleaned = normalizeSelectionText(text)
 
-  // Confirmation words are not letter/invoice/name selections
-  if (/^(si|sí|confirmo?|ok|dale|adelante|todos?|todas)$/i.test(cleaned)) {
-    return null
+  // "sí/ok" con un único candidato = confirmar ese (caso "¿Es correcto?").
+  if (/^(si|confirmo?|ok|dale|adelante|todos?|todas)$/i.test(cleaned)) {
+    return candidates.length === 1 ? candidates[0] : null
   }
 
-  // Try matching by letter (A, B, C, ...)
+  // Letra (A, B, C...) — tolera "la B", "opción B", "B."
   if (/^[a-z]$/.test(cleaned)) {
     const idx = cleaned.charCodeAt(0) - 97
+    if (idx >= 0 && idx < candidates.length) {
+      return candidates[idx]
+    }
+  }
+
+  // Número 1-based ("2", "opción 2")
+  if (/^\d{1,2}$/.test(cleaned)) {
+    const idx = parseInt(cleaned, 10) - 1
     if (idx >= 0 && idx < candidates.length) {
       return candidates[idx]
     }
@@ -121,13 +160,14 @@ function interpretUserResponse(
     }
   }
 
-  // Try matching by normalized name tokens
-  const nameTokens = (name: string) => name.toLowerCase().split(/\s+/).filter(Boolean)
+  // Try matching by normalized name tokens (sin tildes en ambos lados)
+  const nameTokens = (name: string) =>
+    name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean)
   const inputTokens = nameTokens(cleaned)
   if (inputTokens.length > 0) {
     for (const c of candidates) {
       const ct = nameTokens(c.cliente_nombre)
-      const match = inputTokens.some((t) => ct.some((ctok) => ctok.includes(t) || t.includes(ctok)))
+      const match = inputTokens.some((t) => t.length >= 3 && ct.some((ctok) => ctok.includes(t) || t.includes(ctok)))
       if (match) return c
     }
   }
@@ -158,8 +198,10 @@ function interpretMultiInvoiceResponse(
     }
   }
 
-  // Try parsing numbers separated by commas, spaces, "y", "e"
-  const numbers = cleaned.match(/\d+/g)
+  // Try parsing numbers separated by commas, spaces, "y", "e" — solo si el
+  // texto es solo números y separadores ("2 bastidores" es un pedido, no "2").
+  const numbersOnly = cleaned.match(/^[\d\s,.\-/y]+$/) && /\d/.test(cleaned)
+  const numbers = numbersOnly ? cleaned.match(/\d+/g) : null
   if (numbers) {
     const indices = numbers.map(Number).filter((n) => n >= 1 && n <= candidates.length)
     if (indices.length > 0) {
@@ -207,9 +249,19 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   // STEP 0b — Load context for multi-turn
   const ctx = await loadVoucherContext(db, conversationId)
 
-  // STEP 0b — If there are pending items awaiting clarification and this is a text reply
-  // Prefer multi_invoice items so "si" goes to the right handler
-  const pendingItem = ctx.pending.find(p => p.multiInvoice) || (ctx.pending.length > 0 ? ctx.pending[0] : null)
+  // STEP 0b — If there are pending items awaiting clarification and this is a text reply.
+  // Se elige el pending que realmente matchea la respuesta (no siempre el
+  // primero): con varios comprobantes en cola, "B" debe ir al pending
+  // correcto. Los pendings sin candidatos se limpian en vez de repreguntar.
+  const withCandidates = ctx.pending.filter((p) => p.candidates.length > 0)
+  for (const stale of ctx.pending.filter((p) => p.candidates.length === 0)) {
+    console.log('[voucher] dropping candidate-less pending msg=%s', stale.sourceMessageId)
+    await removePendingVoucher(db, conversationId, stale.sourceMessageId)
+  }
+  const pendingItem =
+    withCandidates.find((p) => isVoucherClarificationReply(message.text || '', p.candidates)) ||
+    withCandidates.find((p) => p.multiInvoice) ||
+    (withCandidates.length > 0 ? withCandidates[0] : null)
   if (pendingItem && (message.type === 'text' || message.text)) {
     const userText = message.text || ''
     console.log('[voucher] User reply to clarification: "%s" (pending msg=%s multiInvoice=%s)', userText, pendingItem.sourceMessageId, pendingItem.multiInvoice)
@@ -219,6 +271,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       if (selected.length > 0) {
         await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
         const fechaPago = normalizeDate(pendingItem.extraction.fecha)
+        const esEfectivo = pendingItem.mediaMimeType === 'text/efectivo'
         const paidList: string[] = []
         const errors: string[] = []
         let remaining = pendingItem.extraction.monto ?? 0
@@ -232,6 +285,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               invoiceId: inv.invoice_id,
               monto: pago,
               fecha: fechaPago,
+              method: esEfectivo ? 'Efectivo' : undefined,
               entityType: pendingItem.bestDestination?.entity_type ?? undefined,
               entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
@@ -307,6 +361,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         console.log('[voucher] Staged for review after user clarification')
 
         const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
+        // Los pendientes de texto-efectivo ("Jo pago en efectivo") pagan en
+        // efectivo también tras la clarificación A/B.
+        const esEfectivo = pendingItem.mediaMimeType === 'text/efectivo'
         if (montoPago > 0) {
           try {
             const fechaPago = normalizeDate(pendingItem.extraction.fecha)
@@ -314,6 +371,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               invoiceId: chosen.invoice_id,
               monto: montoPago,
               fecha: fechaPago,
+              method: esEfectivo ? 'Efectivo' : undefined,
               entityType: pendingItem.bestDestination?.entity_type ?? undefined,
               entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
@@ -468,6 +526,18 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       voucher.nombre_cliente = forcedCaption
       voucher.nombre_origen = forcedCaption
       debugInfo.forcedCaption = forcedCaption
+    }
+
+    // Nombres inválidos ("Gracias!", "Comprobante") nunca son un cliente:
+    // se descartan para que el match use el cliente real extraído del
+    // voucher (origen/destino) en vez de fallar a "no encontramos factura".
+    const nombreClienteOriginal = voucher.nombre_cliente
+    const nombreClienteValido = sanitizeClientName(voucher.nombre_cliente)
+    if (nombreClienteOriginal && !nombreClienteValido) {
+      console.log('[voucher] nombre_cliente descartado como inválido: "%s", se usará origen/destino del voucher', nombreClienteOriginal)
+      voucher.nombre_cliente = null
+      extractedNombreCliente = null
+      debugInfo.invalidClientName = nombreClienteOriginal
     }
 
     // STEP 3 — Extracted, now match
@@ -660,9 +730,15 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
 
         let nameExactCount = 0
+        const tolNombre = voucher.monto && voucher.monto > 0 ? getMontoTolerancia(voucher.monto) : null
         for (const c of nameCandidates) {
           const isForcedMatch = forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : false
           if (c.score >= NAME_MATCH_THRESHOLD || isForcedMatch) {
+            // Igual que dryrun: el saldo debe estar dentro de la tolerancia
+            // del monto (3%), salvo que no haya monto (nombre puro).
+            if (!isForcedMatch && tolNombre != null && montoDistance(voucher.monto!, c.saldo_pendiente) > tolNombre) {
+              continue
+            }
             if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
               nameExactCount++
             }
@@ -746,8 +822,64 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       }
     }
 
+    // CASE B2: Pool vacío pero el voucher trae un nombre rescatable
+    // (origen/destino, o cliente válido cuyo monto no coincidió) → búsqueda
+    // solo por nombre, sin filtro de monto. Evita el "no encontramos ninguna
+    // factura" cuando el nombre_cliente era basura ("Gracias!") pero el
+    // comprobante sí identifica al cliente real.
+    if (candidatePool.length === 0) {
+      const fallbackName =
+        sanitizeClientName(voucher.nombre_origen) ??
+        sanitizeClientName(voucher.nombre_destino) ??
+        (effectiveReliable ? null : sanitizeClientName(voucher.nombre_cliente))
+      if (fallbackName) {
+        console.log('[voucher-debug] Phase 4b: fallback name-only search nombre="%s"', fallbackName)
+        try {
+          const fbResult = await matchVoucherByName({
+            nombre_cliente: fallbackName,
+            nombre_origen: fallbackName,
+            nombre_destino: null,
+            cbu_destino: null,
+            cuit_destino: null,
+            monto: null,
+            tolerancia: 50,
+            timeoutMs: 20_000,
+          })
+          if (fbResult.destination_candidates?.length) {
+            allDestinationCandidates.push(...fbResult.destination_candidates)
+          }
+          const fbCands = (fbResult.invoice_candidates || [])
+            .filter((c) => c.saldo_pendiente > 0 && c.score >= NAME_MATCH_THRESHOLD)
+            .sort((a, b) => b.score - a.score)
+          console.log('[voucher-debug] Phase 4b: %d candidates for "%s"', fbCands.length, fallbackName)
+          if (fbCands.length === 1) {
+            if (tryAddToPool({ type: 'single', invoices: [fbCands[0]], total: fbCands[0].saldo_pendiente, clientName: fbCands[0].cliente_nombre })) {
+              p4steps.push({ step: 'Fallback name-only match', result: { factura: fbCands[0].numero_factura, cliente: fbCands[0].cliente_nombre, score: fbCands[0].score, added: true } })
+            }
+          } else if (fbCands.length > 1) {
+            matchStatus = 'ambiguous'
+            candidates = fbCands.slice(0, 15)
+            const lineas = candidates.map(
+              (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
+            )
+            mensajeRespuesta = voucher.monto && voucher.monto > 0
+              ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Lo asociamos al cliente "${fallbackName}" del comprobante, que tiene estas facturas pendientes:\n\n${lineas.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`
+              : `Asociamos el comprobante al cliente "${fallbackName}", que tiene estas facturas pendientes:\n\n${lineas.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`
+            p4steps.push({ step: 'Fallback name-only match', result: { nombre: fallbackName, candidates: fbCands.length, shown: candidates.length } })
+            console.log('[voucher] Phase 4b: showing %d fallback candidates for "%s"', candidates.length, fallbackName)
+          } else {
+            p4steps.push({ step: 'Fallback name-only match', result: { nombre: fallbackName, candidates: 0 } })
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error('[voucher-debug] Phase 4b fallback search failed:', msg)
+          errorMessage = [errorMessage, `Phase4b: ${msg}`].filter(Boolean).join(' | ')
+        }
+      }
+    }
+
     // CASE C: Pool still empty AND name not reliable → ask directly
-    if (candidatePool.length === 0 && !effectiveReliable) {
+    if (candidatePool.length === 0 && !effectiveReliable && matchStatus !== 'ambiguous') {
       matchStatus = 'ambiguous'
       mensajeRespuesta = voucher.monto && voucher.monto > 0
         ? `Recibimos un pago de ${formatMonto(voucher.monto)}. Decinos el nombre exacto del cliente para identificar la factura.`
@@ -1190,15 +1322,23 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
   }
 
   // ── Next pending: if resolved and more items in queue, show the next ──
+  // Un pending sin candidatos nunca se muestra como "Hay 0 clientes...":
+  // se deriva a agente y se limpia para no trabar la cola.
   if ((matchStatus === 'matched' || matchStatus === 'multi_invoice') && candidates.length > 0) {
     const updatedCtx = await loadVoucherContext(db, conversationId)
     if (updatedCtx.pending.length > 0) {
       const nextItem = updatedCtx.pending[0]
-      const nextMsg = nextItem.multiInvoice
-        ? formatMultiInvoiceMessage(nextItem.candidates, nextItem.extraction.monto, nextItem.candidates[0]?.cliente_nombre || '')
-        : formatCandidatesMessage(nextItem.candidates, nextItem.extraction.monto)
-      mensajeRespuesta = `El comprobante fue procesado.\n\nAhora, para el siguiente comprobante:\n${nextMsg}`
-      console.log('[voucher] Showing next pending item (%d remaining)', updatedCtx.pending.length)
+      if (nextItem.candidates.length === 0) {
+        await removePendingVoucher(db, conversationId, nextItem.sourceMessageId)
+        mensajeRespuesta = 'El comprobante fue procesado. Hay otro comprobante pendiente sin opciones claras, un agente lo revisará.'
+        console.log('[voucher] Next pending had 0 candidates, removed and deferred to agent')
+      } else {
+        const nextMsg = nextItem.multiInvoice
+          ? formatMultiInvoiceMessage(nextItem.candidates, nextItem.extraction.monto, nextItem.candidates[0]?.cliente_nombre || '')
+          : formatCandidatesMessage(nextItem.candidates, nextItem.extraction.monto)
+        mensajeRespuesta = `El comprobante fue procesado.\n\nAhora, para el siguiente comprobante:\n${nextMsg}`
+        console.log('[voucher] Showing next pending item (%d remaining)', updatedCtx.pending.length)
+      }
     }
   }
 
@@ -1241,6 +1381,159 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
  * Texto-efectivo: reutiliza los 5 pasos de voucher-dryrun sin imagen.
  * Para "Jesus Daniel pago 48000 efectivo" — monto+cliente vienen de UnifiedExtraction.
  */
+/**
+ * Efectivo sin monto ("Jo pago en efectivo"): busca facturas pendientes por
+ * nombre de cliente y paga el total.
+ * - 0 facturas → avisa que no hay nada pendiente.
+ * - 1 factura → la paga en efectivo y avisa.
+ * - N facturas → guarda pending y pregunta cuál (A/B/C).
+ */
+async function processEfectivoSinMonto(args: {
+  messageId: string
+  contactId: string
+  conversationId: string
+  sendCtx: { accountId: string; userId: string; conversationId: string; contactId: string }
+  clientName: string
+  fecha: string | null
+}): Promise<void> {
+  const { messageId, contactId, conversationId, sendCtx, clientName, fecha } = args
+  const db = supabaseAdmin()
+  console.log('[voucher-text] efectivo sin monto client=%s', clientName)
+
+  let invoices: MatchVoucherCandidate[] = []
+  let searchError: string | null = null
+  try {
+    const result = await matchVoucherByName({
+      nombre_cliente: clientName,
+      nombre_origen: clientName,
+      monto: null,
+      tolerancia: 50,
+      timeoutMs: 20_000,
+    })
+    invoices = (result.invoice_candidates || [])
+      .filter((c) => c.saldo_pendiente > 0 && c.score >= NAME_MATCH_THRESHOLD)
+      .sort((a, b) => b.score - a.score)
+    console.log('[voucher-text] name search for "%s": %d candidates (score>=%s)', clientName, invoices.length, NAME_MATCH_THRESHOLD)
+  } catch (err) {
+    searchError = err instanceof Error ? err.message : String(err)
+    console.error('[voucher-text] name search failed:', searchError)
+  }
+
+  if (searchError || invoices.length === 0) {
+    await saveAttempt({
+      messageId,
+      contactId,
+      matchStatus: 'no_match',
+      extractedAmount: null,
+      extractedDate: fecha,
+      errorMessage: searchError ?? `Sin facturas pendientes para ${clientName}`,
+    })
+    await notify({
+      ...sendCtx,
+      text: searchError
+        ? `No pudimos consultar las facturas de ${clientName} ahora. Un agente lo revisará.`
+        : `No encontramos facturas pendientes para ${clientName}. Si el pago es para otro cliente, decinos el nombre.`,
+    })
+    return
+  }
+
+  if (invoices.length === 1) {
+    const inv = invoices[0]
+    await saveAttempt({
+      messageId,
+      contactId,
+      matchStatus: 'matched',
+      extractedAmount: inv.saldo_pendiente,
+      extractedDate: fecha,
+      matchedInvoiceId: inv.invoice_id,
+    })
+    try {
+      await createVoucherReview({
+        source_message_id: messageId,
+        wa_id: '',
+        contact_name: clientName,
+        extracted_monto: inv.saldo_pendiente,
+        extracted_fecha: fecha,
+        extracted_referencia: null,
+        extracted_banco: null,
+        extracted_nombre_cliente: clientName,
+        extracted_nombre_origen: clientName,
+        extracted_nombre_destino: null,
+        extracted_cbu_destino: null,
+        extracted_cuit_destino: null,
+        match_status: 'matched',
+        review_status: 'completed',
+        matched_invoice_id: inv.invoice_id,
+        matched_invoice_numero: inv.numero_factura,
+        matched_cliente_nombre: inv.cliente_nombre,
+        matched_saldo_pendiente: inv.saldo_pendiente,
+        entity_type: null,
+        entity_id: null,
+        entity_name: null,
+        candidatas: [{
+          invoice_id: inv.invoice_id,
+          numero_factura: inv.numero_factura,
+          saldo_pendiente: inv.saldo_pendiente,
+          cliente_nombre: inv.cliente_nombre,
+          fecha: inv.fecha,
+        }],
+        media_mime_type: 'text/efectivo',
+        media_base64: '',
+      })
+    } catch (err) {
+      console.error('[voucher-text] createVoucherReview failed:', err instanceof Error ? err.message : String(err))
+    }
+    try {
+      await registrarPago({
+        invoiceId: inv.invoice_id,
+        monto: inv.saldo_pendiente,
+        fecha: normalizeDate(fecha),
+        method: 'Efectivo',
+      })
+      console.log('[voucher-text] Payment registered OK (Efectivo, total) invoice=%s amount=%s', inv.invoice_id, inv.saldo_pendiente)
+    } catch (err) {
+      console.error('[voucher-text] registrarPago failed:', err instanceof Error ? err.message : String(err))
+      await notify({ ...sendCtx, text: `Encontramos la factura ${inv.numero_factura} de ${inv.cliente_nombre} (${formatMonto(inv.saldo_pendiente)}) pero no pudimos registrar el pago. Un agente lo revisará.` })
+      return
+    }
+    await notify({
+      ...sendCtx,
+      text: `Confirmado. Pago de ${formatMonto(inv.saldo_pendiente)} en efectivo registrado para ${inv.cliente_nombre} — Factura ${inv.numero_factura}.`,
+    })
+    return
+  }
+
+  // N facturas → preguntar cuál
+  await saveAttempt({
+    messageId,
+    contactId,
+    matchStatus: 'ambiguous',
+    extractedAmount: null,
+    extractedDate: fecha,
+  })
+  await addPendingVoucher(db, conversationId, {
+    sourceMessageId: messageId,
+    extraction: {
+      monto: null, fecha, referencia: null, banco: null,
+      nombre_cliente: clientName, nombre_origen: clientName,
+      nombre_destino: null, cbu_destino: null, cuit_destino: null,
+    },
+    candidates: invoices,
+    bestDestination: null,
+    mediaBase64: '',
+    mediaMimeType: 'text/efectivo',
+    multiInvoice: false,
+  })
+  console.log('[voucher-text] efectivo sin monto: %d candidates, pending saved', invoices.length)
+  const lines = invoices.map(
+    (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
+  )
+  await notify({
+    ...sendCtx,
+    text: `${clientName} tiene ${invoices.length} facturas pendientes. ¿Cuál pagó en efectivo?\n\n${lines.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`,
+  })
+}
+
 export async function processVoucherEfectivoText(args: {
   messageId: string
   contactId: string
@@ -1248,13 +1541,21 @@ export async function processVoucherEfectivoText(args: {
   accountId: string
   userId: string
   clientName: string
-  monto: number
+  monto: number | null
   fecha: string | null
 }): Promise<void> {
   const { messageId, contactId, conversationId, clientName, monto, fecha } = args
   const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId, contactId }
   const db = supabaseAdmin()
   console.log('[voucher-text] START efectivo client=%s monto=%s fecha=%s', clientName, monto, fecha)
+
+  // ── Efectivo sin monto ("Jo pago en efectivo", "Mathias pago en efectivo todo"):
+  // se busca por nombre y se paga el total de la factura.
+  // 1 factura → se paga y se avisa. N facturas → se pregunta cuál (A/B/C).
+  if (monto == null) {
+    await processEfectivoSinMonto({ messageId, contactId, conversationId, sendCtx, clientName, fecha })
+    return
+  }
 
   const dry = await runVoucherDryRun({
     monto,

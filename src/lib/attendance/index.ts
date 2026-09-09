@@ -502,8 +502,10 @@ export async function processAttendanceMessage(
   // Las respuestas a los botones de corrección se manejan aparte
   // (processAttendanceConfirmReply). Si mientras tanto llega un mensaje de
   // asistencia completo nuevo, se resetea el contexto y se procesa en fresco.
+  // Basta con que traiga hora o empleado: ej. "Se fue a las 17.18" (hora sin
+  // nombre) debe seguir a ¿De quién es? con la hora preservada, no silenciarse.
   if (ctx.awaitingCorrection) {
-    const isFreshIntent = parsed.isAttendanceIntent && !!parsed.employeeName
+    const isFreshIntent = parsed.isAttendanceIntent && (!!parsed.employeeName || !!parsed.time)
     if (!isFreshIntent) {
       await logAttendanceExtraction(args, {
         outcome: 'not_handled',
@@ -580,14 +582,18 @@ export async function processAttendanceMessage(
     return { handled: false }
   }
 
-  // Sin nombre → preguntar de quién es (multi-turno)
+  // Sin nombre → preguntar de quién es (multi-turno), preservando la hora
+  // ya informada para no volver a pedirla ("Se fue a las 17.18" → ¿Quién?).
   if (!parsed.employeeName) {
     await saveAttendanceContext(args.db, args.conversationId, {
       pendingType: parsed.statusType,
       pendingDate: parsed.date,
       pendingTime: parsed.time || null,
     })
-    const msg = '¿De quién es? Decime el nombre del empleado.'
+    const tipoSalida = parsed.statusType === 'departure' ? 'se fue' : parsed.statusType === 'arrival' ? 'llegó' : 'es'
+    const msg = parsed.time
+      ? `¿Quién ${tipoSalida} a las ${parsed.time}? Decime el nombre del empleado.`
+      : '¿De quién es? Decime el nombre del empleado.'
     await sendTextResponse(args, msg)
 
     await logAttendanceExtraction(args, {

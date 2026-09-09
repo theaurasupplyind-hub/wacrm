@@ -82,6 +82,11 @@ export interface ExpenseContextState {
   awaitingMultiEditIndex?: boolean
   /** Índice (0-based) del gasto que se está editando. */
   multiEditingIndex?: number | null
+  /**
+   * Timestamp (ms) de la última actualización del contexto.
+   * Se usa para expirar pendientes abandonados (ver PENDING_CONTEXT_TTL_MS).
+   */
+  updatedAt?: number | null
 }
 
 export type ExpenseStage = 'idle' | 'collecting' | 'confirming'

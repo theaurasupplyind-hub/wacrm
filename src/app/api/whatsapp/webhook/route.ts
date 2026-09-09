@@ -8,7 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
-import { processVoucherMessage, processVoucherEfectivoText } from '@/lib/ai/voucher-pipeline'
+import { processVoucherMessage, processVoucherEfectivoText, isVoucherClarificationReply } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
@@ -16,16 +16,17 @@ import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
-import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, isCategoryCorrectionCommand } from '@/lib/expenses'
+import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, clearExpenseContext, isCategoryCorrectionCommand } from '@/lib/expenses'
 import {
   processAttendanceMessage,
   processAttendanceConfirmReply,
   looksLikeAttendance,
   loadAttendanceContext,
+  clearAttendanceContext,
 } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
-import { decideDispatch } from '@/lib/bot/router'
+import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
 import { detectPastedConversation } from '@/lib/voice-orders/pasted-conversation'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import {
@@ -1084,15 +1085,31 @@ async function processMessage(
 
   // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
-  const hasPendingExpense =
+  const expenseStale =
+    typeof expenseCtx.updatedAt === 'number' &&
+    Date.now() - expenseCtx.updatedAt > PENDING_CONTEXT_TTL_MS
+  if (expenseStale) {
+    console.log('[expense] pending expired (>15min), clearing -> conversation=%s', conversation.id)
+    await clearExpenseContext(supabaseAdmin(), conversation.id)
+  }
+  const hasPendingExpense = !expenseStale && (
     ((!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple) &&
       (expenseCtx.stage === 'collecting' || expenseCtx.stage === 'confirming')) ||
     expenseCtx.correctingCategory === true
+  )
 
   // Cargar estado multi-turn de asistencia (empleado pendiente / corrección de hora)
   const attendanceCtx = await loadAttendanceContext(supabaseAdmin(), conversation.id)
-  const hasPendingAttendance =
+  const attendanceStale =
+    typeof attendanceCtx.updatedAt === 'number' &&
+    Date.now() - attendanceCtx.updatedAt > PENDING_CONTEXT_TTL_MS
+  if (attendanceStale) {
+    console.log('[attendance] pending expired (>15min), clearing -> conversation=%s', conversation.id)
+    await clearAttendanceContext(supabaseAdmin(), conversation.id)
+  }
+  const hasPendingAttendance = !attendanceStale && (
     !!attendanceCtx.pendingType || attendanceCtx.awaitingCorrection === true
+  )
 
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
@@ -1682,19 +1699,21 @@ async function processMessage(
     )
   } else {
     // ── VOUCHER EFECTIVO POR TEXTO (sin imagen) — reutiliza 5 pasos dryRun ──
+    // Acepta también sin monto ("Jo pago en efectivo"): se busca por nombre
+    // y se paga el total (1 factura) o se pregunta cuál (N facturas).
+    const montoEfectivo = extraction?.monto ?? null
     const isEfectivoText =
       !hasPendingVoucher &&
       !flowConsumed &&
       !interactiveReplyId &&
       inboundText.trim() &&
       extraction?.intent === 'voucher' &&
-      extraction.monto != null &&
-      extraction.monto > 0 &&
+      (montoEfectivo == null || montoEfectivo > 0) &&
       !!extraction.proveedor &&
       (extraction.metodo_pago === 'efectivo' || inboundText.toLowerCase().includes('efectivo'))
 
     if (isEfectivoText) {
-      console.log('[voucher-text] efectivo dispatch -> conversation=%s', conversation.id)
+      console.log('[voucher-text] efectivo dispatch client=%s monto=%s -> conversation=%s', extraction!.proveedor, montoEfectivo, conversation.id)
       bgTasks.push(
         processVoucherEfectivoText({
           messageId: message.id,
@@ -1703,20 +1722,39 @@ async function processMessage(
           accountId,
           userId: configOwnerUserId,
           clientName: extraction!.proveedor!,
-          monto: extraction!.monto!,
+          monto: montoEfectivo,
           fecha: extraction!.fecha ?? null,
         }).catch((err) => console.error('[voucher-text] error:', err)),
       )
     } else if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
-      // ── VOUCHER CONTEXT: corre SIEMPRE independientemente del intent (A/B de comprobante) ──
-      console.log('[voucher] text dispatch -> conversation=%s', conversation.id)
-      bgTasks.push(
-        processVoucherMessage({
-          message: { id: message.id, from: message.from, type: 'text', text: inboundText },
-          accessToken, accountId, userId: configOwnerUserId,
-          contactId: contactRecord.id, conversationId: conversation.id,
-        }).catch((err) => console.error('[voucher] Text context error:', err))
-      )
+      // ── VOUCHER CONTEXT: solo consume el texto si parece respuesta a la
+      // aclaración (letra, número, "sí", factura, nombre). Una orden nueva
+      // con intent fuerte (pedido, gasto, asistencia, factura) la maneja su
+      // propio flujo (ya despachado arriba); si el voucher la consumiera,
+      // la orden se pierde y el usuario recibe un "No entendimos..." pegado.
+      const firstPendingCands = voucherCtx.pending.flatMap((p) => p.candidates)
+      const looksLikeReply = isVoucherClarificationReply(inboundText, firstPendingCands)
+      const strongNewIntent =
+        (extraction?.confianza === 'alta' || extraction?.confianza === 'media') &&
+        (extraction?.intent === 'pedido' ||
+          extraction?.intent === 'gasto' ||
+          extraction?.intent === 'multi_expense' ||
+          extraction?.intent === 'factura' ||
+          extraction?.intent === 'asistencia_llegada' ||
+          extraction?.intent === 'asistencia_salida' ||
+          extraction?.intent === 'asistencia_estado')
+      if (looksLikeReply || !strongNewIntent) {
+        console.log('[voucher] text dispatch reply=%s -> conversation=%s', looksLikeReply, conversation.id)
+        bgTasks.push(
+          processVoucherMessage({
+            message: { id: message.id, from: message.from, type: 'text', text: inboundText },
+            accessToken, accountId, userId: configOwnerUserId,
+            contactId: contactRecord.id, conversationId: conversation.id,
+          }).catch((err) => console.error('[voucher] Text context error:', err))
+        )
+      } else {
+        console.log('[voucher] text skipped (new %s order, pending kept) -> conversation=%s', extraction?.intent, conversation.id)
+      }
     } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
       console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
       bgTasks.push(

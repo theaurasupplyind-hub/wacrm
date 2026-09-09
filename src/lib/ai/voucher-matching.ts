@@ -12,6 +12,32 @@ export function getMontoGapMin(monto: number): number {
 
 export type MatchStatus = 'matched' | 'ambiguous' | 'no_match' | 'multi_invoice'
 
+/**
+ * Nombres que nunca son un cliente real: el extractor de vouchers a veces
+ * devuelve palabras del comprobante ("Gracias!", "Comprobante") como
+ * nombre_cliente. Si no se filtran, el match por nombre falla y el pago
+ * termina en "no encontramos ninguna factura" aunque el voucher traiga
+ * el cliente real en otro campo (origen/destino).
+ */
+const INVALID_CLIENT_NAMES = new Set([
+  'gracias', 'hola', 'buenas', 'buenos dias', 'buenas tardes', 'buenas noches',
+  'comprobante', 'pago', 'pagar', 'pagado', 'transferencia', 'transferido',
+  'deposito', 'factura', 'saldo', 'total', 'importe', 'alias', 'cbu',
+])
+
+export function sanitizeClientName(raw: string | null | undefined): string | null {
+  const v = (raw ?? '').trim()
+  if (v.length < 3) return null
+  const norm = v
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[!¡?¿.,;:()[\]"]/g, '')
+    .trim()
+  if (!norm || INVALID_CLIENT_NAMES.has(norm)) return null
+  return v
+}
+
 export function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }

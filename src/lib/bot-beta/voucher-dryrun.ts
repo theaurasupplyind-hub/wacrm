@@ -4,7 +4,7 @@
 
 import { matchVoucherByName } from '@/lib/facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '@/lib/facbal/client'
-import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD } from '@/lib/ai/voucher-matching'
+import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD, sanitizeClientName } from '@/lib/ai/voucher-matching'
 
 export interface VoucherDryInput {
   monto: number | null
@@ -64,6 +64,11 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
   const debugInfo: Record<string, unknown> = { phase1: null, phase2: null, phase3: null, final: null }
 
   try {
+    // Igual que prod: nombres inválidos ("Gracias!") se descartan para que
+    // el match use el cliente real del voucher (origen/destino).
+    if (input.nombre_cliente && !sanitizeClientName(input.nombre_cliente)) {
+      input = { ...input, nombre_cliente: null }
+    }
     interface PoolEntry { type: 'single' | 'sum'; invoices: MatchVoucherCandidate[]; total: number; clientName: string }
     const candidatePool: PoolEntry[] = []
     const poolInvoiceIds = new Set<number>()
