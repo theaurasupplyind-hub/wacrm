@@ -54,7 +54,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "compré N [producto]" (ej: "compré 3 bastidores 60x40") → pedido, NUNCA gasto. Si menciona cantidades, medidas o productos del catálogo (bastidor, acrílico, circular, tela, lienzo, marco, moldura) → pedido.
 - "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto.
 - "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela. Solo es pedido si parece una solicitud de cliente con cantidad/medida o sin proveedor.
-- "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo"), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo".
+- "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo" o si NO hay monto = paga el total), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto, NUNCA gasto aunque falte el monto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo". Ej: "Jo pago en efectivo" → voucher, proveedor:"Jo", monto:null, metodo_pago:"efectivo".
 - "Le pagué/pagamos a [persona]" o "a [Nombre] por sueldo/adelanto" (con "le" + "a" como objeto, o mención explícita sueldo/adelanto) → gasto con empleado_gasto=[persona] y tipo_gasto "pago".
 - "pagué/pagamos a [proveedor]" (yo pagué) → gasto con tipo_gasto "pago", proveedor=[proveedor].
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
@@ -158,6 +158,9 @@ Mensaje: "Gastos varios dia lunes: $40 mil nafta, $34.500 bulonera, 38.000 empan
 Mensaje: "Mathias pago en efectivo todo"
 {"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Mathias","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
+Mensaje: "Jo pago en efectivo"
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Jo","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
 Mensaje: "Marlon Pago 2000000"
 {"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":2000000,"categoria":null,"proveedor":"Marlon","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
@@ -177,6 +180,48 @@ const VALID_EXPENSE_TYPES = ['compra', 'pago', 'gasto'] as const
 
 function strOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
+}
+
+/**
+ * Red determinística anti-sesgo: "[Nombre] pagó/paga en efectivo [todo/monto]"
+ * SIEMPRE es voucher (el cliente paga su factura; sin monto = paga el total),
+ * aunque el LLM —sesgado por un gasto pendiente en el contexto— lo clasifique
+ * como gasto. No toca: "Le pagué a X" (tiene le/a), sueldos/adelantos,
+ * ni verbos en 1ª persona ("pagué la luz").
+ */
+const VOUCHER_PAYMENT_RE =
+  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)(?:\s+\$?\s*[\d][\d.,]*\s*(?:mil|k|m)?)?(?:\s+(?:todo|total|completo|todo el saldo))?(?:\s+en\s+efectivo)?(?:\s+(?:todo|total|completo))?\s*$/i
+
+const VOUCHER_PAYMENT_EXCLUSIONS_RE = /\b(le|les|sueldo|sueldos|salario|adelanto|a\s+cuenta)\b/i
+
+export function applyVoucherCorrection(
+  extraction: UnifiedExtraction,
+  raw: string,
+): UnifiedExtraction {
+  if (extraction.intent === 'voucher') return extraction
+  const text = (raw || '').trim()
+  if (!text) return extraction
+  if (VOUCHER_PAYMENT_EXCLUSIONS_RE.test(text)) return extraction
+  const m = text.match(VOUCHER_PAYMENT_RE)
+  if (!m) return extraction
+
+  const montoMatch = text.match(/\$?\s*([\d][\d.,]*\s*(?:mil|k|m)?)\s*(?:todo|total|completo|en\s+efectivo|$)/i)
+  const monto = montoMatch ? parseMontoSafe(montoMatch[1]) : null
+
+  return {
+    ...extraction,
+    intent: 'voucher',
+    confianza: 'alta',
+    proveedor: m[1].trim(),
+    empleado_gasto: null,
+    categoria: null,
+    tipo_gasto: null,
+    monto,
+    metodo_pago: /efectivo/i.test(text) ? 'efectivo' : extraction.metodo_pago,
+    faltan_campos: [],
+    dudoso: false,
+    razon_duda: null,
+  }
 }
 
 function guessIntent(raw: unknown): BotIntent | null {
@@ -309,7 +354,7 @@ export async function extractBotMessage(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] LLM call failed:', msg)
-    return withDebug(fallbackExtract(raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
       fallback_reason: 'llm_call_failed',
       llm_error: msg,
     })
@@ -318,7 +363,7 @@ export async function extractBotMessage(
   const jsonStr = extractJson(rawText)
   if (!jsonStr) {
     console.error('[extractBotMessage] No JSON in response:', rawText.slice(0, 200))
-    return withDebug(fallbackExtract(raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
       llm_raw: rawText,
       llm_usage: usage,
       fallback_reason: 'no_json',
@@ -330,7 +375,7 @@ export async function extractBotMessage(
     parsed = JSON.parse(jsonStr)
   } catch {
     console.error('[extractBotMessage] Invalid JSON:', jsonStr.slice(0, 200))
-    return withDebug(fallbackExtract(raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
       llm_raw: rawText,
       llm_usage: usage,
       fallback_reason: 'invalid_json',
@@ -339,7 +384,7 @@ export async function extractBotMessage(
   }
 
   try {
-    return withDebug(sanitizeParsed(parsed, raw), {
+    return withDebug(applyVoucherCorrection(sanitizeParsed(parsed, raw), raw), {
       llm_raw: rawText,
       llm_raw_json: parsed,
       llm_usage: usage,
@@ -347,7 +392,7 @@ export async function extractBotMessage(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] Sanitization failed:', msg)
-    return withDebug(fallbackExtract(raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
       llm_raw: rawText,
       llm_raw_json: parsed,
       llm_usage: usage,

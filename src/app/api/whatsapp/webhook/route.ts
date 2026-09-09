@@ -25,8 +25,10 @@ import {
   clearAttendanceContext,
 } from '@/lib/attendance'
 import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
-import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendMedia, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
+import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
+import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { detectPastedConversation } from '@/lib/voice-orders/pasted-conversation'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import {
@@ -1122,6 +1124,11 @@ async function processMessage(
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
   const hasPendingVoucher = voucherCtx.pending.length > 0
 
+  // Aclaración pendiente (bot conversacional). La resolución corre después
+  // del extractor; los ids de botón se separan ya para que expense/attendance
+  // no consuman el tap de una pregunta aclaratoria.
+  const clarifyLoad = await loadClarifyContext(supabaseAdmin(), conversation.id)
+
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
@@ -1228,7 +1235,12 @@ async function processMessage(
   // no navegación de menú).
   // ============================================================
   let interactiveConsumed = false
-  if (interactiveReplyId) {
+  // Los taps a botones de aclaración los resuelve el flujo clarify de abajo,
+  // nunca los confirms de expense/attendance.
+  const clarifyButtonIds =
+    clarifyLoad && !clarifyLoad.expired ? clarifyLoad.state.options.map((o) => o.id) : []
+  const clarifyTapConsumed = !!interactiveReplyId && clarifyButtonIds.includes(interactiveReplyId)
+  if (interactiveReplyId && !clarifyTapConsumed) {
     const expenseConfirming =
       expenseCtx.stage === 'confirming' &&
       (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple)
@@ -1560,6 +1572,164 @@ async function processMessage(
     console.log('[intent] intent=%s confianza=%s dudoso=%s text=%s', intent, confianza, extraction.dudoso, inboundText.slice(0, 80))
   }
 
+  // ============================================================
+  // CLARIFY (bot conversacional): preguntar ante ambigüedad y resolver.
+  // Regla dura: ningún camino termina en silencio, siempre hay mensaje.
+  // ============================================================
+  let clarifyHandled = false
+  let clarifyTo = 'clarify'
+  let clarifyReason = 'clarify_ask'
+  let clarifyResolved = false
+  let clarifySuperseded = false
+  const clarifySendCtx = {
+    accountId, userId: configOwnerUserId,
+    conversationId: conversation.id, contactId: contactRecord.id,
+  }
+  // Envía la pregunta con botones y fallback a texto con letras.
+  const sendClarifyQuestion = async (
+    bodyText: string,
+    options: { id: string; title: string }[],
+  ): Promise<boolean> => {
+    try {
+      await engineSendInteractiveButtons({
+        ...clarifySendCtx,
+        bodyText,
+        buttons: options.map((o) => ({ id: o.id, title: o.title })),
+      })
+      return true
+    } catch (err) {
+      console.error('[clarify] buttons failed, text fallback:', err instanceof Error ? err.message : String(err))
+    }
+    try {
+      const letters = options
+        .map((o, i) => `${String.fromCharCode(65 + i)}. ${o.title}`)
+        .join('\n')
+      await engineSendText({ ...clarifySendCtx, text: `${bodyText}\n\n${letters}` })
+      return true
+    } catch (err) {
+      console.error('[clarify] text fallback failed:', err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }
+  const sendClarifyText = async (text: string): Promise<void> => {
+    try {
+      await engineSendText({ ...clarifySendCtx, text })
+    } catch (err) {
+      console.error('[clarify] send failed:', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const strongNewIntent = !!extraction &&
+    (extraction.confianza === 'alta' || extraction.confianza === 'media') &&
+    (extraction.intent === 'pedido' ||
+      extraction.intent === 'gasto' ||
+      extraction.intent === 'multi_expense' ||
+      extraction.intent === 'voucher' ||
+      extraction.intent === 'factura' ||
+      extraction.intent === 'asistencia_llegada' ||
+      extraction.intent === 'asistencia_salida' ||
+      extraction.intent === 'asistencia_estado')
+
+  if (!pasted && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
+    if (clarifyLoad?.expired) {
+      await clearClarifyContext(supabaseAdmin(), conversation.id)
+      bgTasks.push(
+        sendClarifyText(
+          'Tu respuesta llegó tarde y ya había descartado la pregunta (duran 5 minutos). Mandame de nuevo tu mensaje y lo procesamos.',
+        ).then(() => {}),
+      )
+      clarifyHandled = true
+      clarifyReason = 'clarify_expired'
+      console.log('[clarify] expired -> conversation=%s', conversation.id)
+    } else if (clarifyLoad && !clarifyLoad.expired) {
+      const clarifyState = clarifyLoad.state
+      const chosen = matchClarifyOption(inboundText, interactiveReplyId, clarifyState.options)
+      if (chosen) {
+        await clearClarifyContext(supabaseAdmin(), conversation.id)
+        if (extraction) {
+          const orig = clarifyState.origExtra
+          extraction = {
+            ...extraction,
+            intent: chosen.intent,
+            proveedor: orig?.proveedor ?? extraction.proveedor,
+            monto: orig?.monto ?? extraction.monto,
+            metodo_pago: orig?.metodo_pago ?? extraction.metodo_pago,
+            empleado: orig?.empleado ?? extraction.empleado,
+            hora: orig?.hora ?? extraction.hora,
+            categoria: orig?.categoria ?? extraction.categoria,
+            fecha: orig?.fecha ?? extraction.fecha,
+            faltan_campos: [],
+            dudoso: false,
+            razon_duda: null,
+          }
+        }
+        clarifyResolved = true
+        console.log('[clarify] resolved -> intent=%s conversation=%s', chosen.intent, conversation.id)
+      } else if (/^cancelar$/i.test(inboundText.trim())) {
+        await clearClarifyContext(supabaseAdmin(), conversation.id)
+        bgTasks.push(
+          sendClarifyText('Listo, dejamos eso de lado. ¿En qué te ayudo?').then(() => {}),
+        )
+        clarifyHandled = true
+        clarifyReason = 'clarify_cancelled'
+      } else if (strongNewIntent) {
+        await clearClarifyContext(supabaseAdmin(), conversation.id)
+        clarifyResolved = true
+        clarifySuperseded = true
+        console.log('[clarify] superseded by new %s order -> conversation=%s', extraction?.intent, conversation.id)
+      } else if (!clarifyState.renotified) {
+        await saveClarifyContext(supabaseAdmin(), conversation.id, { ...clarifyState, renotified: true })
+        const opts = clarifyState.options
+        bgTasks.push(
+          sendClarifyQuestion(
+            `No entendí tu respuesta. ${clarifyState.question} Respondé con la letra (A, B...) o escribí "cancelar".`,
+            opts,
+          ).then(() => {}),
+        )
+        clarifyHandled = true
+        clarifyReason = 'clarify_reask'
+      } else {
+        await clearClarifyContext(supabaseAdmin(), conversation.id)
+        bgTasks.push(
+          sendClarifyText(
+            'Sigo sin entenderte. Probá con algo concreto, por ejemplo: "gasté 5000 en luz", "llegó Juan 8:30" o "Marlon pagó 200000".',
+          ).then(() => {}),
+        )
+        clarifyHandled = true
+        clarifyReason = 'clarify_cancelled'
+      }
+    } else if (!clarifyLoad && extraction && !interactiveReplyId) {
+      const ambiguity = detectAmbiguity(extraction, inboundText)
+      if (ambiguity) {
+        await saveClarifyContext(supabaseAdmin(), conversation.id, {
+          question: ambiguity.question,
+          options: ambiguity.options,
+          originalIntent: extraction.intent,
+          origExtra: {
+            proveedor: extraction.proveedor,
+            monto: extraction.monto,
+            metodo_pago: extraction.metodo_pago,
+            empleado: extraction.empleado,
+            hora: extraction.hora,
+            categoria: extraction.categoria,
+            fecha: extraction.fecha,
+          },
+        })
+        bgTasks.push(
+          (async () => {
+            const ok = await sendClarifyQuestion(ambiguity.question, ambiguity.options)
+            if (!ok) {
+              await clearClarifyContext(supabaseAdmin(), conversation.id)
+            }
+          })(),
+        )
+        clarifyHandled = true
+        clarifyReason = 'clarify_ask'
+        console.log('[clarify] asked kind=%s -> conversation=%s', ambiguity.kind, conversation.id)
+      }
+    }
+  }
+
   const pushExpenseTask = (ex?: UnifiedExtraction) => {
     bgTasks.push(
       (async () => {
@@ -1603,24 +1773,35 @@ async function processMessage(
   }
 
   // Primary dispatch — now via shared router. Keep logging same as before.
-  // Si es bloque pegado ya se dispatchó arriba como voice/pasted — no volver a decidir
-  const routerDecision = pasted
-    ? { dispatchedTo: 'voice' as const, dispatchReason: 'pasted_conversation' as const }
+  // Si es bloque pegado ya se dispatchó arriba como voice/pasted — no volver a decidir.
+  // Si clarify ya respondió (ask/reask/expired/cancel), no se despacha nada más.
+  // Si clarify resolvió, se despacha con la extracción corregida.
+  const routerDecision = pasted || clarifyHandled
+    ? {
+        dispatchedTo: (pasted ? 'voice' : clarifyTo) as 'voice' | 'clarify',
+        dispatchReason: (pasted ? 'pasted_conversation' : clarifyReason) as 'pasted_conversation' | 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
+      }
     : decideDispatch({
         hasPendingExpense,
         hasPendingAttendance,
         hasPendingVoucher,
         hasPendingVoice,
         flowConsumed,
-        interactiveReplyId,
+        interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,
         inboundText,
         extraction,
         mediaConsumedByVoucher,
       })
   const dispatchedTo: string = routerDecision.dispatchedTo
-  const dispatchReason: string = routerDecision.dispatchReason
+  let dispatchReason: string = routerDecision.dispatchReason
+  if (!pasted && !clarifyHandled && clarifyResolved) {
+    dispatchReason = clarifySuperseded ? 'clarify_superseded' : 'clarify_resolve'
+  }
 
-  switch (routerDecision.dispatchedTo) {
+  switch (dispatchedTo) {
+    case 'clarify':
+      console.log('[clarify] %s -> conversation=%s', dispatchReason, conversation.id)
+      break
     case 'expense':
       console.log('[%s] dispatch -> conversation=%s', dispatchReason === 'pending_multiturn' ? 'expense' : dispatchReason === 'category_correction' ? 'expense' : 'expense', conversation.id)
       pushExpenseTask(extraction ?? undefined)
@@ -1682,7 +1863,7 @@ async function processMessage(
           rawText: inboundText,
           source: message.type,
           flowConsumed,
-          interactive: !!interactiveReplyId,
+          interactive: !!interactiveReplyId && !clarifyTapConsumed,
           hadContext: !!contextText,
           extraction,
           dispatchedTo,
@@ -1704,7 +1885,7 @@ async function processMessage(
         text: '🧹 Contexto de vouchers limpiado. Ya podés empezar de nuevo.',
       }).then(() => {}).catch((err) => console.error('[voucher] Reset reply error:', err))
     )
-  } else {
+  } else if (!clarifyHandled) {
     // ── VOUCHER EFECTIVO POR TEXTO (sin imagen) — reutiliza 5 pasos dryRun ──
     // Acepta también sin monto ("Jo pago en efectivo"): se busca por nombre
     // y se paga el total (1 factura) o se pregunta cuál (N facturas).
