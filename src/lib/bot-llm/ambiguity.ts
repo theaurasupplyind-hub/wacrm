@@ -20,9 +20,9 @@ export interface Ambiguity {
   options: ClarifyOption[]
 }
 
-/** ¿El texto tiene forma de pago de cliente? (Nombre + verbo en 3ª persona) */
+/** ¿El texto tiene forma de pago de cliente? (Nombre con mayúscula + verbo en 3ª persona) */
 const PAYMENT_SHAPE_RE =
-  /^\s*[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2}\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)\b/i
+  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)\b/i
 
 const PAYMENT_EXCLUSIONS_RE = /\b(le|les|sueldo|sueldos|salario|adelanto|a\s+cuenta)\b/i
 
@@ -46,8 +46,13 @@ export function detectAmbiguity(
   const text = (rawText || '').trim()
   if (!text) return null
 
-  // Caso pago: forma de pago sin exclusiones
-  if (PAYMENT_SHAPE_RE.test(text) && !PAYMENT_EXCLUSIONS_RE.test(text)) {
+  // Caso pago: forma de pago sin exclusiones. El nombre debe empezar en
+  // mayúscula ("tambien pago..." no es un sujeto que paga).
+  const shapeMatch = PAYMENT_SHAPE_RE.test(text) && !PAYMENT_EXCLUSIONS_RE.test(text)
+    ? text.match(PAYMENT_SHAPE_RE)
+    : null
+  const shapeName = shapeMatch?.[1]?.trim() ?? ''
+  if (shapeMatch && shapeName && shapeName[0] === shapeName[0].toUpperCase()) {
     const voucherFirme = extraction.intent === 'voucher' && extraction.confianza === 'alta'
     if (!voucherFirme) {
       const nombre = extraction.proveedor || text.split(/\s+/)[0]

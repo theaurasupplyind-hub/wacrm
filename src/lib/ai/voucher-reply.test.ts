@@ -41,6 +41,7 @@ describe('isVoucherClarificationReply (Fix 5)', () => {
     expect(isVoucherClarificationReply('A,B', two)).toBe(true)
     expect(isVoucherClarificationReply('ambas', two)).toBe(true)
     expect(isVoucherClarificationReply('las dos', two)).toBe(true)
+    expect(isVoucherClarificationReply('las 2', two)).toBe(true)
   })
 
   it('"sí" confirma con 1 candidato y vale como respuesta multi', () => {

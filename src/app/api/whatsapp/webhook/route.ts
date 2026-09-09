@@ -1235,11 +1235,12 @@ async function processMessage(
   // no navegación de menú).
   // ============================================================
   let interactiveConsumed = false
-  // Los taps a botones de aclaración los resuelve el flujo clarify de abajo,
-  // nunca los confirms de expense/attendance.
+  // Los taps a botones de aclaración (ids clarify_*) los resuelve el flujo
+  // clarify de abajo, nunca los confirms de expense/attendance/voucher.
   const clarifyButtonIds =
     clarifyLoad && !clarifyLoad.expired ? clarifyLoad.state.options.map((o) => o.id) : []
-  const clarifyTapConsumed = !!interactiveReplyId && clarifyButtonIds.includes(interactiveReplyId)
+  const clarifyTapConsumed = !!interactiveReplyId &&
+    (clarifyButtonIds.includes(interactiveReplyId) || interactiveReplyId.startsWith('clarify_'))
   if (interactiveReplyId && !clarifyTapConsumed) {
     const expenseConfirming =
       expenseCtx.stage === 'confirming' &&
@@ -1716,7 +1717,17 @@ async function processMessage(
       }
     } else if (!clarifyLoad && extraction && !interactiveReplyId) {
       const ambiguity = detectAmbiguity(extraction, inboundText)
-      if (ambiguity) {
+      // La aclaración genérica no debe robar respuestas del pending de
+      // voucher ("la otra", "A y B"): si el texto matchea sus candidatas,
+      // lo resuelve el voucher (Fix 5). La pregunta pago explícita sí pasa.
+      const voucherStealsReply = !!ambiguity &&
+        ambiguity.kind === 'baja_confianza' &&
+        hasPendingVoucher &&
+        isVoucherClarificationReply(
+          inboundText,
+          voucherCtx.pending.flatMap((p) => p.candidates),
+        )
+      if (ambiguity && !voucherStealsReply) {
         await saveClarifyContext(supabaseAdmin(), conversation.id, {
           question: ambiguity.question,
           options: ambiguity.options,

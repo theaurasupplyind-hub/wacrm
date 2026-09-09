@@ -160,6 +160,11 @@ function interpretUserResponse(
     }
   }
 
+  // "la otra / la restante / la que queda": con 1 sola candidata es esa.
+  if (candidates.length === 1 && /(^|\s)(otra|otro|restante|que queda|quedaba|la que falta)(\s|$)/i.test(cleaned)) {
+    return candidates[0]
+  }
+
   // Try matching by normalized name tokens (sin tildes en ambos lados)
   const nameTokens = (name: string) =>
     name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean)
@@ -181,8 +186,13 @@ function interpretMultiInvoiceResponse(
 ): MatchVoucherCandidate[] {
   const cleaned = text.trim().toLowerCase()
 
-  // "si", "sí", "confirmar", "ok", "todas", "ambas" → all candidates
+  // "si", "sí", "confirmar", "ok", "todas", "ambas", "las 2" → all candidates.
+  // Las formas con dígito ("las 2") valen solo si coinciden con la cantidad.
   if (/^(si|sí|confirmo?|ok|dale|adelante|todos|todas|ambos|ambas|las dos|los dos)$/i.test(cleaned)) {
+    return [...candidates]
+  }
+  const lasN = cleaned.match(/^(las?|los)\s+(\d+)$/)
+  if (lasN && Number(lasN[2]) === candidates.length) {
     return [...candidates]
   }
 
@@ -318,7 +328,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           }
           await notify({ ...sendCtx, text: reply })
         } else {
-          await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago.' })
+          await notify({
+            ...sendCtx,
+            text: errors.length > 0
+              ? `No se pudo registrar ningún pago:\n${errors.join('\n')}\nUn agente lo revisará.`
+              : 'No se pudo registrar ningún pago.',
+          })
         }
       } else {
         const lines = pendingItem.candidates.map(
@@ -415,13 +430,25 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
         await notify({ ...sendCtx, text: reply })
       } else {
-        await notify({ ...sendCtx, text: 'No se pudo registrar ningún pago.' })
+        await notify({
+          ...sendCtx,
+          text: errors.length > 0
+            ? `No se pudo registrar ningún pago:\n${errors.join('\n')}\nUn agente lo revisará.`
+            : 'No se pudo registrar ningún pago.',
+        })
       }
       return
     }
     if (chosen) {
       await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
 
+      const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
+      // Los pendientes de voucher por texto ("Jo pago en efectivo", "Jo pago
+      // en transferencia a Jorge") conservan su método tras la A/B.
+      const metodoPendiente = methodFromMimeType(pendingItem.mediaMimeType)
+      // Confirmado honesto: solo se avisa éxito si el pago se registró posta.
+      let pagoOk = false
+      let pagoError: string | null = null
       // Stage the confirmed match
       try {
         const payload = {
@@ -458,10 +485,6 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         await createVoucherReview(payload)
         console.log('[voucher] Staged for review after user clarification')
 
-        const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
-        // Los pendientes de voucher por texto ("Jo pago en efectivo", "Jo pago
-        // en transferencia a Jorge") conservan su método tras la A/B.
-        const metodoPendiente = methodFromMimeType(pendingItem.mediaMimeType)
         if (montoPago > 0) {
           try {
             const fechaPago = normalizeDate(pendingItem.extraction.fecha)
@@ -473,26 +496,36 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               entityType: pendingItem.bestDestination?.entity_type ?? undefined,
               entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
+            pagoOk = true
             console.log('[voucher] Payment registered after clarification: invoice=%s amount=%s', chosen.invoice_id, montoPago)
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err)
-            console.error('[voucher] PAYMENT after clarification failed:', msg)
+            pagoError = err instanceof Error ? err.message : String(err)
+            console.error('[voucher] PAYMENT after clarification failed:', pagoError)
           }
+        } else {
+          pagoError = 'monto inválido'
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error('[voucher] STAGING after clarification failed:', msg)
+        pagoError = err instanceof Error ? err.message : String(err)
+        console.error('[voucher] STAGING after clarification failed:', pagoError)
       }
 
-      await notify({
-        ...sendCtx,
-        text: (() => {
-          const metodo = methodFromMimeType(pendingItem.mediaMimeType)
-          const metodoLabel = metodo === 'Efectivo' ? ' en efectivo' : metodo === 'Transferencia' ? ' en transferencia' : ''
-          const destino = pendingItem.extraction.nombre_destino ? ` a ${pendingItem.extraction.nombre_destino}` : ''
-          return `Confirmado. Pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)}${metodoLabel}${destino} registrado para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`
-        })(),
-      })
+      if (pagoOk) {
+        await notify({
+          ...sendCtx,
+          text: (() => {
+            const metodo = methodFromMimeType(pendingItem.mediaMimeType)
+            const metodoLabel = metodo === 'Efectivo' ? ' en efectivo' : metodo === 'Transferencia' ? ' en transferencia' : ''
+            const destino = pendingItem.extraction.nombre_destino ? ` a ${pendingItem.extraction.nombre_destino}` : ''
+            return `Confirmado. Pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)}${metodoLabel}${destino} registrado para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`
+          })(),
+        })
+      } else {
+        await notify({
+          ...sendCtx,
+          text: `No pudimos registrar el pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)} — Factura ${chosen.numero_factura}${pagoError ? ` (${pagoError})` : ''}. Un agente lo revisará.`,
+        })
+      }
     } else {
       const lines = pendingItem.candidates.map(
         (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: $${c.saldo_pendiente.toLocaleString('es-AR')}`,

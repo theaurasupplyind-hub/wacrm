@@ -210,6 +210,10 @@ export function applyVoucherCorrection(
   if (VOUCHER_PAYMENT_EXCLUSIONS_RE.test(text)) return extraction
   const m = text.match(VOUCHER_PAYMENT_RE)
   if (!m) return extraction
+  // El nombre debe empezar en mayúscula ("Jo paga..."); "tambien pago..."
+  // en minúsculas no es un sujeto que paga.
+  const payerName = m[1].trim()
+  if (!payerName || payerName[0] !== payerName[0].toUpperCase()) return extraction
 
   const montoMatch = text.match(/\$?\s*([\d][\d.,]*\s*(?:mil|k|m)?)\s*(?:todo|total|completo|en\s+efectivo|en\s+transferencia|por\s+transferencia|$)/i)
   const monto = montoMatch ? parseMontoSafe(montoMatch[1]) : null
@@ -223,7 +227,7 @@ export function applyVoucherCorrection(
     ...extraction,
     intent: 'voucher',
     confianza: 'alta',
-    proveedor: m[1].trim(),
+    proveedor: payerName,
     empleado_gasto: null,
     destino: m[3]?.trim() || null,
     categoria: null,

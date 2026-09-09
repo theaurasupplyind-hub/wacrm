@@ -78,6 +78,10 @@ describe('applyVoucherCorrection', () => {
     expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'Le pagué a Jorge').intent).toBe('gasto')
   })
 
+  it('tambien en minúsculas no es sujeto que paga', () => {
+    expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'tambien pago la otra factura').intent).toBe('gasto')
+  })
+
   it('no toca Le pagué / sueldos / 1ª persona', () => {
     expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'Le pagué a Jo 2000000 por sueldo').intent).toBe('gasto')
     expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'pagué la luz').intent).toBe('gasto')
@@ -110,6 +114,11 @@ describe('detectAmbiguity', () => {
     expect(
       detectAmbiguity(extraction({ intent: 'gasto', confianza: 'alta' }), 'Le pagué a Jo 2000000 por sueldo'),
     ).toBeNull()
+  })
+
+  it('tambien en minúsculas → no dispara pregunta PAGO (solo genérica)', () => {
+    const a = detectAmbiguity(extraction({ intent: 'gasto', confianza: 'media', dudoso: true }), 'tambien pago la otra factura')
+    expect(a?.kind).not.toBe('pago')
   })
 
   it('baja confianza con 2 hipótesis → pregunta genérica', () => {
