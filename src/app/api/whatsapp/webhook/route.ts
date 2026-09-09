@@ -310,7 +310,11 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
-        const contact = value.contacts[i] || value.contacts[0]
+        const contact = value.contacts?.[i] || value.contacts?.[0]
+        if (!contact) {
+          console.error('[webhook] inbound message without contact payload, skipped:', message?.id)
+          continue
+        }
 
         await processMessage(
           message,
@@ -1027,7 +1031,7 @@ async function logRouterDecision(args: {
 
 async function processMessage(
   message: WhatsAppMessage,
-  contact: { profile: { name: string }; wa_id: string },
+  contact: { profile?: { name?: string }; wa_id: string },
   // Tenancy. Resolved from the matched whatsapp_config row; every
   // contact / conversation / message row created downstream is
   // stamped with this so any member of the account can see it.
@@ -1040,7 +1044,10 @@ async function processMessage(
   bgTasks: Promise<void>[]
 ) {
   const senderPhone = normalizePhone(message.from)
-  const contactName = contact.profile.name
+  // Meta a veces omite contacts[].profile (privacidad, dispositivos
+  // vinculados). Sin este fallback el webhook tira 500 y el mensaje no
+  // llega ni al CRM ni a bot-debug. Se usa el teléfono como nombre.
+  const contactName = contact?.profile?.name?.trim() || senderPhone
 
   // Find or create contact
   const contactOutcome = await findOrCreateContact(
@@ -1236,7 +1243,7 @@ async function processMessage(
               replyId: interactiveReplyId,
               accessToken,
               senderPhone: message.from,
-              senderName: contact.profile.name,
+              senderName: contactName,
               accountId,
               userId: configOwnerUserId,
               conversationId: conversation.id,
@@ -1323,7 +1330,7 @@ async function processMessage(
             mimeType: message.image?.mime_type || message.document?.mime_type,
             accessToken,
             senderPhone: message.from,
-            senderName: contact.profile.name,
+            senderName: contactName,
             accountId,
             userId: configOwnerUserId,
             conversationId: conversation.id,
@@ -1354,7 +1361,7 @@ async function processMessage(
             mimeType: audioMime,
             accessToken,
             senderPhone: message.from,
-            senderName: contact.profile.name,
+            senderName: contactName,
             accountId,
             userId: configOwnerUserId,
             conversationId: conversation.id,
@@ -1370,7 +1377,7 @@ async function processMessage(
               mediaId: audioId,
               accessToken,
               senderPhone: message.from,
-              senderName: contact.profile.name,
+              senderName: contactName,
               accountId,
               userId: configOwnerUserId,
               conversationId: conversation.id,
@@ -1489,7 +1496,7 @@ async function processMessage(
           const r = await processTextOrder({
             text: textForOrder,
             senderPhone: message.from,
-            senderName: contact.profile.name,
+            senderName: contactName,
             commit: false,
             pendingVariantItems: voiceCtx.pendingVariantItems,
             pendingClientName: voiceCtx.pendingClientName,
@@ -1559,7 +1566,7 @@ async function processMessage(
         try {
           await handleExpenseMessage({
             messageType: 'text', text: inboundText, accessToken,
-            senderPhone: message.from, senderName: contact.profile.name,
+            senderPhone: message.from, senderName: contactName,
             accountId, userId: configOwnerUserId,
             conversationId: conversation.id, contactId: contactRecord.id,
             messageId: message.id,
@@ -1588,7 +1595,7 @@ async function processMessage(
   const pushVoiceTask = () => {
     bgTasks.push(
       handleVoiceText({
-        text: inboundText, senderPhone: message.from, senderName: contact.profile.name,
+        text: inboundText, senderPhone: message.from, senderName: contactName,
         voiceContext: voiceCtx, accountId, userId: configOwnerUserId,
         conversationId: conversation.id, contactId: contactRecord.id,
       }).catch((err) => console.error('[voice] Text error:', err))
