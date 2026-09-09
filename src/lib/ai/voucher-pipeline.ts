@@ -373,8 +373,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       for (const inv of multiChosen) {
         const pago = Math.min(remaining, inv.saldo_pendiente)
         if (pago <= 0) continue
-        try {
-          await createVoucherReview({
+        // Staging solo con imagen real; en texto se saltea (backend exige
+        // media) y nunca bloquea el pago.
+        if (hasRealMedia(pendingItem)) {
+          try {
+            await createVoucherReview({
             source_message_id: pendingItem.sourceMessageId,
             wa_id: normalizedPhone,
             contact_name: null,
@@ -404,7 +407,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
             }],
             media_mime_type: pendingItem.mediaMimeType,
             media_base64: pendingItem.mediaBase64,
-          })
+            })
+          } catch (err) {
+            console.error('[voucher] staging (multi) failed:', err instanceof Error ? err.message : String(err))
+          }
+        }
+        try {
           await registrarPago({
             invoiceId: inv.invoice_id,
             monto: pago,
@@ -449,9 +457,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       // Confirmado honesto: solo se avisa éxito si el pago se registró posta.
       let pagoOk = false
       let pagoError: string | null = null
-      // Stage the confirmed match
-      try {
-        const payload = {
+      // Stage the confirmed match — solo con imagen real. Los vouchers por
+      // texto no pasan por el review (el backend exige media_base64); van
+      // directo al pago con auditoría local. El staging nunca bloquea el pago.
+      if (hasRealMedia(pendingItem)) {
+        try {
+          const payload = {
           source_message_id: pendingItem.sourceMessageId,
           wa_id: normalizedPhone,
           contact_name: null,
@@ -481,33 +492,33 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           })),
           media_mime_type: pendingItem.mediaMimeType,
           media_base64: pendingItem.mediaBase64,
-        }
-        await createVoucherReview(payload)
-        console.log('[voucher] Staged for review after user clarification')
-
-        if (montoPago > 0) {
-          try {
-            const fechaPago = normalizeDate(pendingItem.extraction.fecha)
-            await registrarPago({
-              invoiceId: chosen.invoice_id,
-              monto: montoPago,
-              fecha: fechaPago,
-              method: metodoPendiente,
-              entityType: pendingItem.bestDestination?.entity_type ?? undefined,
-              entityId: pendingItem.bestDestination?.entity_id ?? undefined,
-            })
-            pagoOk = true
-            console.log('[voucher] Payment registered after clarification: invoice=%s amount=%s', chosen.invoice_id, montoPago)
-          } catch (err) {
-            pagoError = err instanceof Error ? err.message : String(err)
-            console.error('[voucher] PAYMENT after clarification failed:', pagoError)
           }
-        } else {
-          pagoError = 'monto inválido'
+          await createVoucherReview(payload)
+          console.log('[voucher] Staged for review after user clarification')
+        } catch (err) {
+          console.error('[voucher] STAGING after clarification failed:', err instanceof Error ? err.message : String(err))
         }
-      } catch (err) {
-        pagoError = err instanceof Error ? err.message : String(err)
-        console.error('[voucher] STAGING after clarification failed:', pagoError)
+      }
+
+      if (montoPago > 0) {
+        try {
+          const fechaPago = normalizeDate(pendingItem.extraction.fecha)
+          await registrarPago({
+            invoiceId: chosen.invoice_id,
+            monto: montoPago,
+            fecha: fechaPago,
+            method: metodoPendiente,
+            entityType: pendingItem.bestDestination?.entity_type ?? undefined,
+            entityId: pendingItem.bestDestination?.entity_id ?? undefined,
+          })
+          pagoOk = true
+          console.log('[voucher] Payment registered after clarification: invoice=%s amount=%s', chosen.invoice_id, montoPago)
+        } catch (err) {
+          pagoError = err instanceof Error ? err.message : String(err)
+          console.error('[voucher] PAYMENT after clarification failed:', pagoError)
+        }
+      } else {
+        pagoError = 'monto inválido'
       }
 
       if (pagoOk) {
@@ -1570,6 +1581,18 @@ function methodFromMimeType(mime: string | null | undefined): VoucherTextMethod 
   return undefined
 }
 
+/**
+ * ¿El pending trae imagen real? Los vouchers por texto (mimes text/*)
+ * son una forma nueva sin imagen: no pasan por el review de FacGal
+ * (el backend exige media_base64), solo se registra el pago + auditoría
+ * local (voucher_extractions + router_logs).
+ */
+export function hasRealMedia(pending: { mediaMimeType: string; mediaBase64: string }): boolean {
+  if (!pending.mediaBase64) return false
+  if (pending.mediaMimeType.startsWith('text/')) return false
+  return true
+}
+
 /** Ids de los botones de confirmación de pago (transferencia por texto). */
 export const VOUCHER_CONFIRM_ID = 'voucher_confirm'
 export const VOUCHER_CANCEL_ID = 'voucher_cancel'
@@ -1705,42 +1728,8 @@ async function processVoucherSinMonto(args: {
       extractedDate: fecha,
       matchedInvoiceId: inv.invoice_id,
     })
-    try {
-      await createVoucherReview({
-        source_message_id: messageId,
-        wa_id: '',
-        contact_name: clientName,
-        extracted_monto: inv.saldo_pendiente,
-        extracted_fecha: fecha,
-        extracted_referencia: null,
-        extracted_banco: null,
-        extracted_nombre_cliente: clientName,
-        extracted_nombre_origen: clientName,
-        extracted_nombre_destino: destName,
-        extracted_cbu_destino: null,
-        extracted_cuit_destino: null,
-        match_status: 'matched',
-        review_status: 'completed',
-        matched_invoice_id: inv.invoice_id,
-        matched_invoice_numero: inv.numero_factura,
-        matched_cliente_nombre: inv.cliente_nombre,
-        matched_saldo_pendiente: inv.saldo_pendiente,
-        entity_type: null,
-        entity_id: null,
-        entity_name: null,
-        candidatas: [{
-          invoice_id: inv.invoice_id,
-          numero_factura: inv.numero_factura,
-          saldo_pendiente: inv.saldo_pendiente,
-          cliente_nombre: inv.cliente_nombre,
-          fecha: inv.fecha,
-        }],
-        media_mime_type: mimeForTextMethod(metodoPago),
-        media_base64: '',
-      })
-    } catch (err) {
-      console.error('[voucher-text] createVoucherReview failed:', err instanceof Error ? err.message : String(err))
-    }
+    // Sin review: voucher por texto (sin imagen) — solo pago + auditoría local.
+    console.log('[voucher-text] direct pay without review (text voucher) invoice=%s', inv.invoice_id)
     try {
       await registrarPago({
         invoiceId: inv.invoice_id,
@@ -1877,43 +1866,9 @@ export async function processVoucherText(args: {
       console.log('[voucher-text] END status=awaiting_confirm')
       return
     }
-    // Stage + pago real (sin media)
-    try {
-      await createVoucherReview({
-        source_message_id: messageId,
-        wa_id: '',
-        contact_name: clientName,
-        extracted_monto: monto,
-        extracted_fecha: fecha,
-        extracted_referencia: null,
-        extracted_banco: null,
-        extracted_nombre_cliente: clientName,
-        extracted_nombre_origen: clientName,
-        extracted_nombre_destino: destName,
-        extracted_cbu_destino: null,
-        extracted_cuit_destino: null,
-        match_status: 'matched',
-        review_status: 'completed',
-        matched_invoice_id: matchedInvoiceId,
-        matched_invoice_numero: matchedInvoiceNumero,
-        matched_cliente_nombre: matchedClienteNombre,
-        matched_saldo_pendiente: matchedSaldoPendiente,
-        entity_type: bestDestination?.entity_type ?? null,
-        entity_id: bestDestination?.entity_id ?? null,
-        entity_name: bestDestination?.entity_name ?? null,
-        candidatas: candidates.map((c) => ({
-          invoice_id: c.invoice_id,
-          numero_factura: c.numero_factura,
-          saldo_pendiente: c.saldo_pendiente,
-          cliente_nombre: c.cliente_nombre,
-          fecha: c.fecha,
-        })),
-        media_mime_type: mimeForTextMethod(metodoPago),
-        media_base64: '',
-      })
-    } catch (err) {
-      console.error('[voucher-text] createVoucherReview failed:', err instanceof Error ? err.message : String(err))
-    }
+    // Stage + pago real. Sin review: voucher por texto (sin imagen) — solo
+    // pago + auditoría local.
+    console.log('[voucher-text] direct pay without review (text voucher) invoice=%s', matchedInvoiceId)
     try {
       const fechaPago = normalizeDate(fecha)
       await registrarPago({

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isVoucherClarificationReply, isCancelReply, isBareYes } from './voucher-pipeline'
+import { isVoucherClarificationReply, isCancelReply, isBareYes, hasRealMedia } from './voucher-pipeline'
 import type { MatchVoucherCandidate } from '../facbal/client'
 
 function cand(overrides: Partial<MatchVoucherCandidate> = {}): MatchVoucherCandidate {
@@ -86,5 +86,17 @@ describe('isBareYes (sí pelado vs todas/ambas)', () => {
     expect(isBareYes('ambas')).toBe(false)
     expect(isBareYes('las dos')).toBe(false)
     expect(isBareYes('A y B')).toBe(false)
+  })
+})
+
+describe('hasRealMedia (texto sin review)', () => {
+  it('texto nunca tiene media real', () => {
+    expect(hasRealMedia({ mediaMimeType: 'text/efectivo', mediaBase64: '' })).toBe(false)
+    expect(hasRealMedia({ mediaMimeType: 'text/transferencia', mediaBase64: '' })).toBe(false)
+  })
+
+  it('imagen con base64 sí', () => {
+    expect(hasRealMedia({ mediaMimeType: 'image/jpeg', mediaBase64: 'abc' })).toBe(true)
+    expect(hasRealMedia({ mediaMimeType: 'image/jpeg', mediaBase64: '' })).toBe(false)
   })
 })
