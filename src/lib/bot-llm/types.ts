@@ -55,6 +55,8 @@ export interface UnifiedExtraction {
   saldo_pendiente: number | null
   proveedor: string | null
   empleado_gasto: string | null
+  /** Destinatario que recibe en un voucher ("Jo pagó a Jorge" → Jorge). */
+  destino: string | null
   metodo_pago: string | null
   // multi-expense (solo si intent es 'multi_expense')
   multipleExpenses?: MultiExpenseItem[]

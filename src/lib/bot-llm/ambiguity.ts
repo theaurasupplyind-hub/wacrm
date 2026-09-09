@@ -51,10 +51,11 @@ export function detectAmbiguity(
     const voucherFirme = extraction.intent === 'voucher' && extraction.confianza === 'alta'
     if (!voucherFirme) {
       const nombre = extraction.proveedor || text.split(/\s+/)[0]
+      const destino = extraction.destino ? ` transfiriendo a ${extraction.destino}` : ''
       return {
         kind: 'pago',
         question:
-          `No me quedó claro: ¿${nombre} te pagó a vos o pagaste vos? ` +
+          `No me quedó claro: ¿${nombre} te pagó a vos${destino} o pagaste vos? ` +
           `Tocá una opción o respondé A/B.`,
         options: [
           { id: 'clarify_cobro', title: 'Me pagó (cobro)', intent: 'voucher' },

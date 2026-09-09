@@ -50,6 +50,34 @@ describe('applyVoucherCorrection', () => {
     expect(r.monto).toBe(2000000)
   })
 
+  it('Jo pago en transferencia a Jorge → voucher con destino', () => {
+    const r = applyVoucherCorrection(
+      extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo' }),
+      'Jo pago en transferencia a Jorge',
+    )
+    expect(r.intent).toBe('voucher')
+    expect(r.proveedor).toBe('Jo')
+    expect(r.destino).toBe('Jorge')
+    expect(r.monto).toBeNull()
+    expect(r.metodo_pago).toBe('transferencia')
+  })
+
+  it('con monto + destino conserva ambos', () => {
+    const r = applyVoucherCorrection(
+      extraction({ intent: 'gasto', confianza: 'media' }),
+      'Jo pago 200000 en transferencia a Jorge',
+    )
+    expect(r.intent).toBe('voucher')
+    expect(r.monto).toBe(200000)
+    expect(r.destino).toBe('Jorge')
+    expect(r.metodo_pago).toBe('transferencia')
+  })
+
+  it('no toca transferí/Le pagué (1ª persona)', () => {
+    expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'transferí a Jorge').intent).toBe('gasto')
+    expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'Le pagué a Jorge').intent).toBe('gasto')
+  })
+
   it('no toca Le pagué / sueldos / 1ª persona', () => {
     expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'Le pagué a Jo 2000000 por sueldo').intent).toBe('gasto')
     expect(applyVoucherCorrection(extraction({ intent: 'gasto' }), 'pagué la luz').intent).toBe('gasto')

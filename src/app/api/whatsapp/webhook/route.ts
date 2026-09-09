@@ -8,7 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
-import { processVoucherMessage, processVoucherEfectivoText, isVoucherClarificationReply } from '@/lib/ai/voucher-pipeline'
+import { processVoucherMessage, processVoucherText, isVoucherClarificationReply, VOUCHER_CONFIRM_ID, VOUCHER_CANCEL_ID } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
@@ -1246,7 +1246,22 @@ async function processMessage(
       (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple)
     const attendanceCorrecting = attendanceCtx.awaitingCorrection === true
 
-    if (expenseConfirming) {
+    if (interactiveReplyId === VOUCHER_CONFIRM_ID || interactiveReplyId === VOUCHER_CANCEL_ID) {
+      // Botones de confirmación de pago (transferencia por texto): se traducen
+      // a respuesta de texto para que los procese el pending del voucher.
+      interactiveConsumed = true
+      if (hasPendingVoucher) {
+        const synthetic = interactiveReplyId === VOUCHER_CONFIRM_ID ? 'sí' : 'cancelar'
+        console.log('[voucher] button tap -> synthetic "%s" conversation=%s', synthetic, conversation.id)
+        bgTasks.push(
+          processVoucherMessage({
+            message: { id: message.id, from: message.from, type: 'text', text: synthetic },
+            accessToken, accountId, userId: configOwnerUserId,
+            contactId: contactRecord.id, conversationId: conversation.id,
+          }).catch((err) => console.error('[voucher] Button context error:', err))
+        )
+      }
+    } else if (expenseConfirming) {
       interactiveConsumed = true
       bgTasks.push(
         (async () => {
@@ -1654,6 +1669,7 @@ async function processMessage(
             proveedor: orig?.proveedor ?? extraction.proveedor,
             monto: orig?.monto ?? extraction.monto,
             metodo_pago: orig?.metodo_pago ?? extraction.metodo_pago,
+            destino: orig?.destino ?? extraction.destino,
             empleado: orig?.empleado ?? extraction.empleado,
             hora: orig?.hora ?? extraction.hora,
             categoria: orig?.categoria ?? extraction.categoria,
@@ -1709,6 +1725,7 @@ async function processMessage(
             proveedor: extraction.proveedor,
             monto: extraction.monto,
             metodo_pago: extraction.metodo_pago,
+            destino: extraction.destino,
             empleado: extraction.empleado,
             hora: extraction.hora,
             categoria: extraction.categoria,
@@ -1886,31 +1903,40 @@ async function processMessage(
       }).then(() => {}).catch((err) => console.error('[voucher] Reset reply error:', err))
     )
   } else if (!clarifyHandled) {
-    // ── VOUCHER EFECTIVO POR TEXTO (sin imagen) — reutiliza 5 pasos dryRun ──
-    // Acepta también sin monto ("Jo pago en efectivo"): se busca por nombre
-    // y se paga el total (1 factura) o se pregunta cuál (N facturas).
-    const montoEfectivo = extraction?.monto ?? null
-    const isEfectivoText =
+    // ── VOUCHER POR TEXTO (sin imagen): efectivo o transferencia — dryRun ──
+    // Sin monto ("Jo pago en efectivo", "Jo pago en transferencia a Jorge"):
+    // se busca por nombre y se paga el total (1 factura) o se pregunta
+    // cuál (N facturas).
+    const montoVoucherText = extraction?.monto ?? null
+    const metodoVoucherText =
+      extraction?.metodo_pago === 'efectivo' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('efectivo'))
+        ? 'Efectivo' as const
+        : extraction?.metodo_pago === 'transferencia' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('transferencia'))
+          ? 'Transferencia' as const
+          : null
+    const isVoucherText =
       !hasPendingVoucher &&
       !flowConsumed &&
       !interactiveReplyId &&
       inboundText.trim() &&
       extraction?.intent === 'voucher' &&
-      (montoEfectivo == null || montoEfectivo > 0) &&
+      (montoVoucherText == null || montoVoucherText > 0) &&
       !!extraction.proveedor &&
-      (extraction.metodo_pago === 'efectivo' || inboundText.toLowerCase().includes('efectivo'))
+      metodoVoucherText != null
 
-    if (isEfectivoText) {
-      console.log('[voucher-text] efectivo dispatch client=%s monto=%s -> conversation=%s', extraction!.proveedor, montoEfectivo, conversation.id)
+    if (isVoucherText) {
+      console.log('[voucher-text] dispatch metodo=%s client=%s destino=%s monto=%s -> conversation=%s', metodoVoucherText, extraction!.proveedor, extraction!.destino, montoVoucherText, conversation.id)
       bgTasks.push(
-        processVoucherEfectivoText({
+        processVoucherText({
           messageId: message.id,
           contactId: contactRecord.id,
           conversationId: conversation.id,
           accountId,
           userId: configOwnerUserId,
           clientName: extraction!.proveedor!,
-          monto: montoEfectivo,
+          destName: extraction!.destino ?? null,
+          metodoPago: metodoVoucherText,
+          monto: montoVoucherText,
           fecha: extraction!.fecha ?? null,
         }).catch((err) => console.error('[voucher-text] error:', err)),
       )

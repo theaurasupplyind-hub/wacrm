@@ -20,6 +20,7 @@ export interface ClarifyContextState {
     proveedor: string | null
     monto: number | null
     metodo_pago: string | null
+    destino: string | null
     empleado: string | null
     hora: string | null
     categoria: string | null

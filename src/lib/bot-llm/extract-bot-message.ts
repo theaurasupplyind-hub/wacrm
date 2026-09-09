@@ -18,6 +18,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
   "saldo_pendiente": número o null,
   "proveedor": "nombre del proveedor o null",
   "empleado_gasto": "nombre del empleado si es pago de sueldo, o null",
+  "destino": "quien recibe en un voucher (\"Jo pagó a Jorge\" → \"Jorge\") o null",
   "metodo_pago": "efectivo" | "transferencia" | "debito" | "credito" | "mercado pago" | "qr" | null,
   "fecha": "YYYY-MM-DD o null",
   "multipleExpenses": [
@@ -56,7 +57,8 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela. Solo es pedido si parece una solicitud de cliente con cantidad/medida o sin proveedor.
 - "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo" o si NO hay monto = paga el total), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto, NUNCA gasto aunque falte el monto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo". Ej: "Jo pago en efectivo" → voucher, proveedor:"Jo", monto:null, metodo_pago:"efectivo".
 - "Le pagué/pagamos a [persona]" o "a [Nombre] por sueldo/adelanto" (con "le" + "a" como objeto, o mención explícita sueldo/adelanto) → gasto con empleado_gasto=[persona] y tipo_gasto "pago".
-- "pagué/pagamos a [proveedor]" (yo pagué) → gasto con tipo_gasto "pago", proveedor=[proveedor].
+- "pagué/pagamos a [proveedor]" o "transferí a [persona]" (YO pagué/transferí, verbo en 1ª persona) → gasto con tipo_gasto "pago", proveedor=[proveedor].
+- "[Nombre] pagó/paga [monto] en/por transferencia [a Destino]" (sujeto en 3ª persona, NUNCA "le", NUNCA sueldo) → voucher, proveedor=[Nombre], destino=[Destino] o null, monto o null (=total), metodo_pago="transferencia". Ej: "Jo pago en transferencia a Jorge" → voucher, proveedor:"Jo", destino:"Jorge", monto:null, metodo_pago:"transferencia".
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
 - "pagué el pedido" → pedido (confirmación de pedido), NO gasto.
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
@@ -156,13 +158,16 @@ Mensaje: "Gastos varios dia lunes: $40 mil nafta, $34.500 bulonera, 38.000 empan
 {"intent":"multi_expense","confianza":"media","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"multipleExpenses":[{"monto":40000,"categoria":"nafta","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"nafta"},{"monto":34500,"categoria":"bulonera","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"bulonera"},{"monto":38000,"categoria":"empanadas","proveedor":null,"empleado":null,"metodo_pago":null,"descripcion":"empanadas"}],"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Mathias pago en efectivo todo"
-{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Mathias","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Mathias","empleado_gasto":null,"destino":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Jo pago en efectivo"
-{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Jo","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Jo","empleado_gasto":null,"destino":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Marlon Pago 2000000"
-{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":2000000,"categoria":null,"proveedor":"Marlon","empleado_gasto":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":2000000,"categoria":null,"proveedor":"Marlon","empleado_gasto":null,"destino":null,"metodo_pago":"efectivo","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "Jo pago en transferencia a Jorge"
+{"intent":"voucher","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":"Jo","empleado_gasto":null,"destino":"Jorge","metodo_pago":"transferencia","fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "Le pagué a Marlon 2000000 por sueldo"
 {"intent":"gasto","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":2000000,"categoria":null,"proveedor":null,"empleado_gasto":"Marlon","metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
@@ -183,14 +188,15 @@ function strOrNull(v: unknown): string | null {
 }
 
 /**
- * Red determinística anti-sesgo: "[Nombre] pagó/paga en efectivo [todo/monto]"
- * SIEMPRE es voucher (el cliente paga su factura; sin monto = paga el total),
- * aunque el LLM —sesgado por un gasto pendiente en el contexto— lo clasifique
- * como gasto. No toca: "Le pagué a X" (tiene le/a), sueldos/adelantos,
- * ni verbos en 1ª persona ("pagué la luz").
+ * Red determinística anti-sesgo: "[Nombre] pagó/paga [monto] [en efectivo/en
+ * transferencia] [todo] [a Destino]" SIEMPRE es voucher (el cliente paga su
+ * factura; sin monto = paga el total), aunque el LLM —sesgado por un gasto
+ * pendiente en el contexto— lo clasifique como gasto. No toca:
+ * "Le pagué a X" (tiene le), sueldos/adelantos, ni verbos en 1ª persona
+ * ("pagué la luz", "transferí a Jorge").
  */
 const VOUCHER_PAYMENT_RE =
-  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)(?:\s+\$?\s*[\d][\d.,]*\s*(?:mil|k|m)?)?(?:\s+(?:todo|total|completo|todo el saldo))?(?:\s+en\s+efectivo)?(?:\s+(?:todo|total|completo))?\s*$/i
+  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)(?:\s+\$?\s*[\d][\d.,]*\s*(?:mil|k|m)?)?(?:\s+(?:todo|total|completo|todo el saldo))?(?:\s+(?:en\s+efectivo|en\s+transferencia|por\s+transferencia))?(?:\s+(?:todo|total|completo))?(?:\s+a\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2}))?\s*$/i
 
 const VOUCHER_PAYMENT_EXCLUSIONS_RE = /\b(le|les|sueldo|sueldos|salario|adelanto|a\s+cuenta)\b/i
 
@@ -205,8 +211,13 @@ export function applyVoucherCorrection(
   const m = text.match(VOUCHER_PAYMENT_RE)
   if (!m) return extraction
 
-  const montoMatch = text.match(/\$?\s*([\d][\d.,]*\s*(?:mil|k|m)?)\s*(?:todo|total|completo|en\s+efectivo|$)/i)
+  const montoMatch = text.match(/\$?\s*([\d][\d.,]*\s*(?:mil|k|m)?)\s*(?:todo|total|completo|en\s+efectivo|en\s+transferencia|por\s+transferencia|$)/i)
   const monto = montoMatch ? parseMontoSafe(montoMatch[1]) : null
+  const metodo = /efectivo/i.test(text)
+    ? 'efectivo'
+    : /transferencia/i.test(text)
+      ? 'transferencia'
+      : extraction.metodo_pago
 
   return {
     ...extraction,
@@ -214,10 +225,11 @@ export function applyVoucherCorrection(
     confianza: 'alta',
     proveedor: m[1].trim(),
     empleado_gasto: null,
+    destino: m[3]?.trim() || null,
     categoria: null,
     tipo_gasto: null,
     monto,
-    metodo_pago: /efectivo/i.test(text) ? 'efectivo' : extraction.metodo_pago,
+    metodo_pago: metodo,
     faltan_campos: [],
     dudoso: false,
     razon_duda: null,
@@ -270,6 +282,7 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     saldo_pendiente: parseMontoSafe(parsed.saldo_pendiente),
     proveedor: strOrNull(parsed.proveedor),
     empleado_gasto: strOrNull(parsed.empleado_gasto),
+    destino: strOrNull(parsed.destino),
     metodo_pago: strOrNull(parsed.metodo_pago),
     multipleExpenses,
     fecha: normalizeDate(parsed.fecha),

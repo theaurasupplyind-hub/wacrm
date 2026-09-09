@@ -1,5 +1,5 @@
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
 import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName, pickStickyExact } from './voucher-matching'
@@ -266,12 +266,19 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     const userText = message.text || ''
     console.log('[voucher] User reply to clarification: "%s" (pending msg=%s multiInvoice=%s)', userText, pendingItem.sourceMessageId, pendingItem.multiInvoice)
 
+    // "no" / "cancelar" anula el pending en vez de repreguntar en loop.
+    if (isCancelReply(userText)) {
+      await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
+      await notify({ ...sendCtx, text: 'Listo, no registré ningún pago. Si querés retomar, mandame de nuevo el comprobante.' })
+      return
+    }
+
     if (pendingItem.multiInvoice) {
       const selected = interpretMultiInvoiceResponse(userText, pendingItem.candidates)
       if (selected.length > 0) {
         await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
         const fechaPago = normalizeDate(pendingItem.extraction.fecha)
-        const esEfectivo = pendingItem.mediaMimeType === 'text/efectivo'
+        const metodoPendiente = methodFromMimeType(pendingItem.mediaMimeType)
         const paidList: string[] = []
         const errors: string[] = []
         let remaining = pendingItem.extraction.monto ?? 0
@@ -285,7 +292,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               invoiceId: inv.invoice_id,
               monto: pago,
               fecha: fechaPago,
-              method: esEfectivo ? 'Efectivo' : undefined,
+              method: metodoPendiente,
               entityType: pendingItem.bestDestination?.entity_type ?? undefined,
               entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
@@ -361,9 +368,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         console.log('[voucher] Staged for review after user clarification')
 
         const montoPago = pendingItem.extraction.monto ?? chosen.saldo_pendiente
-        // Los pendientes de texto-efectivo ("Jo pago en efectivo") pagan en
-        // efectivo también tras la clarificación A/B.
-        const esEfectivo = pendingItem.mediaMimeType === 'text/efectivo'
+        // Los pendientes de voucher por texto ("Jo pago en efectivo", "Jo pago
+        // en transferencia a Jorge") conservan su método tras la A/B.
+        const metodoPendiente = methodFromMimeType(pendingItem.mediaMimeType)
         if (montoPago > 0) {
           try {
             const fechaPago = normalizeDate(pendingItem.extraction.fecha)
@@ -371,7 +378,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
               invoiceId: chosen.invoice_id,
               monto: montoPago,
               fecha: fechaPago,
-              method: esEfectivo ? 'Efectivo' : undefined,
+              method: metodoPendiente,
               entityType: pendingItem.bestDestination?.entity_type ?? undefined,
               entityId: pendingItem.bestDestination?.entity_id ?? undefined,
             })
@@ -388,7 +395,12 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
       await notify({
         ...sendCtx,
-        text: `Confirmado. Pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)} registrado para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`,
+        text: (() => {
+          const metodo = methodFromMimeType(pendingItem.mediaMimeType)
+          const metodoLabel = metodo === 'Efectivo' ? ' en efectivo' : metodo === 'Transferencia' ? ' en transferencia' : ''
+          const destino = pendingItem.extraction.nombre_destino ? ` a ${pendingItem.extraction.nombre_destino}` : ''
+          return `Confirmado. Pago de ${formatMonto(pendingItem.extraction.monto ?? chosen.saldo_pendiente)}${metodoLabel}${destino} registrado para ${chosen.cliente_nombre} — Factura ${chosen.numero_factura}.`
+        })(),
       })
     } else {
       const lines = pendingItem.candidates.map(
@@ -1415,27 +1427,73 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 }
 
 /**
- * Texto-efectivo: reutiliza los 5 pasos de voucher-dryrun sin imagen.
- * Para "Jesus Daniel pago 48000 efectivo" — monto+cliente vienen de UnifiedExtraction.
- */
-/**
- * Efectivo sin monto ("Jo pago en efectivo"): busca facturas pendientes por
- * nombre de cliente y paga el total.
+ * Voucher por texto sin monto ("Jo pago en efectivo", "Jo pago en
+ * transferencia a Jorge"): busca facturas pendientes por nombre de cliente
+ * y paga el total.
  * - 0 facturas → avisa que no hay nada pendiente.
- * - 1 factura → la paga en efectivo y avisa.
+ * - 1 factura → la paga (con el método indicado) y avisa.
  * - N facturas → guarda pending y pregunta cuál (A/B/C).
  */
-async function processEfectivoSinMonto(args: {
+export type VoucherTextMethod = 'Efectivo' | 'Transferencia'
+
+function mimeForTextMethod(metodo: VoucherTextMethod): string {
+  return metodo === 'Efectivo' ? 'text/efectivo' : 'text/transferencia'
+}
+
+function methodFromMimeType(mime: string | null | undefined): VoucherTextMethod | undefined {
+  if (mime === 'text/efectivo') return 'Efectivo'
+  if (mime === 'text/transferencia') return 'Transferencia'
+  return undefined
+}
+
+/** Ids de los botones de confirmación de pago (transferencia por texto). */
+export const VOUCHER_CONFIRM_ID = 'voucher_confirm'
+export const VOUCHER_CANCEL_ID = 'voucher_cancel'
+
+/** "no", "cancelar", "mejor no"... → anula el pending en vez de repreguntar. */
+export function isCancelReply(text: string): boolean {
+  return /^(cancelar|cancelo|no|mejor no|todav[ií]a no|despu[eé]s)$/i.test(text.trim())
+}
+
+/**
+ * Pregunta de confirmación con botones y fallback a texto.
+ * Nada se registra hasta que el usuario confirma.
+ */
+async function askTransferConfirm(args: {
+  sendCtx: { accountId: string; userId: string; conversationId: string; contactId: string }
+  bodyText: string
+}): Promise<void> {
+  const { sendCtx, bodyText } = args
+  try {
+    await engineSendInteractiveButtons({
+      ...sendCtx,
+      bodyText,
+      buttons: [
+        { id: VOUCHER_CONFIRM_ID, title: 'Confirmar' },
+        { id: VOUCHER_CANCEL_ID, title: 'Cancelar' },
+      ],
+    })
+  } catch (err) {
+    console.error('[voucher] confirm buttons failed, text fallback:', err instanceof Error ? err.message : String(err))
+    await notify({ ...sendCtx, text: `${bodyText}\n\nRespondé SÍ para confirmar o CANCELAR para anular.` })
+  }
+}
+
+async function processVoucherSinMonto(args: {
   messageId: string
   contactId: string
   conversationId: string
   sendCtx: { accountId: string; userId: string; conversationId: string; contactId: string }
   clientName: string
+  destName: string | null
+  metodoPago: VoucherTextMethod
   fecha: string | null
 }): Promise<void> {
-  const { messageId, contactId, conversationId, sendCtx, clientName, fecha } = args
+  const { messageId, contactId, conversationId, sendCtx, clientName, destName, metodoPago, fecha } = args
   const db = supabaseAdmin()
-  console.log('[voucher-text] efectivo sin monto client=%s', clientName)
+  const metodoLabel = metodoPago === 'Efectivo' ? 'en efectivo' : 'en transferencia'
+  const destinoLabel = destName ? ` a ${destName}` : ''
+  console.log('[voucher-text] sin monto client=%s metodo=%s destino=%s', clientName, metodoPago, destName)
 
   let invoices: MatchVoucherCandidate[] = []
   let searchError: string | null = null
@@ -1443,6 +1501,7 @@ async function processEfectivoSinMonto(args: {
     const result = await matchVoucherByName({
       nombre_cliente: clientName,
       nombre_origen: clientName,
+      nombre_destino: destName,
       monto: null,
       tolerancia: 50,
       timeoutMs: 20_000,
@@ -1476,6 +1535,36 @@ async function processEfectivoSinMonto(args: {
 
   if (invoices.length === 1) {
     const inv = invoices[0]
+    if (metodoPago === 'Transferencia') {
+      // Confirmación previa: nada se registra hasta el SÍ del usuario.
+      await saveAttempt({
+        messageId,
+        contactId,
+        matchStatus: 'ambiguous',
+        extractedAmount: inv.saldo_pendiente,
+        extractedDate: fecha,
+        matchedInvoiceId: inv.invoice_id,
+      })
+      await addPendingVoucher(db, conversationId, {
+        sourceMessageId: messageId,
+        extraction: {
+          monto: inv.saldo_pendiente, fecha, referencia: null, banco: null,
+          nombre_cliente: clientName, nombre_origen: clientName,
+          nombre_destino: destName, cbu_destino: null, cuit_destino: null,
+        },
+        candidates: [inv],
+        bestDestination: null,
+        mediaBase64: '',
+        mediaMimeType: mimeForTextMethod(metodoPago),
+        multiInvoice: false,
+      })
+      console.log('[voucher-text] transferencia sin monto: 1 candidate, awaiting confirm')
+      await askTransferConfirm({
+        sendCtx,
+        bodyText: `Voy a registrar un pago de ${formatMonto(inv.saldo_pendiente)} en transferencia${destinoLabel} para ${inv.cliente_nombre} — Factura ${inv.numero_factura}. ¿Confirmás?`,
+      })
+      return
+    }
     await saveAttempt({
       messageId,
       contactId,
@@ -1495,7 +1584,7 @@ async function processEfectivoSinMonto(args: {
         extracted_banco: null,
         extracted_nombre_cliente: clientName,
         extracted_nombre_origen: clientName,
-        extracted_nombre_destino: null,
+        extracted_nombre_destino: destName,
         extracted_cbu_destino: null,
         extracted_cuit_destino: null,
         match_status: 'matched',
@@ -1514,7 +1603,7 @@ async function processEfectivoSinMonto(args: {
           cliente_nombre: inv.cliente_nombre,
           fecha: inv.fecha,
         }],
-        media_mime_type: 'text/efectivo',
+        media_mime_type: mimeForTextMethod(metodoPago),
         media_base64: '',
       })
     } catch (err) {
@@ -1525,9 +1614,9 @@ async function processEfectivoSinMonto(args: {
         invoiceId: inv.invoice_id,
         monto: inv.saldo_pendiente,
         fecha: normalizeDate(fecha),
-        method: 'Efectivo',
+        method: metodoPago,
       })
-      console.log('[voucher-text] Payment registered OK (Efectivo, total) invoice=%s amount=%s', inv.invoice_id, inv.saldo_pendiente)
+      console.log('[voucher-text] Payment registered OK (%s, total) invoice=%s amount=%s', metodoPago, inv.invoice_id, inv.saldo_pendiente)
     } catch (err) {
       console.error('[voucher-text] registrarPago failed:', err instanceof Error ? err.message : String(err))
       await notify({ ...sendCtx, text: `Encontramos la factura ${inv.numero_factura} de ${inv.cliente_nombre} (${formatMonto(inv.saldo_pendiente)}) pero no pudimos registrar el pago. Un agente lo revisará.` })
@@ -1535,7 +1624,7 @@ async function processEfectivoSinMonto(args: {
     }
     await notify({
       ...sendCtx,
-      text: `Confirmado. Pago de ${formatMonto(inv.saldo_pendiente)} en efectivo registrado para ${inv.cliente_nombre} — Factura ${inv.numero_factura}.`,
+      text: `Confirmado. Pago de ${formatMonto(inv.saldo_pendiente)} ${metodoLabel}${destinoLabel} registrado para ${inv.cliente_nombre} — Factura ${inv.numero_factura}.`,
     })
     return
   }
@@ -1553,44 +1642,46 @@ async function processEfectivoSinMonto(args: {
     extraction: {
       monto: null, fecha, referencia: null, banco: null,
       nombre_cliente: clientName, nombre_origen: clientName,
-      nombre_destino: null, cbu_destino: null, cuit_destino: null,
+      nombre_destino: destName, cbu_destino: null, cuit_destino: null,
     },
     candidates: invoices,
     bestDestination: null,
     mediaBase64: '',
-    mediaMimeType: 'text/efectivo',
+    mediaMimeType: mimeForTextMethod(metodoPago),
     multiInvoice: false,
   })
-  console.log('[voucher-text] efectivo sin monto: %d candidates, pending saved', invoices.length)
+  console.log('[voucher-text] sin monto: %d candidates, pending saved', invoices.length)
   const lines = invoices.map(
     (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
   )
   await notify({
     ...sendCtx,
-    text: `${clientName} tiene ${invoices.length} facturas pendientes. ¿Cuál pagó en efectivo?\n\n${lines.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`,
+    text: `${clientName} tiene ${invoices.length} facturas pendientes. ¿Cuál pagó ${metodoLabel}${destinoLabel}?\n\n${lines.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`,
   })
 }
 
-export async function processVoucherEfectivoText(args: {
+export async function processVoucherText(args: {
   messageId: string
   contactId: string
   conversationId: string
   accountId: string
   userId: string
   clientName: string
+  destName: string | null
+  metodoPago: VoucherTextMethod
   monto: number | null
   fecha: string | null
 }): Promise<void> {
-  const { messageId, contactId, conversationId, clientName, monto, fecha } = args
+  const { messageId, contactId, conversationId, clientName, destName, metodoPago, monto, fecha } = args
   const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId, contactId }
   const db = supabaseAdmin()
-  console.log('[voucher-text] START efectivo client=%s monto=%s fecha=%s', clientName, monto, fecha)
+  console.log('[voucher-text] START metodo=%s client=%s destino=%s monto=%s fecha=%s', metodoPago, clientName, destName, monto, fecha)
 
-  // ── Efectivo sin monto ("Jo pago en efectivo", "Mathias pago en efectivo todo"):
+  // ── Sin monto ("Jo pago en efectivo", "Jo pago en transferencia a Jorge"):
   // se busca por nombre y se paga el total de la factura.
   // 1 factura → se paga y se avisa. N facturas → se pregunta cuál (A/B/C).
   if (monto == null) {
-    await processEfectivoSinMonto({ messageId, contactId, conversationId, sendCtx, clientName, fecha })
+    await processVoucherSinMonto({ messageId, contactId, conversationId, sendCtx, clientName, destName, metodoPago, fecha })
     return
   }
 
@@ -1601,14 +1692,19 @@ export async function processVoucherEfectivoText(args: {
     banco: null,
     nombre_cliente: clientName,
     nombre_origen: clientName,
-    nombre_destino: null,
+    nombre_destino: destName,
     cbu_destino: null,
     cuit_destino: null,
   })
 
-  const { matchStatus, candidates, matchedInvoiceId, matchedInvoiceNumero, matchedClienteNombre, matchedSaldoPendiente, bestDestination, mensajeRespuesta, debugInfo, errorMessage } = dry
+  const { matchStatus, candidates, matchedInvoiceId, matchedInvoiceNumero, matchedClienteNombre, matchedSaldoPendiente, bestDestination, mensajeRespuesta: mensajeDry, debugInfo, errorMessage } = dry
+  // Aclarar método y destino en la respuesta (el dry-run es genérico).
+  const destinoSufijo = destName ? ` Destino: ${destName}.` : ''
+  const mensajeRespuesta = metodoPago === 'Transferencia' && matchStatus === 'matched'
+    ? `${mensajeDry}${destinoSufijo}`
+    : mensajeDry
 
-  // Auditoría voucher_extractions para texto-efectivo
+  // Auditoría voucher_extractions para voucher por texto
   await saveAttempt({
     messageId,
     contactId,
@@ -1621,6 +1717,34 @@ export async function processVoucherEfectivoText(args: {
   })
 
   if (matchStatus === 'matched' && matchedInvoiceId) {
+    if (metodoPago === 'Transferencia') {
+      // Confirmación previa: nada se registra hasta el SÍ del usuario.
+      await addPendingVoucher(db, conversationId, {
+        sourceMessageId: messageId,
+        extraction: { monto, fecha, referencia: null, banco: null, nombre_cliente: clientName, nombre_origen: clientName, nombre_destino: destName, cbu_destino: null, cuit_destino: null },
+        candidates: candidates.length > 0 ? candidates : [{
+          invoice_id: matchedInvoiceId,
+          numero_factura: matchedInvoiceNumero ?? '',
+          cliente_nombre: matchedClienteNombre ?? clientName,
+          cliente_telefono: '',
+          saldo_pendiente: matchedSaldoPendiente ?? monto,
+          total: matchedSaldoPendiente ?? monto,
+          fecha: fecha ?? '',
+          score: 1,
+        }],
+        bestDestination,
+        mediaBase64: '',
+        mediaMimeType: mimeForTextMethod(metodoPago),
+        multiInvoice: false,
+      })
+      console.log('[voucher-text] transferencia con monto: matched, awaiting confirm')
+      await askTransferConfirm({
+        sendCtx,
+        bodyText: `Voy a registrar un pago de ${formatMonto(monto)} en transferencia${destName ? ` a ${destName}` : ''} para ${matchedClienteNombre ?? clientName} — Factura ${matchedInvoiceNumero ?? ''}. ¿Confirmás?`,
+      })
+      console.log('[voucher-text] END status=awaiting_confirm')
+      return
+    }
     // Stage + pago real (sin media)
     try {
       await createVoucherReview({
@@ -1633,7 +1757,7 @@ export async function processVoucherEfectivoText(args: {
         extracted_banco: null,
         extracted_nombre_cliente: clientName,
         extracted_nombre_origen: clientName,
-        extracted_nombre_destino: null,
+        extracted_nombre_destino: destName,
         extracted_cbu_destino: null,
         extracted_cuit_destino: null,
         match_status: 'matched',
@@ -1652,7 +1776,7 @@ export async function processVoucherEfectivoText(args: {
           cliente_nombre: c.cliente_nombre,
           fecha: c.fecha,
         })),
-        media_mime_type: 'text/efectivo',
+        media_mime_type: mimeForTextMethod(metodoPago),
         media_base64: '',
       })
     } catch (err) {
@@ -1664,11 +1788,11 @@ export async function processVoucherEfectivoText(args: {
         invoiceId: matchedInvoiceId,
         monto,
         fecha: fechaPago,
-        method: 'Efectivo',
+        method: metodoPago,
         entityType: bestDestination?.entity_type ?? undefined,
         entityId: bestDestination?.entity_id ?? undefined,
       })
-      console.log('[voucher-text] Payment registered OK (Efectivo) invoice=%s amount=%s', matchedInvoiceId, monto)
+      console.log('[voucher-text] Payment registered OK (%s) invoice=%s amount=%s', metodoPago, matchedInvoiceId, monto)
     } catch (err) {
       console.error('[voucher-text] registrarPago failed:', err instanceof Error ? err.message : String(err))
     }
@@ -1676,11 +1800,11 @@ export async function processVoucherEfectivoText(args: {
     // Guardar pending para A/B
     await addPendingVoucher(db, conversationId, {
       sourceMessageId: messageId,
-      extraction: { monto, fecha, referencia: null, banco: null, nombre_cliente: clientName, nombre_origen: clientName, nombre_destino: null, cbu_destino: null, cuit_destino: null },
+      extraction: { monto, fecha, referencia: null, banco: null, nombre_cliente: clientName, nombre_origen: clientName, nombre_destino: destName, cbu_destino: null, cuit_destino: null },
       candidates,
       bestDestination,
       mediaBase64: '',
-      mediaMimeType: 'text/efectivo',
+      mediaMimeType: mimeForTextMethod(metodoPago),
       multiInvoice: matchStatus === 'multi_invoice',
     })
     console.log('[voucher-text] ambiguous/multi pending saved candidates=%s', candidates.length)

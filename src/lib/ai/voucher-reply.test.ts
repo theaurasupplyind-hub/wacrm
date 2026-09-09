@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isVoucherClarificationReply } from './voucher-pipeline'
+import { isVoucherClarificationReply, isCancelReply } from './voucher-pipeline'
 import type { MatchVoucherCandidate } from '../facbal/client'
 
 function cand(overrides: Partial<MatchVoucherCandidate> = {}): MatchVoucherCandidate {
@@ -49,5 +49,19 @@ describe('isVoucherClarificationReply (Fix 5)', () => {
     expect(isVoucherClarificationReply('2 bastidores 60x40', two)).toBe(false)
     expect(isVoucherClarificationReply('Eze llego a las 9.15', two)).toBe(false)
     expect(isVoucherClarificationReply('B', [])).toBe(false)
+  })
+})
+
+describe('isCancelReply (confirmación transferencia)', () => {
+  it('anula con no/cancelar/mejor no', () => {
+    expect(isCancelReply('no')).toBe(true)
+    expect(isCancelReply('cancelar')).toBe(true)
+    expect(isCancelReply('mejor no')).toBe(true)
+  })
+
+  it('no anula respuestas válidas', () => {
+    expect(isCancelReply('sí')).toBe(false)
+    expect(isCancelReply('B')).toBe(false)
+    expect(isCancelReply('Jo Pérez')).toBe(false)
   })
 })
