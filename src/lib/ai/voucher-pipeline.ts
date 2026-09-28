@@ -112,6 +112,39 @@ function normalizeSelectionText(text: string): string {
 }
 
 /**
+ * Extrae un nombre de cliente de una respuesta de corrección:
+ * "el cliente es Test", "es Test", "es para Test", "Test" (nombre suelto).
+ * Usa `sanitizeClientName` para descartar basura. Null si no hay nombre.
+ */
+export function extractClientNameFromReply(text: string): string | null {
+  const t = (text || '').trim()
+  if (!t) return null
+  const patterns = [
+    /^(?:el\s+|la\s+)?cliente\s+es\s+(.+)$/i,
+    /^es\s+para\s+(.+)$/i,
+    /^es\s+(.+)$/i,
+    /^para\s+(.+)$/i,
+    /^a\s+nombre\s+de\s+(.+)$/i,
+  ]
+  for (const re of patterns) {
+    const m = t.match(re)
+    if (m?.[1]) {
+      const name = sanitizeClientName(m[1].replace(/[?¿!.,;:]+$/g, '').trim())
+      if (name) return name
+    }
+  }
+  // Nombre suelto (1 a 3 palabras) — pero no si parece una letra/número/respuesta.
+  if (!/^[a-zA-Z](\s*,\s*[a-zA-Z])+$/.test(t) && !/^[a-zA-Z]$/.test(t) && !/^\d{1,3}$/.test(t)) {
+    const words = t.split(/\s+/).filter(Boolean)
+    if (words.length >= 1 && words.length <= 3 && /^[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(t)) {
+      const name = sanitizeClientName(t)
+      if (name) return name
+    }
+  }
+  return null
+}
+
+/**
  * ¿El texto parece una respuesta a la aclaración pendiente del voucher
  * (letra, número, "sí", n° de factura, nombre de candidato)?
  * Se usa en el webhook para no robar órdenes nuevas (pedidos, gastos,
@@ -348,7 +381,53 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       }
       return
     }
-    const chosen = interpretUserResponse(userText, pendingItem.candidates)
+    let chosen = interpretUserResponse(userText, pendingItem.candidates)
+    // ── Corrección de nombre: "el cliente es X" / "es X" / nombre suelto ──
+    // Si la respuesta no elige una candidata pero nombra un cliente, se
+    // re-busca por ese nombre (sin depender de las candidatas previas).
+    if (!chosen) {
+      const nameGuess = extractClientNameFromReply(userText)
+      if (nameGuess) {
+        try {
+          const re = await matchVoucherByName({
+            nombre_cliente: nameGuess,
+            nombre_origen: nameGuess,
+            nombre_destino: null,
+            cbu_destino: null,
+            cuit_destino: null,
+            monto: pendingItem.extraction.monto,
+            tolerancia: 50,
+          })
+          const cands = (re.invoice_candidates || []).filter(
+            (c) => c.saldo_pendiente > 0 && c.score >= NAME_MATCH_THRESHOLD,
+          )
+          console.log('[voucher] name correction "%s" -> %d candidates', nameGuess, cands.length)
+          if (cands.length === 1) {
+            chosen = cands[0]
+          } else if (cands.length > 1) {
+            await removePendingVoucher(db, conversationId, pendingItem.sourceMessageId)
+            await addPendingVoucher(db, conversationId, {
+              ...pendingItem,
+              candidates: cands.slice(0, 15),
+              multiInvoice: false,
+            })
+            const lines = cands.slice(0, 15).map(
+              (c, i) => `${labelForIndex(i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`,
+            )
+            await notify({
+              ...sendCtx,
+              text: `${nameGuess} tiene ${cands.length} facturas pendientes:\n\n${lines.join('\n')}\n\nRespondé con la letra de la opción (A, B, C...).`,
+            })
+            return
+          } else {
+            await notify({ ...sendCtx, text: `No encontré facturas pendientes de ${nameGuess}.` })
+            return
+          }
+        } catch (err) {
+          console.error('[voucher] name correction search failed:', err instanceof Error ? err.message : String(err))
+        }
+      }
+    }
     // "sí" pelado con N candidatos: no se sabe a cuál se refiere → pregunta
     // cuál, ofreciendo AMBAS. ("todas"/"ambas" sí pagan todo, van abajo.)
     if (!chosen && isBareYes(userText) && pendingItem.candidates.length > 1) {
@@ -1172,25 +1251,19 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     } else if (candidatePool.length === 1) {
       const entry = candidatePool[0]
       if (entry.type === 'single') {
+        // 1 factura con monto exacto → se registra directo (no se pregunta).
+        // Solo con VARIAS facturas se pregunta cuál.
         const bestInvoice = entry.invoices[0]
-        const nombreExtraido = voucher.nombre_origen?.trim() || voucher.nombre_cliente?.trim() || null
-        if (nombreExtraido && bestInvoice.score < NAME_MATCH_THRESHOLD) {
-          matchStatus = 'ambiguous'
-          candidates = entry.invoices
-          mensajeRespuesta = `El pago de ${formatMonto(entry.total)} coincide exactamente con la factura ${bestInvoice.numero_factura} de ${bestInvoice.cliente_nombre}, pero el nombre del remitente es "${nombreExtraido}". \n\n¿Es correcto? Respondé "sí" para confirmar.`
-          console.log('[voucher-debug] Decision: ambiguous (name_mismatch, invoice=%s, nombre="%s", score=%s)', bestInvoice.numero_factura, nombreExtraido, bestInvoice.score)
-        } else {
-          matchStatus = 'matched'
-          matchedInvoiceId = bestInvoice.invoice_id
-          matchedInvoiceNumero = bestInvoice.numero_factura
-          matchedClienteNombre = bestInvoice.cliente_nombre
-          matchedSaldoPendiente = bestInvoice.saldo_pendiente
-          candidates = entry.invoices
-          mensajeRespuesta = bestInvoice.cliente_nombre
-            ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.`
-            : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
-          console.log('[voucher-debug] Decision: matched (single exact, invoice=%s)', bestInvoice.numero_factura)
-        }
+        matchStatus = 'matched'
+        matchedInvoiceId = bestInvoice.invoice_id
+        matchedInvoiceNumero = bestInvoice.numero_factura
+        matchedClienteNombre = bestInvoice.cliente_nombre
+        matchedSaldoPendiente = bestInvoice.saldo_pendiente
+        candidates = entry.invoices
+        mensajeRespuesta = bestInvoice.cliente_nombre
+          ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.`
+          : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
+        console.log('[voucher-debug] Decision: matched (single exact, invoice=%s)', bestInvoice.numero_factura)
       } else {
         matchStatus = 'multi_invoice'
         candidates = entry.invoices
@@ -1872,7 +1945,8 @@ export async function processVoucherText(args: {
 
   if (matchStatus === 'matched' && matchedInvoiceId) {
     if (metodoPago === 'Transferencia') {
-      // Confirmación previa: nada se registra hasta el SÍ del usuario.
+      // Confirmación previa de transferencia: nada se registra hasta el SÍ.
+      // Efectivo (y 1 factura exacta) registra directo.
       await addPendingVoucher(db, conversationId, {
         sourceMessageId: messageId,
         extraction: { monto, fecha, referencia: null, banco: null, nombre_cliente: clientName, nombre_origen: clientName, nombre_destino: destName, cbu_destino: null, cuit_destino: null },
@@ -1891,7 +1965,7 @@ export async function processVoucherText(args: {
         mediaMimeType: mimeForTextMethod(metodoPago),
         multiInvoice: false,
       })
-      console.log('[voucher-text] transferencia con monto: matched, awaiting confirm')
+      console.log('[voucher-text] matched (transferencia): awaiting confirm')
       await askTransferConfirm({
         sendCtx,
         bodyText: `Voy a registrar un pago de ${formatMonto(monto)} en transferencia${destName ? ` a ${destName}` : ''} para ${matchedClienteNombre ?? clientName} — Factura ${matchedInvoiceNumero ?? ''}. ¿Confirmás?`,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isVoucherClarificationReply, isCancelReply, isBareYes, hasRealMedia } from './voucher-pipeline'
+import { isVoucherClarificationReply, isCancelReply, isBareYes, hasRealMedia, extractClientNameFromReply } from './voucher-pipeline'
 import type { MatchVoucherCandidate } from '../facbal/client'
 
 function cand(overrides: Partial<MatchVoucherCandidate> = {}): MatchVoucherCandidate {
@@ -86,6 +86,23 @@ describe('isBareYes (sí pelado vs todas/ambas)', () => {
     expect(isBareYes('ambas')).toBe(false)
     expect(isBareYes('las dos')).toBe(false)
     expect(isBareYes('A y B')).toBe(false)
+  })
+})
+
+describe('extractClientNameFromReply (corrección de nombre)', () => {
+  it('extrae de frases de corrección', () => {
+    expect(extractClientNameFromReply('el cliente es Test')).toBe('Test')
+    expect(extractClientNameFromReply('es Test')).toBe('Test')
+    expect(extractClientNameFromReply('es para Test')).toBe('Test')
+    expect(extractClientNameFromReply('Test')).toBe('Test')
+  })
+
+  it('ignora letras, números y basura', () => {
+    expect(extractClientNameFromReply('A')).toBeNull()
+    expect(extractClientNameFromReply('2')).toBeNull()
+    expect(extractClientNameFromReply('A, B')).toBeNull()
+    expect(extractClientNameFromReply('gracias!')).toBeNull()
+    expect(extractClientNameFromReply('')).toBeNull()
   })
 })
 

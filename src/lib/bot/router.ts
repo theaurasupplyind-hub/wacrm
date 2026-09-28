@@ -61,7 +61,7 @@ function isAsistenciaIntent(intent: BotIntent | undefined): boolean {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending } = state
+  const { hasPendingExpense, hasPendingAttendance, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 

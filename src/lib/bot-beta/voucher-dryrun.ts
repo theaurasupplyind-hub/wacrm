@@ -25,6 +25,8 @@ export interface VoucherDryResult {
   matchedInvoiceNumero: string | null
   matchedClienteNombre: string | null
   matchedSaldoPendiente: number | null
+  /** Score del nombre elegido (para decidir si pedir confirmación). */
+  matchedNameScore: number | null
   bestDestination: DestinationCandidate | null
   mensajeRespuesta: string
   debugInfo: Record<string, unknown>
@@ -38,7 +40,7 @@ function formatMonto(n: number): string {
 function formatCandidatesMessage(cands: MatchVoucherCandidate[], monto: number | null): string {
   const clientesUnicos = new Set(cands.map(c => c.cliente_nombre)).size
   const intro = monto && monto > 0
-    ? `Recibimos un pago de ${formatMonto(monto)}. Hay ${clientesUnicos} clientes posibles con facturas cercanas a ese monto.\n\n`
+    ? `Recibimos un pago de ${formatMonto(monto)}. Hay ${clientesUnicos} ${clientesUnicos === 1 ? 'cliente posible' : 'clientes posibles'} con facturas cercanas a ese monto.\n\n`
     : 'Comprobante con las siguientes facturas pendientes:\n\n'
   return intro + cands.map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
 }
@@ -56,6 +58,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
   let matchedInvoiceNumero: string | null = null
   let matchedClienteNombre: string | null = null
   let matchedSaldoPendiente: number | null = null
+  let matchedNameScore: number | null = null
   let candidates: MatchVoucherCandidate[] = []
   const allDestinationCandidates: DestinationCandidate[] = []
   let bestDest: DestinationCandidate | null = null
@@ -69,6 +72,8 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     if (input.nombre_cliente && !sanitizeClientName(input.nombre_cliente)) {
       input = { ...input, nombre_cliente: null }
     }
+    // Texto: si hay un nombre provisto, manda (aunque el score sea bajo).
+    const hasProvidedName = !!(input.nombre_cliente || input.nombre_origen)
     interface PoolEntry { type: 'single' | 'sum'; invoices: MatchVoucherCandidate[]; total: number; clientName: string }
     const candidatePool: PoolEntry[] = []
     const poolInvoiceIds = new Set<number>()
@@ -179,15 +184,69 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
       if (bestMatch) if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) p4steps.push({ step: 'Add best name match', result: { factura: bestMatch.numero_factura, cliente: bestMatch.cliente_nombre, score: bestMatch.score, saldo: bestMatch.saldo_pendiente } })
       else p4steps.push({ step: 'Add best name match', result: { skipped: 'monto no coincide con saldo dentro de tolerancia' } })
     }
-    if (candidatePool.length === 0 && !nameIsReliable) {
+    // Solo pide el nombre si el voucher NO traía un nombre (si traía, manda el nombre).
+    if (candidatePool.length === 0 && !nameIsReliable && !hasProvidedName) {
       matchStatus = 'ambiguous'
       mensajeRespuesta = input.monto && input.monto > 0 ? `Recibimos un pago de ${formatMonto(input.monto)}. Decinos el nombre exacto del cliente para identificar la factura.` : 'Decinos el nombre exacto del cliente para identificar la factura.'
       p4steps.push({ step: 'Ask for client name', reason: 'name not reliable' })
     }
     debugInfo.phase4 = { hasName: !!hasName, nameIsReliable, nameCandidatesCount: nameCandidates.length, bestNameScore: nameCandidates.length > 0 ? Math.max(...nameCandidates.map(c => c.score)) : null, poolBefore: candidatePool.length, steps: p4steps, result: candidatePool.length }
 
-    if (candidatePool.length === 0 && matchStatus !== 'ambiguous') {
-      // Phase 5: Wide search
+    // ── Texto: el cliente nombrado manda (NO se ofrecen clientes ajenos) ──
+    // Si el nombre es confiable y no hubo match por monto, resolvemos con las
+    // facturas de ESE cliente (parcial si el saldo difiere) o avisamos que no
+    // tiene facturas. Se saltea el fallback amplio por monto.
+    let nameHandled = false
+    if (candidatePool.length === 0 && matchStatus !== 'ambiguous' && hasProvidedName) {
+      nameHandled = true
+      // Texto: el nombre explícito manda; se usan sus facturas aunque el score
+      // sea bajo (en ese caso `matchedNameScore` fuerza confirmación).
+      const clientInvoices = nameCandidates
+        .filter(c => c.saldo_pendiente > 0)
+        .sort((a, b) => b.score - a.score)
+      const nombre = input.nombre_cliente || input.nombre_origen || 'el cliente'
+      if (clientInvoices.length === 0) {
+        matchStatus = 'no_match'
+        mensajeRespuesta = `No encontré facturas pendientes de ${nombre}.`
+      } else {
+        const tol = input.monto && input.monto > 0 ? getMontoTolerancia(input.monto) : null
+        const within = tol != null
+          ? clientInvoices.filter(c => montoDistance(input.monto!, c.saldo_pendiente) <= tol)
+          : clientInvoices
+        if (within.length === 1) {
+          const c = within[0]
+          candidates = [c]
+          matchedNameScore = c.score
+          if (input.monto && input.monto > 0 && input.monto < c.saldo_pendiente) {
+            matchStatus = 'ambiguous'
+            mensajeRespuesta = `${c.cliente_nombre} tiene la factura ${c.numero_factura} con saldo ${formatMonto(c.saldo_pendiente)}. ¿El pago de ${formatMonto(input.monto)} es parcial? Respondé "sí" para confirmar.`
+          } else {
+            matchStatus = 'matched'
+            matchedInvoiceId = c.invoice_id
+            matchedInvoiceNumero = c.numero_factura
+            matchedClienteNombre = c.cliente_nombre
+            matchedSaldoPendiente = c.saldo_pendiente
+            mensajeRespuesta = `Confirmado. Pago de ${formatMonto(input.monto ?? c.saldo_pendiente)} registrado para ${c.cliente_nombre} — Factura ${c.numero_factura}.`
+          }
+        } else if (within.length > 1) {
+          matchStatus = 'ambiguous'
+          candidates = within
+          matchedNameScore = within[0].score
+          mensajeRespuesta = `${nombre} tiene ${within.length} facturas posibles:\n\n` + within.map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
+        } else {
+          const best = clientInvoices[0]
+          candidates = clientInvoices.slice(0, 15)
+          matchedNameScore = best.score
+          matchStatus = 'ambiguous'
+          mensajeRespuesta = `${best.cliente_nombre} tiene la factura ${best.numero_factura} con saldo ${formatMonto(best.saldo_pendiente)}, distinto al pago de ${formatMonto(input.monto ?? 0)}. ¿Querés registrar el pago parcial de ${formatMonto(input.monto ?? 0)}? Respondé "sí" para confirmar.`
+        }
+      }
+      p4steps.push({ step: 'Name-first (texto)', result: { clientInvoices: clientInvoices.length, status: matchStatus } })
+      debugInfo.phase4 = { hasName: !!hasName, nameIsReliable, nameCandidatesCount: nameCandidates.length, bestNameScore: clientInvoices.length > 0 ? clientInvoices[0].score : null, poolBefore: 0, steps: p4steps, result: candidatePool.length, nameFirst: true }
+    }
+
+    if (candidatePool.length === 0 && matchStatus !== 'ambiguous' && !nameHandled) {
+      // Phase 5: Wide search (solo cuando NO hay nombre confiable)
       let phase4Cands: MatchVoucherCandidate[] = []
       let phase4Timeout = false
       try {
@@ -205,7 +264,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
         candidates = phase4Cands
         matchStatus = 'ambiguous'
         const clientesUnicos = new Set(phase4Cands.map(c => c.cliente_nombre)).size
-        mensajeRespuesta = (input.monto && input.monto > 0 ? `Recibimos un pago de ${formatMonto(input.monto)}. Hay ${clientesUnicos} clientes posibles con facturas cercanas a ese monto.\n\n` : 'No pudimos leer el monto. Estas son las facturas pendientes:\n\n') + phase4Cands.map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
+        mensajeRespuesta = (input.monto && input.monto > 0 ? `Recibimos un pago de ${formatMonto(input.monto)}. Hay ${clientesUnicos} ${clientesUnicos === 1 ? 'cliente posible' : 'clientes posibles'} con facturas cercanas a ese monto.\n\n` : 'No pudimos leer el monto. Estas son las facturas pendientes:\n\n') + phase4Cands.map((c, i) => `${String.fromCharCode(65 + i)}. ${c.cliente_nombre} — Factura ${c.numero_factura} — Saldo: ${formatMonto(c.saldo_pendiente)}`).join('\n') + '\n\nRespondé con la letra de la opción (A, B, C...).'
       } else if (phase4Cands.length > 15 || phase4Timeout) {
         matchStatus = 'ambiguous'
         mensajeRespuesta = input.monto && input.monto > 0 ? `Recibimos un pago de ${formatMonto(input.monto)}. Decinos el nombre exacto del cliente para identificar la factura.` : 'Decinos el nombre exacto del cliente para identificar la factura.'
@@ -217,31 +276,27 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     } else if (candidatePool.length === 1) {
       const entry = candidatePool[0]
       if (entry.type === 'single') {
+        // 1 factura con monto exacto → matched directo (no se pregunta).
         const bestInvoice = entry.invoices[0]
-        const nombreExtraido = input.nombre_origen?.trim() || input.nombre_cliente?.trim() || null
-        if (nombreExtraido && bestInvoice.score < NAME_MATCH_THRESHOLD) {
-          matchStatus = 'ambiguous'
-          candidates = entry.invoices
-          mensajeRespuesta = `El pago de ${formatMonto(entry.total)} coincide exactamente con la factura ${bestInvoice.numero_factura} de ${bestInvoice.cliente_nombre}, pero el nombre del remitente es "${nombreExtraido}". \n\n¿Es correcto? Respondé "sí" para confirmar.`
+        matchedNameScore = nameCandidates.find(c => c.invoice_id === bestInvoice.invoice_id)?.score ?? null
+        matchStatus = 'matched'
+        matchedInvoiceId = bestInvoice.invoice_id
+        matchedInvoiceNumero = bestInvoice.numero_factura
+        matchedClienteNombre = bestInvoice.cliente_nombre
+        matchedSaldoPendiente = bestInvoice.saldo_pendiente
+        candidates = entry.invoices
+        if (input.monto && input.monto > 0 && input.monto !== entry.total) {
+          const restante = matchedSaldoPendiente - input.monto
+          mensajeRespuesta = bestInvoice.cliente_nombre
+            ? `Se registraría pago parcial de ${formatMonto(input.monto)} para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
+            : `Se registraría pago parcial de ${formatMonto(input.monto)} para la factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
         } else {
-          matchStatus = 'matched'
-          matchedInvoiceId = bestInvoice.invoice_id
-          matchedInvoiceNumero = bestInvoice.numero_factura
-          matchedClienteNombre = bestInvoice.cliente_nombre
-          matchedSaldoPendiente = bestInvoice.saldo_pendiente
-          candidates = entry.invoices
-          if (input.monto && input.monto > 0 && input.monto !== entry.total) {
-            const restante = matchedSaldoPendiente - input.monto
-            mensajeRespuesta = bestInvoice.cliente_nombre
-              ? `Se registraría pago parcial de ${formatMonto(input.monto)} para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
-              : `Se registraría pago parcial de ${formatMonto(input.monto)} para la factura ${bestInvoice.numero_factura} (saldo ${formatMonto(matchedSaldoPendiente)} → queda ${formatMonto(restante > 0 ? restante : 0)}).`
-          } else {
-            mensajeRespuesta = bestInvoice.cliente_nombre ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.` : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
-          }
+          mensajeRespuesta = bestInvoice.cliente_nombre ? `Confirmado. Pago de ${formatMonto(entry.total)} registrado para ${bestInvoice.cliente_nombre} — Factura ${bestInvoice.numero_factura}.` : `Confirmado. Pago de ${formatMonto(entry.total)} registrado para la factura ${bestInvoice.numero_factura}.`
         }
       } else {
         matchStatus = 'multi_invoice'
         candidates = entry.invoices
+        matchedNameScore = nameCandidates.find(c => entry.invoices.some(i => i.invoice_id === c.invoice_id))?.score ?? null
         mensajeRespuesta = formatMultiInvoiceMessage(entry.invoices, input.monto, entry.clientName)
       }
     } else if (candidatePool.length > 1) {
@@ -252,7 +307,8 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     }
 
     // Sticky Fase 1 (igual que prod): no_match + pool vacío + 1 exacto → matched.
-    const sticky = pickStickyExact(phase1Exact, matchStatus, candidatePool.length)
+    // Con nombre confiable NO se aplica: evitaría pagar a un cliente ajeno.
+    const sticky = nameHandled ? null : pickStickyExact(phase1Exact, matchStatus, candidatePool.length)
     if (sticky) {
       matchStatus = 'matched'
       matchedInvoiceId = sticky.invoice_id
@@ -276,5 +332,5 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     mensajeRespuesta = 'No pudimos procesar el comprobante en modo prueba.'
   }
 
-  return { matchStatus, candidates, matchedInvoiceId, matchedInvoiceNumero, matchedClienteNombre, matchedSaldoPendiente, bestDestination: bestDest, mensajeRespuesta, debugInfo, errorMessage }
+  return { matchStatus, candidates, matchedInvoiceId, matchedInvoiceNumero, matchedClienteNombre, matchedSaldoPendiente, matchedNameScore, bestDestination: bestDest, mensajeRespuesta, debugInfo, errorMessage }
 }
