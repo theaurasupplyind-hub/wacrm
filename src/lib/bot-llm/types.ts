@@ -5,7 +5,6 @@ export type BotIntent =
   | 'gasto'
   | 'multi_expense'
   | 'voucher'
-  | 'pedido'
   | 'factura'
   | 'otro'
 
@@ -89,7 +88,7 @@ export interface UnifiedExtraction {
   /** Distribución completa de probabilidades del intent. */
   jev_probabilities?: Record<string, number> | null
   /** Dominio de pendiente al que responde el mensaje. */
-  jev_pending_domain?: 'expense' | 'attendance' | 'voucher' | 'voice' | 'none' | null
+  jev_pending_domain?: 'expense' | 'attendance' | 'voucher' | 'none' | null
   /** Probabilidad de que el mensaje responda al pendiente (noul). */
   jev_answers_pending?: number | null
   /** Probabilidad de que sea una orden nueva que reemplaza el pendiente (noul). */

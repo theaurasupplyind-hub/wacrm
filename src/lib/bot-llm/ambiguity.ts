@@ -85,9 +85,6 @@ export function detectAmbiguity(
         intent: isSalida ? 'asistencia_salida' : 'asistencia_llegada',
       })
     }
-    if (/bastidor|acr[ií]lico|circular|tela|lienzo|marco|moldura|presupuesto|precio/i.test(text)) {
-      options.push({ id: 'clarify_pedido', title: 'Es un pedido', intent: 'pedido' })
-    }
     if (/deuda|saldo|debe|factura/i.test(text)) {
       options.push({ id: 'clarify_factura', title: 'Consulta de deuda', intent: 'factura' })
     }

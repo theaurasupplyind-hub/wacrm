@@ -21,7 +21,7 @@ function shouldCallTools(extraction: UnifiedExtraction | null, text: string): bo
   const q = text.toLowerCase()
   // Identidad: nunca tools (evita listExpenses para "quien sos")
   if (/quien\s*(sos|eres|es)\b/.test(q) || /\bque\s*sos\b/.test(q) || q.trim() === 'quien sos' || q.trim() === 'quien eres') return false
-  const factualKeywords = ['cuanto', 'cuánto', 'cuando', 'cuándo', 'quien', 'quién', 'cuantos', 'qué', 'que paso', 'saldo', 'debo', 'debe', 'gasto', 'gasté', 'gaste', 'hoy', 'ayer', 'factura', 'proveedor', 'empleado', 'asistencia', 'faltó', 'falto', 'llegó', 'precio', 'presupuesto']
+  const factualKeywords = ['cuanto', 'cuánto', 'cuando', 'cuándo', 'quien', 'quién', 'cuantos', 'qué', 'que paso', 'saldo', 'debo', 'debe', 'gasto', 'gasté', 'gaste', 'hoy', 'ayer', 'factura', 'facturas', 'tiene', 'proveedor', 'empleado', 'asistencia', 'faltó', 'falto', 'llegó', 'pagó', 'pago']
   const hasFactualKeyword = factualKeywords.some((k) => q.includes(k))
   // Siempre tools si intent no es "otro" con baja, o si hay keyword factual
   if (extraction.intent !== 'otro' && extraction.confianza !== 'baja') return true

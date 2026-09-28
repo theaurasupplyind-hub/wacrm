@@ -222,12 +222,12 @@ describe('extractBotMessage — Jev (System One)', () => {
       intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
       faltan_campos: [], dudoso: false, razon_duda: null,
     })
-    mockJev('pedido', 0.9)
+    mockJev('factura', 0.9)
     const r = await extractBotMessage('pagué 18 mil de luz')
-    expect(r.intent).toBe('pedido')
+    expect(r.intent).toBe('factura')
     expect(r.jev_used).toBe(true)
     expect(r.monto).toBe(18000)
-    expect(r.jev_intent).toBe('pedido')
+    expect(r.jev_intent).toBe('factura')
   })
 
   it('activo con confianza baja: conserva el intent del LLM', async () => {
@@ -237,11 +237,11 @@ describe('extractBotMessage — Jev (System One)', () => {
       intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
       faltan_campos: [], dudoso: false, razon_duda: null,
     })
-    mockJev('pedido', 0.4)
+    mockJev('factura', 0.4)
     const r = await extractBotMessage('pagué 18 mil de luz')
     expect(r.intent).toBe('gasto')
     expect(r.jev_used).toBe(false)
-    expect(r.jev_intent).toBe('pedido')
+    expect(r.jev_intent).toBe('factura')
   })
 
   it('shadow: Jev no decide, solo aporta debug', async () => {
@@ -251,11 +251,11 @@ describe('extractBotMessage — Jev (System One)', () => {
       intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
       faltan_campos: [], dudoso: false, razon_duda: null,
     })
-    mockJev('pedido', 0.99)
+    mockJev('factura', 0.99)
     const r = await extractBotMessage('pagué 18 mil de luz')
     expect(r.intent).toBe('gasto')
     expect(r.jev_used).toBe(false)
-    expect(r.jev_intent).toBe('pedido')
+    expect(r.jev_intent).toBe('factura')
   })
 
   it('Jev falla: el pipeline del LLM sigue intacto', async () => {

@@ -6,11 +6,6 @@ export interface BotContextInput {
   expenseCtx?: ExpenseContextState | null
   attendanceCtx?: AttendanceContextState | null
   voucherCtx?: VoucherContextState | null
-  voiceCtx?: {
-    pendingVariantItems?: unknown[] | null
-    pendingClientName?: string | null
-    pendingInvoice?: unknown | null
-  } | null
 }
 
 /**
@@ -77,13 +72,6 @@ export function buildBotContextText(input: BotContextInput): string {
     lines.push(
       `Voucher: hay ${vc.pending.length} comprobante(s) pendiente(s) de confirmar. El usuario puede responder con una letra (A, B...), "sí", o un nombre.`,
     )
-  }
-
-  const vo = input.voiceCtx
-  if (vo?.pendingVariantItems && vo.pendingVariantItems.length > 0) {
-    lines.push('Pedido pendiente: el usuario debe elegir una variante de producto (sin tela, lienzo profesional, etc.).')
-  } else if (vo?.pendingClientName) {
-    lines.push('Pedido pendiente: se está esperando el nombre del cliente.')
   }
 
   return lines.join('\n')

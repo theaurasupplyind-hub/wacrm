@@ -26,13 +26,12 @@ function extraction(overrides: Partial<UnifiedExtraction>): UnifiedExtraction {
   } as UnifiedExtraction
 }
 
-describe('decideDispatch hasPendingVoice guard', () => {
+describe('decideDispatch routing', () => {
   it('otro sin pendings → assistant', () => {
     const r = decideDispatch({
       hasPendingExpense: false,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'hola',
@@ -43,66 +42,32 @@ describe('decideDispatch hasPendingVoice guard', () => {
     expect(r.dispatchReason).toBe('intent')
   })
 
-  it('otro con hasPendingVoice true → voice (no roba confirmación)', () => {
-    const r = decideDispatch({
-      hasPendingExpense: false,
-      hasPendingAttendance: false,
-      hasPendingVoucher: false,
-      hasPendingVoice: true,
-      flowConsumed: false,
-      interactiveReplyId: null,
-      inboundText: 'dale',
-      extraction: extraction({ intent: 'otro', confianza: 'alta' }),
-      mediaConsumedByVoucher: false,
-    })
-    expect(r.dispatchedTo).toBe('voice')
-    expect(r.dispatchReason).toBe('pending_multiturn')
-  })
-
-  it('respuesta_confirmacion con pendingInvoice (via hasPendingVoice) → voice', () => {
-    const r = decideDispatch({
-      hasPendingExpense: false,
-      hasPendingAttendance: false,
-      hasPendingVoucher: false,
-      hasPendingVoice: true,
-      flowConsumed: false,
-      interactiveReplyId: null,
-      inboundText: 'si',
-      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
-      mediaConsumedByVoucher: false,
-    })
-    expect(r.dispatchedTo).toBe('voice')
-  })
-
-  it('pedido alta → voice', () => {
-    const r = decideDispatch({
-      hasPendingExpense: false,
-      hasPendingAttendance: false,
-      hasPendingVoucher: false,
-      hasPendingVoice: false,
-      flowConsumed: false,
-      interactiveReplyId: null,
-      inboundText: '2 bastidores 60x40',
-      extraction: extraction({ intent: 'pedido', confianza: 'alta' }),
-      mediaConsumedByVoucher: false,
-    })
-    expect(r.dispatchedTo).toBe('voice')
-  })
-
-  it('expense con hasPendingVoice true pero intent gasto → expense (pendingExpense wins)', () => {
+  it('gasto pendiente + intent gasto → expense', () => {
     const r = decideDispatch({
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: true,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'pagué 5000',
       extraction: extraction({ intent: 'gasto', confianza: 'alta' }),
       mediaConsumedByVoucher: false,
     })
-    // pendingExpense is checked before hasPendingVoice guard, so expense wins
     expect(r.dispatchedTo).toBe('expense')
+  })
+
+  it('texto no clasificado → assistant (nunca queda mudo)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: false,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: '2 bastidores 60x40',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('assistant')
   })
 })
 
@@ -112,7 +77,6 @@ describe('decideDispatch strong-intent escape (Fix 1)', () => {
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'Eze llego a las 9.15',
@@ -128,7 +92,6 @@ describe('decideDispatch strong-intent escape (Fix 1)', () => {
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'Se fue a las 17.18',
@@ -143,7 +106,6 @@ describe('decideDispatch strong-intent escape (Fix 1)', () => {
       hasPendingExpense: false,
       hasPendingAttendance: true,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'pagué 5000 de luz',
@@ -158,7 +120,6 @@ describe('decideDispatch strong-intent escape (Fix 1)', () => {
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: '5000',
@@ -176,7 +137,6 @@ describe('decideDispatch jevPending (System One)', () => {
       hasPendingExpense: false,
       hasPendingAttendance: false,
       hasPendingVoucher: true,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'la 2',
@@ -193,7 +153,6 @@ describe('decideDispatch jevPending (System One)', () => {
       hasPendingExpense: false,
       hasPendingAttendance: false,
       hasPendingVoucher: true,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'cuánto debo',
@@ -209,7 +168,6 @@ describe('decideDispatch jevPending (System One)', () => {
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: 'gracias, después sigo',
@@ -225,7 +183,6 @@ describe('decideDispatch jevPending (System One)', () => {
       hasPendingExpense: true,
       hasPendingAttendance: false,
       hasPendingVoucher: false,
-      hasPendingVoice: false,
       flowConsumed: false,
       interactiveReplyId: null,
       inboundText: '5000',

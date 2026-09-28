@@ -1,11 +1,10 @@
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
 import type { JevPendingSignal } from '@/lib/bot-llm/classify-jev'
-import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
 
-export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'voice' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
+export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
 export type DispatchReason =
   | 'pending_multiturn'
   | 'pending_expired'
@@ -40,7 +39,6 @@ export interface RouterState {
   hasPendingExpense: boolean
   hasPendingAttendance: boolean
   hasPendingVoucher: boolean
-  hasPendingVoice?: boolean
   flowConsumed: boolean
   interactiveReplyId: string | null
   inboundText: string
@@ -63,7 +61,7 @@ function isAsistenciaIntent(intent: BotIntent | undefined): boolean {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, hasPendingVoice, flowConsumed, interactiveReplyId, inboundText, extraction, mediaConsumedByVoucher, jevPending } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -71,9 +69,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (flowConsumed) return { dispatchedTo: 'flow', dispatchReason: 'consumed' }
   if (interactiveReplyId) return { dispatchedTo: 'interactive', dispatchReason: 'consumed' }
 
-  const suppressVoice = !shouldSuppressVoiceOrder({ hasPendingExpense, hasPendingVoucher, hasPendingAttendance, flowConsumed, mediaConsumedByVoucher })
-
-  // Primary dispatch — mirrors webhook route.ts:1538-1600
+  // Primary dispatch — mirrors webhook route.ts
   if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
     return { dispatchedTo: 'expense', dispatchReason: 'category_correction' }
   }
@@ -90,7 +86,6 @@ export function decideDispatch(state: RouterState): RouterDecision {
     if (jevPending.domain === 'expense') return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }
     if (jevPending.domain === 'attendance') return { dispatchedTo: 'attendance', dispatchReason: 'pending_multiturn' }
     if (jevPending.domain === 'voucher') return { dispatchedTo: 'voucher', dispatchReason: 'pending_multiturn' }
-    if (jevPending.domain === 'voice') return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
   }
   // Escape de intent fuerte: un mensaje completo nuevo (confianza alta/media)
   // no debe quedar atrapado por un pendiente abandonado de otro dominio.
@@ -126,23 +121,16 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (intent === 'voucher') {
     return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
   }
-  // Guard de confirmación: si hay presupuesto/variante pendiente, la confirmación no debe ir al asistente
-  // Conversacional / deuda: "cuanto debe" siempre va al asistente, nunca a voice (evita "No se reconoció ningún producto")
-  const conversationalDebtRe = /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades/i
-  if (inboundText && conversationalDebtRe.test(inboundText) && !hasPendingVoice) {
+  // Conversacional / deuda: "cuanto debe", saludos, capacidades → asistente.
+  const conversationalDebtRe = /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades|tiene alguna factura|facturas de/i
+  if (inboundText && conversationalDebtRe.test(inboundText)) {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
-  }
-  if (hasPendingVoice && !jevSupersede) {
-    return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
   }
   if (intent === 'factura') {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
   if (intent === 'otro') {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
-  }
-  if (intent === 'pedido' && confianza !== 'baja' && suppressVoice) {
-    return { dispatchedTo: 'voice', dispatchReason: 'intent' }
   }
 
   // Fallback regex gates — mirrors webhook fallback
@@ -153,12 +141,10 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (!flowConsumed && !interactiveReplyId && inboundText.trim() && ((hasPendingAttendance && !jevSupersede) || looksLikeAttendance(inboundText))) {
     return { dispatchedTo: 'attendance', dispatchReason: 'fallback_regex' }
   }
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {
-    // No atrapar conversacional deuda en fallback voice
-    if (/cu[aá]nto debe|saldo|deuda|qu[eé] pod[eé]s|qui[eé]n sos/i.test(inboundText)) {
-      return { dispatchedTo: 'assistant', dispatchReason: 'fallback_regex' }
-    }
-    return { dispatchedTo: 'voice', dispatchReason: 'fallback_regex' }
+  // Sin dominio de pedidos, cualquier texto no clasificado va al asistente
+  // (que responde o pide aclaración: nunca queda mudo).
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    return { dispatchedTo: 'assistant', dispatchReason: 'fallback_regex' }
   }
 
   return { dispatchedTo: 'none', dispatchReason: 'none' }

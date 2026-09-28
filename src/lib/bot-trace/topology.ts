@@ -45,7 +45,6 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'ctx_expense', label: 'Contexto gasto', kind: 'context' },
     { id: 'ctx_attendance', label: 'Contexto asistencia', kind: 'context' },
     { id: 'ctx_voucher', label: 'Contexto voucher', kind: 'context' },
-    { id: 'ctx_voice', label: 'Contexto pedido', kind: 'context' },
     { id: 'ctx_clarify', label: 'Contexto aclaración', kind: 'context' },
 
     // Handlers por tipo de media / evento.
@@ -57,7 +56,6 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     },
     { id: 'h_expense', label: 'Gastos', kind: 'handler' },
     { id: 'h_attendance', label: 'Asistencia', kind: 'handler' },
-    { id: 'h_voice', label: 'Pedido por voz', kind: 'handler' },
     { id: 'h_flow', label: 'Flows / Automations', kind: 'handler' },
     { id: 'h_clarify', label: 'Aclaración', kind: 'handler' },
     {
@@ -85,7 +83,6 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'd_expense', label: '→ Gastos', kind: 'dispatch' },
     { id: 'd_attendance', label: '→ Asistencia', kind: 'dispatch' },
     { id: 'd_voucher', label: '→ Voucher', kind: 'dispatch' },
-    { id: 'd_voice', label: '→ Voz', kind: 'dispatch' },
     { id: 'd_assistant', label: '→ Asistente', kind: 'dispatch' },
     { id: 'd_none', label: '→ Nada', kind: 'dispatch' },
 
@@ -101,19 +98,16 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'e_entry_ctxe', source: 'webhook', target: 'ctx_expense' },
     { id: 'e_entry_ctxa', source: 'webhook', target: 'ctx_attendance' },
     { id: 'e_entry_ctxv', source: 'webhook', target: 'ctx_voucher' },
-    { id: 'e_entry_ctxo', source: 'webhook', target: 'ctx_voice' },
     { id: 'e_entry_ctxc', source: 'webhook', target: 'ctx_clarify' },
 
     { id: 'e_entry_hvoc', source: 'webhook', target: 'h_voucher_media', label: 'imagen/documento' },
     { id: 'e_entry_hexp', source: 'webhook', target: 'h_expense', label: 'caption gasto' },
-    { id: 'e_entry_hvoi', source: 'webhook', target: 'h_voice', label: 'audio' },
     { id: 'e_entry_flow', source: 'webhook', target: 'h_flow', label: 'flow runner' },
     { id: 'e_entry_extract', source: 'webhook', target: 'extract', label: 'texto' },
 
     { id: 'e_ctxe_extract', source: 'ctx_expense', target: 'extract' },
     { id: 'e_ctxa_extract', source: 'ctx_attendance', target: 'extract' },
     { id: 'e_ctxv_extract', source: 'ctx_voucher', target: 'extract' },
-    { id: 'e_ctxo_extract', source: 'ctx_voice', target: 'extract' },
     { id: 'e_ctxc_extract', source: 'ctx_clarify', target: 'extract' },
 
     { id: 'e_extract_router', source: 'extract', target: 'router', label: 'intent/confianza' },
@@ -122,14 +116,12 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'e_router_dexp', source: 'router', target: 'd_expense', label: 'expense' },
     { id: 'e_router_datt', source: 'router', target: 'd_attendance', label: 'attendance' },
     { id: 'e_router_dvoc', source: 'router', target: 'd_voucher', label: 'voucher' },
-    { id: 'e_router_dvoi', source: 'router', target: 'd_voice', label: 'voice' },
     { id: 'e_router_dass', source: 'router', target: 'd_assistant', label: 'assistant' },
     { id: 'e_router_dnon', source: 'router', target: 'd_none', label: 'none' },
 
     { id: 'e_dexp_hexp', source: 'd_expense', target: 'h_expense' },
     { id: 'e_datt_hatt', source: 'd_attendance', target: 'h_attendance' },
     { id: 'e_dvoc_hvoc', source: 'd_voucher', target: 'h_voucher_media' },
-    { id: 'e_dvoi_hvoi', source: 'd_voice', target: 'h_voice' },
     { id: 'e_dass_hass', source: 'd_assistant', target: 'h_assistant' },
 
     { id: 'e_hvoc_tmatch', source: 'h_voucher_media', target: 't_matched' },
@@ -139,7 +131,6 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'e_hclarify_task', source: 'h_clarify', target: 't_clarify_ask' },
     { id: 'e_hexp_treply', source: 'h_expense', target: 't_replied' },
     { id: 'e_hatt_treply', source: 'h_attendance', target: 't_replied' },
-    { id: 'e_hvoi_treply', source: 'h_voice', target: 't_replied' },
     { id: 'e_hass_treply', source: 'h_assistant', target: 't_replied' },
     { id: 'e_flow_treply', source: 'h_flow', target: 't_replied' },
     { id: 'e_dnon_tnomatch', source: 'd_none', target: 't_no_match' },
@@ -165,8 +156,6 @@ export function dispatchNodeId(dispatchedTo: string | null | undefined): string 
       return 'd_attendance'
     case 'voucher':
       return 'd_voucher'
-    case 'voice':
-      return 'd_voice'
     case 'assistant':
       return 'd_assistant'
     case 'flow':

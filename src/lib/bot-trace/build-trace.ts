@@ -46,7 +46,6 @@ export interface BuildTraceInput {
     expense?: boolean
     attendance?: boolean
     voucher?: boolean
-    voice?: boolean
     clarify?: boolean
   }
   extraction?: ExtractionLike | null
@@ -70,7 +69,7 @@ function mapLogToNode(step: string): string {
   if (s.includes('voucher') || s.includes('payment') || s.includes('pago')) return 'h_voucher_media'
   if (s.includes('expense') || s.includes('gasto')) return 'h_expense'
   if (s.includes('attendance') || s.includes('asistencia')) return 'h_attendance'
-  if (s.includes('voice') || s.includes('transcri')) return 'h_voice'
+  if (s.includes('transcri')) return 'extract'
   if (s.includes('tool') || s.includes('knowledge') || s.includes('assistant')) return 'h_assistant'
   if (s.includes('clarify')) return 'h_clarify'
   if (s.includes('context')) return 'webhook'
@@ -85,8 +84,6 @@ function handlerNodeFor(dispatchedTo: string | null | undefined): string | null 
       return 'h_attendance'
     case 'voucher':
       return 'h_voucher_media'
-    case 'voice':
-      return 'h_voice'
     case 'assistant':
       return 'h_assistant'
     case 'clarify':
@@ -163,7 +160,6 @@ export function buildBotTrace(input: BuildTraceInput): BotTrace {
   if (flags.expense) { pushNode('ctx_expense'); pushStep('ctx_expense', 'Contexto gasto activo') }
   if (flags.attendance) { pushNode('ctx_attendance'); pushStep('ctx_attendance', 'Contexto asistencia activo') }
   if (flags.voucher) { pushNode('ctx_voucher'); pushStep('ctx_voucher', 'Contexto voucher activo') }
-  if (flags.voice) { pushNode('ctx_voice'); pushStep('ctx_voice', 'Contexto pedido activo') }
   if (flags.clarify) { pushNode('ctx_clarify'); pushStep('ctx_clarify', 'Contexto aclaración activo') }
 
   // 3) Rama de media (previa al cerebro de texto).
@@ -177,8 +173,7 @@ export function buildBotTrace(input: BuildTraceInput): BotTrace {
     pushStep('h_voucher_media', 'Imagen/documento → voucher', 'skipped')
   }
   if (mediaType === 'audio') {
-    pushNode('h_voice')
-    pushStep('h_voice', 'Audio → transcripción / pedido', 'ok')
+    pushStep('webhook', 'Audio → transcripción', 'ok')
   }
 
   // 4) Cerebro de texto (extracción + router) si hubo texto.

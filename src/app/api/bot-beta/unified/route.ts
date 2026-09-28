@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { runUnifiedBotBeta } from '@/lib/bot-beta/unified-handler'
-import { transcribeAudio } from '@/lib/voice-orders/transcribe'
+import { transcribeAudio } from '@/lib/audio/transcribe'
 import { extractVoucherData } from '@/lib/ai/voucher-extraction'
 
 export const maxDuration = 60

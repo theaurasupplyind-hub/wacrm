@@ -11,9 +11,8 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { processVoucherMessage, processVoucherText, isVoucherClarificationReply, VOUCHER_CONFIRM_ID, VOUCHER_CANCEL_ID } from '@/lib/ai/voucher-pipeline'
 import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
-import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
-import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
+import { transcribeAudio, type TranscribeLog } from '@/lib/audio/transcribe'
 import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
@@ -25,12 +24,12 @@ import {
   loadAttendanceContext,
   clearAttendanceContext,
 } from '@/lib/attendance'
-import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
-import { engineSendText, engineSendMedia, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
+import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
+import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
+import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
-import { detectPastedConversation } from '@/lib/voice-orders/pasted-conversation'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
@@ -694,147 +693,6 @@ async function debouncedChatMessage(
   }
 }
 
-// ─── Voice order helpers ───
-
-interface VoiceContext {
-  pendingVariantItems?: VoiceOrderResult['pendingVariantItems']
-  pendingClientName?: VoiceOrderResult['pendingClientName']
-  pendingInvoice?: VoiceOrderResult['pendingInvoice']
-}
-
-async function loadVoiceContext(conversationId: string): Promise<VoiceContext> {
-  try {
-    const { data } = await supabaseAdmin()
-      .from('conversations')
-      .select('voice_context')
-      .eq('id', conversationId)
-      .maybeSingle()
-    return (data?.voice_context as VoiceContext) || {}
-  } catch {
-    return {}
-  }
-}
-
-async function saveVoiceContext(conversationId: string, result: VoiceOrderResult) {
-  try {
-    await supabaseAdmin()
-      .from('conversations')
-      .update({
-        voice_context: {
-          pendingVariantItems: result.pendingVariantItems || null,
-          pendingClientName: result.pendingClientName || null,
-          pendingInvoice: result.pendingInvoice || null,
-        },
-      })
-      .eq('id', conversationId)
-  } catch (err) {
-    console.error('[voice] save context error:', err)
-  }
-}
-
-async function sendBudgetImage(
-  ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
-  invoiceId: number,
-) {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
-  if (!baseUrl) {
-    console.warn('[voice] NEXT_PUBLIC_BASE_URL not set — skipping budget image')
-    return
-  }
-  const imageUrl = `${baseUrl.replace(/\/+$/, '')}/api/budget-image/${invoiceId}`
-  try {
-    await engineSendMedia({
-      ...ctx,
-      kind: 'image',
-      link: imageUrl,
-      caption: 'Presupuesto Bastidores GAL',
-    })
-    console.log('[voice] Budget image sent OK for invoice', invoiceId)
-  } catch (err) {
-    console.error('[voice] Budget image send failed:', err)
-  }
-}
-
-async function sendVoiceResponse(
-  ctx: { accountId: string; userId: string; conversationId: string; contactId: string },
-  result: VoiceOrderResult,
-) {
-  let text = ''
-  if (result.pendingInvoice && result.pricing) {
-    text = result.error || `💰 Total: $${result.pricing.total.toLocaleString('es-AR')}`
-  } else if (result.invoice) {
-    text = `✅ Presupuesto ${result.invoice.numero} creado`
-    sendBudgetImage(ctx, result.invoice.id)
-  } else if (result.error) {
-    text = result.error
-  } else {
-    text = 'Procesando...'
-  }
-  try {
-    await engineSendText({ ...ctx, text })
-  } catch (err) {
-    console.error('[voice] send error:', err)
-  }
-}
-
-async function handleVoiceAudio(args: {
-  mediaId: string
-  accessToken: string
-  senderPhone: string
-  senderName: string
-  accountId: string
-  userId: string
-  conversationId: string
-  contactId: string
-}) {
-  try {
-    const mediaInfo = await getMediaUrl({ mediaId: args.mediaId, accessToken: args.accessToken })
-    const audio = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken: args.accessToken })
-    const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId: args.conversationId, contactId: args.contactId }
-    const result = await processVoiceOrder({
-      buffer: audio.buffer,
-      mimeType: audio.contentType,
-      senderPhone: args.senderPhone,
-      senderName: args.senderName,
-      commit: false,
-    })
-    await saveVoiceContext(args.conversationId, result)
-    await sendVoiceResponse(sendCtx, result)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[voice] Audio handler error:', msg)
-  }
-}
-
-async function handleVoiceText(args: {
-  text: string
-  senderPhone: string
-  senderName: string
-  voiceContext: VoiceContext
-  accountId: string
-  userId: string
-  conversationId: string
-  contactId: string
-}) {
-  try {
-    const sendCtx = { accountId: args.accountId, userId: args.userId, conversationId: args.conversationId, contactId: args.contactId }
-    const result = await processTextOrder({
-      text: args.text,
-      senderPhone: args.senderPhone,
-      senderName: args.senderName,
-      commit: false,
-      pendingVariantItems: args.voiceContext.pendingVariantItems,
-      pendingClientName: args.voiceContext.pendingClientName,
-      pendingInvoice: args.voiceContext.pendingInvoice,
-    })
-    await saveVoiceContext(args.conversationId, result)
-    await sendVoiceResponse(sendCtx, result)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[voice] Text error:', msg)
-  }
-}
-
 // ─── Attendance helpers ───
 
 async function handleAttendanceMessage(args: {
@@ -1092,9 +950,6 @@ async function processMessage(
     return
   }
 
-  // Cargar estado previo de órdenes por voz (variantes pendientes, confirmación)
-  const voiceCtx = await loadVoiceContext(conversation.id)
-
   // Cargar estado multi-turn de gastos (si hay un pendingExpense incompleto)
   const expenseCtx = await loadExpenseContext(supabaseAdmin(), conversation.id)
   const expenseStale =
@@ -1135,6 +990,26 @@ async function processMessage(
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
+
+  // Audio → transcripción: se trata como texto y sigue el mismo pipeline
+  // (extracción → router → gasto/asistencia/assistant). Reemplaza el viejo
+  // flujo de "pedidos por voz".
+  let audioTranscription: string | null = null
+  if (message.type === 'audio' && message.audio?.id) {
+    try {
+      const mediaInfo = await getMediaUrl({ mediaId: message.audio.id, accessToken })
+      const audio = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
+      const tLogs: TranscribeLog[] = []
+      audioTranscription = await transcribeAudio(
+        audio.buffer,
+        message.audio.mime_type || 'audio/ogg',
+        tLogs,
+      )
+      console.log('[audio] transcrito len=%d', audioTranscription.length)
+    } catch (err) {
+      console.error('[audio] transcribe failed:', err instanceof Error ? err.message : String(err))
+    }
+  }
 
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
@@ -1191,7 +1066,7 @@ async function processMessage(
     conversation_id: conversation.id,
     sender_type: 'customer',
     content_type: contentType,
-    content_text: contentText,
+    content_text: audioTranscription ?? contentText,
     media_url: mediaUrl,
     message_id: message.id,
     status: 'delivered',
@@ -1375,52 +1250,8 @@ async function processMessage(
     )
   }
 
-  // ============================================================
-  // Expense + Voice: audio messages (secuencial).
-  // Primero intenta expense; si no lo maneja, ejecuta voz.
-  // ============================================================
-  if (message.type === 'audio' && message.audio?.id) {
-    const audioId = message.audio.id
-    const audioMime = message.audio.mime_type
-    bgTasks.push(
-      (async () => {
-        let handled = false
-        try {
-          handled = await handleExpenseMessage({
-            messageType: 'audio',
-            mediaId: audioId,
-            mimeType: audioMime,
-            accessToken,
-            senderPhone: message.from,
-            senderName: contactName,
-            accountId,
-            userId: configOwnerUserId,
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
-            messageId: message.id,
-          })
-        } catch (err) {
-          console.error('[expense] Audio error:', err)
-        }
-        if (!handled) {
-          try {
-            await handleVoiceAudio({
-              mediaId: audioId,
-              accessToken,
-              senderPhone: message.from,
-              senderName: contactName,
-              accountId,
-              userId: configOwnerUserId,
-              conversationId: conversation.id,
-              contactId: contactRecord.id,
-            })
-          } catch (err) {
-            console.error('[voice] Audio error:', err)
-          }
-        }
-      })()
-    )
-  }
+  // Los audios se transcriben arriba (después de parseMessageContent) y se
+  // rutean por el mismo pipeline de texto: gasto / asistencia / assistant.
 
   // ============================================================
   // Flow runner dispatch.
@@ -1470,7 +1301,7 @@ async function processMessage(
   // message all exist before any step — including send_message — runs.
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
-  const inboundText = contentText ?? message.text?.body ?? ''
+  const inboundText = audioTranscription ?? contentText ?? message.text?.body ?? ''
   console.log('[webhook] dispatch decision | flowConsumed=%s interactiveReply=%s text=%s',
     flowConsumed, !!interactiveReplyId, inboundText.slice(0, 80))
   const automationTriggers: (
@@ -1508,64 +1339,64 @@ async function processMessage(
   // El bloque await previo se removió para que 'assistant' sea primero
   // y auto-reply solo corra si el asistente calla (fallback interno).
 
-  // ── Conversación pegada (WhatsApp export ambos lados) → atajo a voice-orders ──
-  // Antes del extractor para no pagar LLM por bloque pegado.
-  const hasPendingVoice = !!(
-    voiceCtx.pendingVariantItems?.length ||
-    voiceCtx.pendingInvoice ||
-    voiceCtx.pendingClientName
-  )
-  const pasted = !hasPendingVoucher && !hasPendingVoice && !flowConsumed && !interactiveReplyId && inboundText.trim()
-    ? detectPastedConversation(inboundText)
+  // ── COMANDO DE CONTEXTO (cancelar / reiniciar) ──
+  // Se resuelve antes del extractor/ruteo para que ningún handler (ni el
+  // asistente) conteste de más. Solo aplica a texto libre.
+  const ctxCommand = !flowConsumed && !interactiveReplyId
+    ? classifyContextCommand(inboundText)
     : null
-  if (pasted) {
-    console.log('[pasted] detected speaker=%s lines=%s -> voice proposal', pasted.speaker, pasted.customerText.slice(0, 60))
-    bgTasks.push(
-      (async () => {
-        try {
-          const textForOrder = `${pasted.customerText}\nA nombre de ${pasted.speaker}`
-          const r = await processTextOrder({
-            text: textForOrder,
-            senderPhone: message.from,
-            senderName: contactName,
-            commit: false,
-            pendingVariantItems: voiceCtx.pendingVariantItems,
-            pendingClientName: voiceCtx.pendingClientName,
-            pendingInvoice: voiceCtx.pendingInvoice,
-          })
-          await saveVoiceContext(conversation.id, r)
-          const sendCtx = {
-            accountId,
-            userId: configOwnerUserId,
-            conversationId: conversation.id,
+  if (ctxCommand) {
+    const cmd = await handleContextCommand({
+      db: supabaseAdmin(),
+      conversationId: conversation.id,
+      command: ctxCommand,
+      active: {
+        expense: hasPendingExpense,
+        attendance: hasPendingAttendance,
+        voucher: hasPendingVoucher,
+        clarify: !!clarifyLoad?.state,
+      },
+    })
+    if (cmd.handled) {
+      console.log('[context-command] %s -> conv=%s', ctxCommand, conversation.id)
+      await engineSendText({
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        text: cmd.reply || 'Listo.',
+      }).catch((err) => console.error('[context-command] reply failed:', err))
+      bgTasks.push(
+        (async () => {
+          await logRouterDecision({
+            messageId: message.id,
             contactId: contactRecord.id,
-          }
-          await sendVoiceResponse(sendCtx, r)
-        } catch (err) {
-          console.error('[pasted] handler error:', err)
-        }
-      })(),
-    )
-    // Log como pasted_conversation y no seguir a extractor/router para este mensaje
-    bgTasks.push(
-      (async () => {
-        await logRouterDecision({
-          messageId: message.id,
-          contactId: contactRecord.id,
-          conversationId: conversation.id,
-          accountId,
-          rawText: inboundText,
-          source: message.type,
-          flowConsumed,
-          interactive: !!interactiveReplyId,
-          hadContext: true,
-          extraction: null,
-          dispatchedTo: 'voice',
-          dispatchReason: 'pasted_conversation',
-          contextText: pasted.customerText.slice(0, 1500),
-        })
-      })(),
-    )
+            conversationId: conversation.id,
+            accountId,
+            rawText: inboundText,
+            source: message.type,
+            flowConsumed: false,
+            interactive: false,
+            hadContext: true,
+            extraction: null,
+            dispatchedTo: 'none',
+            dispatchReason: 'context_command',
+          })
+          await recordBotTrace(
+            buildBotTrace({
+              messageId: message.id,
+              producer: 'webhook',
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+              accountId,
+              source: message.type,
+              rawText: inboundText,
+              messageType: message.type,
+              finalStatus: 'replied',
+            }),
+          )
+        })(),
+      )
+      return
+    }
   }
 
   // ── EXTRACTOR UNIFICADO (LLM): intent + campos + faltan_campos + dudoso ──
@@ -1573,15 +1404,13 @@ async function processMessage(
     expenseCtx,
     attendanceCtx,
     voucherCtx,
-    voiceCtx,
   })
   let extraction: UnifiedExtraction | null = null
-  if (!pasted && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
     const pendingDomains: string[] = []
     if (hasPendingExpense) pendingDomains.push('expense')
     if (hasPendingAttendance) pendingDomains.push('attendance')
     if (hasPendingVoucher) pendingDomains.push('voucher')
-    if (hasPendingVoice) pendingDomains.push('voice')
     try {
       extraction = await extractBotMessage(inboundText, contextText, { pendingDomains })
     } catch (err) {
@@ -1645,8 +1474,7 @@ async function processMessage(
 
   const strongNewIntent = !!extraction &&
     (extraction.confianza === 'alta' || extraction.confianza === 'media') &&
-    (extraction.intent === 'pedido' ||
-      extraction.intent === 'gasto' ||
+    (extraction.intent === 'gasto' ||
       extraction.intent === 'multi_expense' ||
       extraction.intent === 'voucher' ||
       extraction.intent === 'factura' ||
@@ -1654,7 +1482,7 @@ async function processMessage(
       extraction.intent === 'asistencia_salida' ||
       extraction.intent === 'asistencia_estado')
 
-  if (!pasted && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
+  if (!flowConsumed && (inboundText.trim() || interactiveReplyId)) {
     if (clarifyLoad?.expired) {
       await clearClarifyContext(supabaseAdmin(), conversation.id)
       bgTasks.push(
@@ -1798,30 +1626,18 @@ async function processMessage(
     )
   }
 
-  const pushVoiceTask = () => {
-    bgTasks.push(
-      handleVoiceText({
-        text: inboundText, senderPhone: message.from, senderName: contactName,
-        voiceContext: voiceCtx, accountId, userId: configOwnerUserId,
-        conversationId: conversation.id, contactId: contactRecord.id,
-      }).catch((err) => console.error('[voice] Text error:', err))
-    )
-  }
-
   // Primary dispatch — now via shared router. Keep logging same as before.
-  // Si es bloque pegado ya se dispatchó arriba como voice/pasted — no volver a decidir.
   // Si clarify ya respondió (ask/reask/expired/cancel), no se despacha nada más.
   // Si clarify resolvió, se despacha con la extracción corregida.
-  const routerDecision = pasted || clarifyHandled
+  const routerDecision = clarifyHandled
     ? {
-        dispatchedTo: (pasted ? 'voice' : clarifyTo) as 'voice' | 'clarify',
-        dispatchReason: (pasted ? 'pasted_conversation' : clarifyReason) as 'pasted_conversation' | 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
+        dispatchedTo: clarifyTo as 'clarify',
+        dispatchReason: clarifyReason as 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
       }
     : decideDispatch({
         hasPendingExpense,
         hasPendingAttendance,
         hasPendingVoucher,
-        hasPendingVoice,
         flowConsumed,
         interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,
         inboundText,
@@ -1831,31 +1647,31 @@ async function processMessage(
       })
   const dispatchedTo: string = routerDecision.dispatchedTo
   let dispatchReason: string = routerDecision.dispatchReason
-  if (!pasted && !clarifyHandled && clarifyResolved) {
+  if (!clarifyHandled && clarifyResolved) {
     dispatchReason = clarifySuperseded ? 'clarify_superseded' : 'clarify_resolve'
   }
+
+  // Marca si algún handler va a responder; si al final nadie respondió y el
+  // mensaje era texto, mandamos el fallback conversacional "no entendí".
+  let responded = false
 
   switch (dispatchedTo) {
     case 'clarify':
       console.log('[clarify] %s -> conversation=%s', dispatchReason, conversation.id)
+      responded = true
       break
     case 'expense':
       console.log('[%s] dispatch -> conversation=%s', dispatchReason === 'pending_multiturn' ? 'expense' : dispatchReason === 'category_correction' ? 'expense' : 'expense', conversation.id)
       pushExpenseTask(extraction ?? undefined)
+      responded = true
       break
     case 'attendance':
       console.log('[attendance] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
       pushAttendanceTask(extraction ?? undefined)
+      responded = true
       break
     case 'voucher':
       console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
-      break
-    case 'voice':
-      // Si ya es pasted, el task ya se pusheó arriba; no duplicar
-      if (!pasted) {
-        console.log('[voice] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-        pushVoiceTask()
-      }
       break
     case 'assistant':
       if (!hasPendingVoucher) {
@@ -1865,6 +1681,7 @@ async function processMessage(
           && !/^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
         if (captionIsForcedVoucher) {
           console.log('[assistant] suppressed — image caption handled by voucher forcedCaption=%s', (message.image?.caption || message.document?.caption || '').trim().slice(0,60))
+          responded = true
         } else {
           console.log('[assistant] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
           bgTasks.push(
@@ -1877,77 +1694,66 @@ async function processMessage(
               phone: message.from,
             }).catch((err) => console.error('[assistant] dispatch error:', err)),
           )
+          responded = true
         }
       }
       break
     case 'flow':
     case 'interactive':
+      responded = true
+      break
     case 'none':
     default:
       break
   }
 
   // Auditoría: registrar la decisión del router en router_logs (fire-and-forget).
-  // Si es pasted ya se logueó arriba, no duplicar.
-  if (!pasted) {
-    bgTasks.push(
-      (async () => {
-        await logRouterDecision({
+  bgTasks.push(
+    (async () => {
+      await logRouterDecision({
+        messageId: message.id,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        accountId,
+        rawText: inboundText,
+        source: message.type,
+        flowConsumed,
+        interactive: !!interactiveReplyId && !clarifyTapConsumed,
+        hadContext: !!contextText,
+        extraction,
+        dispatchedTo,
+        dispatchReason,
+        contextText,
+      })
+      // Traza visual del flujo (diagrama /bot-flow). Fire-and-forget.
+      await recordBotTrace(
+        buildBotTrace({
           messageId: message.id,
-          contactId: contactRecord.id,
+          producer: 'webhook',
           conversationId: conversation.id,
+          contactId: contactRecord.id,
           accountId,
-          rawText: inboundText,
           source: message.type,
-          flowConsumed,
-          interactive: !!interactiveReplyId && !clarifyTapConsumed,
-          hadContext: !!contextText,
+          rawText: inboundText,
+          messageType: message.type,
+          contextFlags: {
+            expense: hasPendingExpense,
+            attendance: hasPendingAttendance,
+            voucher: hasPendingVoucher,
+            clarify: !!clarifyLoad?.state,
+          },
           extraction,
+          contextText,
           dispatchedTo,
           dispatchReason,
-          contextText,
-        })
-        // Traza visual del flujo (diagrama /bot-flow). Fire-and-forget.
-        await recordBotTrace(
-          buildBotTrace({
-            messageId: message.id,
-            producer: 'webhook',
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
-            accountId,
-            source: message.type,
-            rawText: inboundText,
-            messageType: message.type,
-            contextFlags: {
-              expense: hasPendingExpense,
-              attendance: hasPendingAttendance,
-              voucher: hasPendingVoucher,
-              voice: hasPendingVoice,
-              clarify: !!clarifyLoad?.state,
-            },
-            extraction,
-            contextText,
-            dispatchedTo,
-            dispatchReason,
-            finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
-          }),
-        )
-      })(),
-    )
-  }
+          finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
+        }),
+      )
+    })(),
+  )
 
-  // ── VOUCHER RESET COMMAND ──
-  if (inboundText.trim().toLowerCase() === 'jesusdanielllavesecreta') {
-    console.log('[voucher] RESET command received for conversation=%s', conversation.id)
-    await clearVoucherContext(supabaseAdmin(), conversation.id)
-    bgTasks.push(
-      engineSendText({
-        accountId, userId: configOwnerUserId,
-        conversationId: conversation.id, contactId: contactRecord.id,
-        text: '🧹 Contexto de vouchers limpiado. Ya podés empezar de nuevo.',
-      }).then(() => {}).catch((err) => console.error('[voucher] Reset reply error:', err))
-    )
-  } else if (!clarifyHandled) {
+  // (El reset de contexto se maneja arriba como "context-command".)
+  if (!clarifyHandled) {
     // ── VOUCHER POR TEXTO (sin imagen): efectivo o transferencia — dryRun ──
     // Sin monto ("Jo pago en efectivo", "Jo pago en transferencia a Jorge"):
     // se busca por nombre y se paga el total (1 factura) o se pregunta
@@ -1985,18 +1791,18 @@ async function processMessage(
           fecha: extraction!.fecha ?? null,
         }).catch((err) => console.error('[voucher-text] error:', err)),
       )
+      responded = true
     } else if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
       // ── VOUCHER CONTEXT: solo consume el texto si parece respuesta a la
       // aclaración (letra, número, "sí", factura, nombre). Una orden nueva
-      // con intent fuerte (pedido, gasto, asistencia, factura) la maneja su
+      // con intent fuerte (gasto, asistencia, factura) la maneja su
       // propio flujo (ya despachado arriba); si el voucher la consumiera,
       // la orden se pierde y el usuario recibe un "No entendimos..." pegado.
       const firstPendingCands = voucherCtx.pending.flatMap((p) => p.candidates)
       const looksLikeReply = isVoucherClarificationReply(inboundText, firstPendingCands)
       const strongNewIntent =
         (extraction?.confianza === 'alta' || extraction?.confianza === 'media') &&
-        (extraction?.intent === 'pedido' ||
-          extraction?.intent === 'gasto' ||
+        (extraction?.intent === 'gasto' ||
           extraction?.intent === 'multi_expense' ||
           extraction?.intent === 'factura' ||
           extraction?.intent === 'asistencia_llegada' ||
@@ -2011,17 +1817,57 @@ async function processMessage(
             contactId: contactRecord.id, conversationId: conversation.id,
           }).catch((err) => console.error('[voucher] Text context error:', err))
         )
+        responded = true
       } else {
         console.log('[voucher] text skipped (new %s order, pending kept) -> conversation=%s', extraction?.intent, conversation.id)
       }
     } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
-      console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
-      bgTasks.push(
-        pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
-          console.error('[voucher] pushPendingText error:', err),
+      // Solo guardamos textos que PODRÍAN ser nombre/monto/letra de un voucher
+      // (cortos, no pregunta, no orden fuerte). Antes se guardaba cualquier
+      // texto y el próximo voucher lo consumía como respuesta (contexto cruzado).
+      const strongOrder =
+        (extraction?.confianza === 'alta' || extraction?.confianza === 'media') &&
+        (extraction?.intent === 'gasto' ||
+          extraction?.intent === 'multi_expense' ||
+          extraction?.intent === 'factura' ||
+          extraction?.intent === 'voucher' ||
+          extraction?.intent === 'asistencia_llegada' ||
+          extraction?.intent === 'asistencia_salida' ||
+          extraction?.intent === 'asistencia_estado')
+      const couldBeVoucherRef =
+        inboundText.trim().length <= 40 &&
+        !/[?¿]/.test(inboundText) &&
+        !strongOrder
+      if (couldBeVoucherRef) {
+        console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
+        bgTasks.push(
+          pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
+            console.error('[voucher] pushPendingText error:', err),
+          )
         )
-      )
+      }
     }
+  }
+
+  // ── Fallback conversacional ──
+  // Garantiza que ningún mensaje de texto quede sin respuesta: si ningún
+  // handler se hizo cargo, pedimos que lo repita.
+  if (
+    !responded &&
+    !clarifyHandled &&
+    !flowConsumed &&
+    !interactiveReplyId &&
+    inboundText.trim() &&
+    message.type === 'text'
+  ) {
+    console.log('[webhook] fallback no-entendi -> conversation=%s', conversation.id)
+    bgTasks.push(
+      engineSendText({
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        text: 'No te entendí 🤔 ¿me repetís? Puedo registrar gastos, pagos/comprobantes o asistencias, y consultar saldos de clientes.',
+      }).then(() => {}).catch((err) => console.error('[webhook] fallback reply error:', err)),
+    )
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

@@ -21,7 +21,7 @@ import {
 } from '@/lib/ai/jev'
 import type { BotIntent, Confidence, UnifiedExtraction } from './types'
 
-export type JevPendingDomain = 'expense' | 'attendance' | 'voucher' | 'voice' | 'none'
+export type JevPendingDomain = 'expense' | 'attendance' | 'voucher' | 'none'
 
 /**
  * Confianza mínima del intent de Jev para sobrescribir al LLM. Por debajo de
@@ -59,12 +59,11 @@ const VALID_INTENTS: BotIntent[] = [
   'gasto',
   'multi_expense',
   'voucher',
-  'pedido',
   'factura',
   'otro',
 ]
 
-const VALID_DOMAINS: JevPendingDomain[] = ['expense', 'attendance', 'voucher', 'voice', 'none']
+const VALID_DOMAINS: JevPendingDomain[] = ['expense', 'attendance', 'voucher', 'none']
 
 const INTENT_CRITERIA: Record<string, string | null> = {
   asistencia_llegada: 'Llegada al trabajo ("llegó", "llegué", "buenos días").',
@@ -73,7 +72,6 @@ const INTENT_CRITERIA: Record<string, string | null> = {
   gasto: 'Registro de UN gasto del negocio (servicios, insumos, sueldos, proveedores).',
   multi_expense: 'DOS O MÁS gastos distintos en un mismo mensaje, cada uno con su monto.',
   voucher: 'Comprobante/pago de un cliente para pagar su factura ("Jo pagó en efectivo 2000").',
-  pedido: 'El cliente quiere productos del taller/catálogo, presupuesto o precios.',
   factura: 'Consulta de facturas, deudas o saldos.',
   otro: 'Saludo, charla casual, mensaje irrelevante o que no completa ninguna intención.',
 }
@@ -82,7 +80,6 @@ const PENDING_CRITERIA: Record<string, string | null> = {
   expense: 'El mensaje completa un gasto pendiente (monto, categoría, confirmación).',
   attendance: 'El mensaje completa una asistencia pendiente (hora, empleado, confirmación).',
   voucher: 'El mensaje responde a una aclaración de voucher (letra, número, cliente).',
-  voice: 'El mensaje completa un pedido pendiente (variante, nombre de cliente, confirmación).',
   none: 'El mensaje no responde a ninguna pregunta pendiente.',
 }
 
@@ -157,7 +154,7 @@ export async function classifyWithJev(args: ClassifyJevArgs): Promise<JevClassif
     answers_pending: {
       type: 'noul',
       instructions:
-        '¿El mensaje responde a la pregunta pendiente del bot (completar un gasto, una asistencia, un voucher o un pedido)?',
+        '¿El mensaje responde a la pregunta pendiente del bot (completar un gasto, una asistencia o un voucher)?',
     },
     supersedes: {
       type: 'noul',

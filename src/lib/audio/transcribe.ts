@@ -1,4 +1,14 @@
-import type { VoiceOrderLog } from './types'
+/**
+ * Transcripción de audio (Whisper vía OpenRouter).
+ *
+ * Módulo compartido y genérico (antes vivía dentro de voice-orders). Lo usan
+ * el bot de gastos, el asistente y el laboratorio de bot-beta.
+ */
+
+export interface TranscribeLog {
+  step: string
+  data: unknown
+}
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/audio/transcriptions'
 const TIMEOUT_MS = 30_000
@@ -6,7 +16,7 @@ const TIMEOUT_MS = 30_000
 export async function transcribeAudio(
   buffer: Buffer,
   mimeType: string,
-  logs: VoiceOrderLog[],
+  logs: TranscribeLog[],
 ): Promise<string> {
   const t0 = Date.now()
   const apiKey = process.env.OPENROUTER_API_KEY

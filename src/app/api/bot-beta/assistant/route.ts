@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runAssistant } from '@/lib/bot-assistant/orchestrator'
-import { transcribeAudio } from '@/lib/voice-orders/transcribe'
+import { transcribeAudio } from '@/lib/audio/transcribe'
 
 export const maxDuration = 60
 

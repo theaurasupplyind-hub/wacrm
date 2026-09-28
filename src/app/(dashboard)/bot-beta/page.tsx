@@ -28,13 +28,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
-import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 
 interface Turn {
   role: 'user' | 'bot'
   content: string
-  voiceResult?: VoiceOrderResult
 }
 
 interface AssistantDebug {
@@ -82,52 +80,12 @@ function formatPhone(value: string): string {
   return value.replace(/\D/g, '')
 }
 
-function formatVoiceResult(result: VoiceOrderResult): string {
-  let s = ''
-  if (result.transcription) {
-    s += `📝 "${result.transcription}"\n\n`
-  }
-  if (result.parsedOrder) {
-    s += `👤 Cliente: ${result.parsedOrder.cliente_nombre}\n`
-    for (const item of result.parsedOrder.items) {
-      s += `📦 ${item.cantidad}x ${item.descripcion}\n`
-    }
-    s += '\n'
-  }
-  if (result.client) {
-    s += `✅ Cliente: ${result.client.nombre}${result.client.id ? ` (ID: ${result.client.id})` : ' (nuevo)'}\n\n`
-  }
-  if (result.pricing) {
-    for (const item of result.pricing.items) {
-      if (item.precio != null) {
-        s += `✅ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} → $${(item.precio * item.cantidad).toLocaleString('es-AR')}\n`
-      } else {
-        s += `❌ ${item.cantidad}x ${item.categoria} ${item.medida_solicitada} → SIN PRECIO\n`
-      }
-    }
-    s += `\n💰 Total: $${result.pricing.total.toLocaleString('es-AR')}\n\n`
-  }
-  if (result.invoice) {
-    s += `✅ Presupuesto creado: ${result.invoice.numero}\n`
-  }
-  if (result.error) {
-    s += `\n❌ Error: ${result.error}`
-  }
-  return s
-}
-
 export default function BotBetaPage() {
   // Top-level tab: unificado (base prod + asistente) is default; legacy tabs kept behind ?legacy=1
   const [mainTab, setMainTab] = useState('unificado')
 
-  // ─── Pedidos (legacy) state ───
-  const [turns, setTurns] = useState<Turn[]>([])
-  const [, setLogs] = useState<VoiceOrderResult['logs']>([])
-  const [voiceResult, setVoiceResult] = useState<VoiceOrderResult | null>(null)
+  // ─── Teléfono simulado (asistente/vouchers) ───
   const [phone, setPhone] = useState('1145678901')
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
-  const [debugTab, setDebugTab] = useState('voice_logs')
 
   // ─── Unificado (base prod + asistente) state — phone dummy aislado
   const [unifiedTurns, setUnifiedTurns] = useState<Turn[]>([])
@@ -157,25 +115,18 @@ export default function BotBetaPage() {
 
   // Audio recording state (shared)
   const [recording, setRecording] = useState(false)
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const assistantFileInputRef = useRef<HTMLInputElement>(null)
   const unifiedVoucherInputRef = useRef<HTMLInputElement>(null)
   const [unifiedVoucherFile, setUnifiedVoucherFile] = useState<File | null>(null)
-  const pendingVariantRef = useRef<VoiceOrderResult['pendingVariantItems']>(undefined)
-  const pendingClientRef = useRef<string | null | undefined>(undefined)
-  const pendingInvoiceRef = useRef<VoiceOrderResult['pendingInvoice']>(undefined)
-
   // Target blob for current mainTab
   const isUnificado = mainTab === 'unificado'
   const isAsistente = mainTab === 'asistente'
   const isVouchers = mainTab === 'vouchers'
-  const setActiveAudioBlob = isUnificado ? setUnifiedAudioBlob : isAsistente ? setAssistantAudioBlob : setAudioBlob
-  const activeFileInputRef = isUnificado ? assistantFileInputRef : isAsistente ? assistantFileInputRef : fileInputRef
+  const setActiveAudioBlob = isUnificado ? setUnifiedAudioBlob : isAsistente ? setAssistantAudioBlob : setAssistantAudioBlob
+  const activeFileInputRef = isUnificado ? assistantFileInputRef : assistantFileInputRef
 
-  const scrollRef = useRef<HTMLDivElement>(null)
   const assistantScrollRef = useRef<HTMLDivElement>(null)
   const unifiedScrollRef = useRef<HTMLDivElement>(null)
 
@@ -183,61 +134,6 @@ export default function BotBetaPage() {
     setTimeout(() => {
       ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: 'smooth' })
     }, 100)
-  }
-
-  // ─── Text send (Pedidos) ───
-  const sendText = async () => {
-    const text = input.trim()
-    if (!text || sending) return
-
-    const userTurn: Turn = { role: 'user', content: text }
-    const nextTurns = [...turns, userTurn]
-    setTurns(nextTurns)
-    setInput('')
-    setSending(true)
-
-    try {
-      const historyText = nextTurns.slice(-6).map(t => `${t.role}: ${t.content}`).join('\n')
-      const res = await fetch('/api/bot-beta/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          phone,
-          pendingVariantItems: pendingVariantRef.current,
-          pendingClientName: pendingClientRef.current,
-          pendingInvoice: pendingInvoiceRef.current,
-          historyText,
-        }),
-      })
-      const result: VoiceOrderResult & { error?: string } = await res.json()
-      pendingVariantRef.current = result.pendingVariantItems
-      pendingClientRef.current = result.pendingClientName
-      pendingInvoiceRef.current = result.pendingInvoice
-
-      if (!res.ok || result.error) {
-        const msg = result.error && !result.pendingInvoice ? `Error: ${result.error}` : (result.error || 'Error inesperado')
-        setVoiceResult(result)
-        setLogs(result.logs || [])
-        setTurns([...nextTurns, { role: 'bot', content: msg, voiceResult: result }])
-        setDebugTab('voice_logs')
-        scrollToBottom(scrollRef)
-        return
-      }
-
-      const formatted = formatVoiceResult(result)
-      setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
-      setVoiceResult(result)
-      setLogs(result.logs || [])
-      if (result.invoice) pendingInvoiceRef.current = undefined
-      setDebugTab('voice_logs')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error de conexión'
-      setTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
-    } finally {
-      setSending(false)
-      scrollToBottom(scrollRef)
-    }
   }
 
   // ─── Unified text send (base prod + asistente, dummy phone) ───
@@ -346,7 +242,7 @@ export default function BotBetaPage() {
       if (isAsistente) {
         setAssistantTurns([...assistantTurns, { role: 'bot', content: `Error: ${msg}` }])
       } else {
-        setTurns([...turns, { role: 'bot', content: `Error: ${msg}` }])
+        setUnifiedTurns([...unifiedTurns, { role: 'bot', content: `Error: ${msg}` }])
       }
     }
   }
@@ -365,57 +261,6 @@ export default function BotBetaPage() {
     setActiveAudioBlob(file)
     if (activeFileInputRef.current) activeFileInputRef.current.value = ''
   }
-
-  // ─── Send audio (Pedidos) ───
-  const sendAudio = useCallback(async () => {
-    if (!audioBlob || sending) return
-
-    const userTurn: Turn = { role: 'user', content: '🎤 Audio enviado' }
-    const nextTurns = [...turns, userTurn]
-    setTurns(nextTurns)
-    setAudioBlob(null)
-    setSending(true)
-
-    try {
-      const formData = new FormData()
-      formData.append('audio', audioBlob, 'audio.webm')
-      formData.append('phone', phone)
-      formData.append('name', 'Cliente de prueba')
-
-      const res = await fetch('/api/bot-beta/voice-run', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const result: VoiceOrderResult & { error?: string } = await res.json()
-      pendingVariantRef.current = result.pendingVariantItems
-      pendingClientRef.current = result.pendingClientName
-      pendingInvoiceRef.current = result.pendingInvoice
-
-      if (!res.ok || result.error) {
-        const msg = result.error && !result.pendingInvoice ? `Error: ${result.error}` : (result.error || 'Error inesperado')
-        setVoiceResult(result)
-        setLogs(result.logs || [])
-        setTurns([...nextTurns, { role: 'bot', content: msg, voiceResult: result }])
-        setDebugTab('voice_logs')
-        scrollToBottom(scrollRef)
-        return
-      }
-
-      const formatted = formatVoiceResult(result)
-      setTurns([...nextTurns, { role: 'bot', content: formatted, voiceResult: result }])
-      setVoiceResult(result)
-      setLogs(result.logs || [])
-      if (result.invoice) pendingInvoiceRef.current = undefined
-      setDebugTab('voice_logs')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error de conexión'
-      setTurns([...nextTurns, { role: 'bot', content: `Error: ${msg}` }])
-    } finally {
-      setSending(false)
-      scrollToBottom(scrollRef)
-    }
-  }, [audioBlob, sending, turns, phone])
 
   // ─── Send unified audio (dummy phone, base prod) ───
   const sendUnifiedAudio = useCallback(async () => {
@@ -597,25 +442,8 @@ export default function BotBetaPage() {
       setAssistantDebugTab('extraccion')
       setAssistantAudioBlob(null)
       setAssistantInput('')
-    } else {
-      setTurns([])
-      setLogs([])
-      setVoiceResult(null)
-      setDebugTab('voice_logs')
-      setAudioBlob(null)
-      setInput('')
-      pendingVariantRef.current = undefined
-      pendingClientRef.current = undefined
-      pendingInvoiceRef.current = undefined
     }
     setRecording(false)
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void sendText()
-    }
   }
 
   const handleAssistantKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -639,8 +467,8 @@ export default function BotBetaPage() {
     }
   }
 
-  const hasAnyTurns = isUnificado ? unifiedTurns.length > 0 : isVouchers ? voucherTurns.length > 0 : isAsistente ? assistantTurns.length > 0 : turns.length > 0
-  const isSending = isUnificado ? unifiedSending : isVouchers ? voucherSending : isAsistente ? assistantSending : sending
+  const hasAnyTurns = isUnificado ? unifiedTurns.length > 0 : isVouchers ? voucherTurns.length > 0 : assistantTurns.length > 0
+  const isSending = isUnificado ? unifiedSending : isVouchers ? voucherSending : assistantSending
 
   return (
     <div>
@@ -664,7 +492,7 @@ export default function BotBetaPage() {
             ? 'Vouchers — probá texto “Tobi pagó $12k en efectivo” o subí comprobante (imagen/PDF). Copia aislada dryRun, no escribe en backend_gal.'
             : isAsistente
               ? 'Asistente conversacional — probá saludos, consultas y registros. Usa OpenRouter y FacBal reales.'
-              : 'Probá el sistema de órdenes por voz. Grabá un audio o escribí un mensaje. Usa OpenRouter y FacBal reales.'}
+              : 'Probá el asistente: grabá un audio o escribí un mensaje.'}
       </p>
 
       {/* ─── Teléfono ─── */}
@@ -688,7 +516,7 @@ export default function BotBetaPage() {
         </div>
       )}
 
-      {/* ─── Tabs superiores: Unificado | Asistente | Pedidos | Vouchers ─── */}
+      {/* ─── Tabs superiores: Unificado | Asistente | Vouchers ─── */}
       <Tabs value={mainTab} onValueChange={setMainTab} className="mt-4">
         <TabsList className="h-9">
           <TabsTrigger value="unificado" className="text-xs gap-1.5">
@@ -696,9 +524,6 @@ export default function BotBetaPage() {
           </TabsTrigger>
           <TabsTrigger value="asistente" className="text-xs gap-1.5">
             <MessageCircle className="h-3.5 w-3.5" /> Asistente
-          </TabsTrigger>
-          <TabsTrigger value="pedidos" className="text-xs gap-1.5">
-            <Volume2 className="h-3.5 w-3.5" /> Pedidos
           </TabsTrigger>
           <TabsTrigger value="vouchers" className="text-xs gap-1.5">
             <Receipt className="h-3.5 w-3.5" /> Vouchers
@@ -1126,281 +951,6 @@ export default function BotBetaPage() {
                           </div>
                         )
                       })}
-                    </div>
-                  )}
-                </TabsContent>
-              </Tabs>
-            </div>
-          </div>
-        </TabsContent>
-
-        {/* ─── Tab Pedidos (legacy) ─── */}
-        <TabsContent value="pedidos" className="mt-4">
-          <div className="flex gap-4" style={{ minHeight: '65vh' }}>
-            {/* Columna izquierda: Chat Pedidos */}
-            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
-              <div className="border-b border-border px-4 py-2">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Conversación — Pedidos</span>
-              </div>
-
-              <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
-                {turns.length === 0 && (
-                  <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
-                    <Bot className="mb-2 h-8 w-8 text-muted-foreground/60" />
-                    <p>Grabá un audio o escribí un mensaje.</p>
-                    <p className="mt-1 text-xs">Ej: &quot;factura un presupuesto de 2 bastidores 120x130 lienzo profesional a nombre Jesus&quot;</p>
-                  </div>
-                )}
-
-                {turns.map((t, i) => (
-                  <div key={i} className={cn('flex gap-2', t.role === 'user' ? 'justify-end' : 'justify-start')}>
-                    {t.role === 'bot' && <Bot className="mt-1 h-5 w-5 shrink-0 text-primary" />}
-                    <div
-                      className={cn(
-                        'max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap',
-                        t.role === 'user' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted text-foreground',
-                      )}
-                    >
-                      {t.content}
-                    </div>
-                    {t.role === 'user' && <UserCircle2 className="mt-1 h-5 w-5 shrink-0 text-muted-foreground" />}
-                  </div>
-                ))}
-
-                {sending && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Bot className="h-5 w-5 text-primary" />
-                    <Loader2 className="h-4 w-4 animate-spin" /> Procesando…
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-end gap-2 border-t border-border p-3">
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Escribí el mensaje del cliente…"
-                  rows={1}
-                  disabled={sending}
-                  className="flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
-                />
-                <Button
-                  size="sm"
-                  variant={recording ? 'destructive' : 'outline'}
-                  onClick={recording ? stopRecording : startRecording}
-                  disabled={sending}
-                  className="h-9 w-9 shrink-0 p-0"
-                  title={recording ? 'Detener grabación' : 'Grabar audio'}
-                >
-                  {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={sending} className="h-9 w-9 shrink-0 p-0" title="Subir archivo de audio">
-                  <Upload className="h-4 w-4" />
-                </Button>
-                <input ref={fileInputRef} type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" />
-                <Button size="sm" onClick={audioBlob ? sendAudio : sendText} disabled={(!input.trim() && !audioBlob) || sending} className="h-9 w-9 shrink-0 p-0">
-                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                </Button>
-              </div>
-
-              {audioBlob && (
-                <div className="flex items-center gap-2 border-t border-border px-3 py-2 bg-muted/30">
-                  <Volume2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <audio controls className="h-8 flex-1 min-w-0">
-                    <source src={URL.createObjectURL(audioBlob)} type={audioBlob.type} />
-                  </audio>
-                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAudioBlob(null)}>
-                    Cancelar
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            {/* Columna derecha: Debug Pedidos */}
-            <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
-              <div className="border-b border-border px-4 py-2">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Debug — Pedidos</span>
-              </div>
-
-              <Tabs value={debugTab} onValueChange={setDebugTab} className="flex flex-1 flex-col">
-                <div className="border-b border-border px-3">
-                  <TabsList className="h-9">
-                    <TabsTrigger value="voice_logs" className="text-xs gap-1.5">
-                      <Volume2 className="h-3.5 w-3.5" /> Pipeline
-                    </TabsTrigger>
-                    <TabsTrigger value="logs" className="text-xs gap-1.5">
-                      <List className="h-3.5 w-3.5" /> Logs
-                    </TabsTrigger>
-                  </TabsList>
-                </div>
-
-                <TabsContent value="voice_logs" className="flex-1 overflow-y-auto p-4 m-0">
-                  {!voiceResult ? (
-                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                      <Volume2 className="mr-2 h-5 w-5 opacity-50" />
-                      Enviá un audio para ver el pipeline completo.
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {voiceResult.transcription && (
-                        <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
-                          <p className="text-xs font-medium text-sky-400 mb-1 flex items-center gap-1.5">
-                            <Volume2 className="h-3.5 w-3.5" /> Transcripción
-                          </p>
-                          <p className="text-sm text-foreground">{voiceResult.transcription}</p>
-                        </div>
-                      )}
-
-                      {voiceResult.parsedOrder && (
-                        <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-                          <p className="text-xs font-medium text-blue-400 mb-1">Orden detectada</p>
-                          <p className="text-xs text-foreground">Cliente: {voiceResult.parsedOrder.cliente_nombre} · confianza: {voiceResult.parsedOrder.confianza}</p>
-                          <div className="mt-1 space-y-0.5">
-                            {voiceResult.parsedOrder.items.map((item, i) => (
-                              <p key={i} className="text-xs text-muted-foreground">
-                                {item.cantidad}x {item.descripcion}
-                              </p>
-                            ))}
-                          </div>
-                          {voiceResult.parsedOrder.entidades && voiceResult.parsedOrder.entidades.length > 0 && (
-                            <div className="mt-2 border-t border-blue-500/20 pt-2 space-y-0.5">
-                              <p className="text-[10px] font-medium text-blue-300">Entidades (grounding)</p>
-                              {voiceResult.parsedOrder.entidades.map((e, i) => (
-                                <p key={i} className="text-[11px] font-mono text-foreground/80">
-                                  {e.cantidad}x {e.categoria ?? '—'} {e.medida ?? '—'} {e.variante ? `(${e.variante})` : ''} <span className="text-muted-foreground">← {e.descripcion_original}</span>
-                                </p>
-                              ))}
-                            </div>
-                          )}
-                          {(voiceResult.parsedOrder.dudoso || (voiceResult.parsedOrder.faltan_campos && voiceResult.parsedOrder.faltan_campos.length > 0)) && (
-                            <div className="mt-2 flex items-start gap-1.5 rounded border border-amber-500/20 bg-amber-500/10 p-2">
-                              <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 shrink-0" />
-                              <div className="text-xs">
-                                {voiceResult.parsedOrder.faltan_campos?.length ? <p className="text-amber-300">Falta: {voiceResult.parsedOrder.faltan_campos.join(', ')}</p> : null}
-                                {voiceResult.parsedOrder.razon_duda && <p className="text-amber-200/80">{voiceResult.parsedOrder.razon_duda}</p>}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {voiceResult.resolvedItems && (
-                        <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3">
-                          <p className="text-xs font-medium text-indigo-400 mb-1">Items resueltos (suggestPrice)</p>
-                          <div className="space-y-0.5">
-                            {voiceResult.resolvedItems.map((item, i) => (
-                              <p key={i} className="text-xs text-muted-foreground">
-                                {item.cantidad}x {item.descripcion}
-                                {item.faltante ? ' ❌ Sin referencia' : ` → ${item.categoria} ${item.medida}${item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''} $${item.precio_base?.toLocaleString('es-AR')}`}
-                                {item.medida_referencia && <span className="text-indigo-400"> (ref: {item.medida_referencia})</span>}
-                              </p>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {voiceResult.client && (
-                        <div className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-3">
-                          <p className="text-xs font-medium text-teal-400 mb-1">Cliente</p>
-                          <p className="text-xs text-foreground">
-                            {voiceResult.client.nombre}
-                            {voiceResult.client.id ? ` (ID: ${voiceResult.client.id})` : ' (nuevo)'}
-                          </p>
-                        </div>
-                      )}
-
-                      {voiceResult.pricing && (
-                        <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
-                          <p className="text-xs font-medium text-purple-400 mb-1">Precios</p>
-                          {voiceResult.pricing.items.map((item, i) => (
-                            <div key={i} className="space-y-1 border-b border-purple-500/10 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
-                              <div className="flex items-center justify-between text-xs">
-                                <span className="text-foreground font-medium">
-                                  {item.cantidad}x {item.categoria} {item.medida_solicitada}
-                                  {item.categoria === 'BASTIDOR' && item.variante ? ` (${item.variante})` : ''}
-                                </span>
-                                {item.precio != null ? (
-                                  <span className="font-mono text-foreground">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
-                                ) : (
-                                  <XCircle className="h-3.5 w-3.5 text-red-400" />
-                                )}
-                              </div>
-                              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
-                                {item.precio_base != null && (
-                                  <span className="flex items-center gap-1">
-                                    Base: <span className="font-mono">${item.precio_base.toLocaleString('es-AR')}</span>
-                                    {item.medida_referencia && <span>(ref: {item.medida_referencia})</span>}
-                                  </span>
-                                )}
-                                {item.regla_aplicada ? (
-                                  <span className="flex items-center gap-1 text-amber-400">
-                                    <CheckCircle2 className="h-2.5 w-2.5" /> Regla: {item.regla_aplicada}
-                                  </span>
-                                ) : item.precio_base != null ? (
-                                  <span className="text-muted-foreground/60">Regla: —</span>
-                                ) : null}
-                                {item.precio != null && item.precio_base != null && item.precio !== item.precio_base && (
-                                  <span className="text-purple-400">
-                                    → Final: <span className="font-mono">${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                          <div className="mt-1.5 flex items-center justify-between border-t border-purple-500/20 pt-1.5">
-                            <span className="text-xs font-semibold text-foreground">Total</span>
-                            <span className="text-sm font-bold font-mono text-foreground">${voiceResult.pricing.total.toLocaleString('es-AR')}</span>
-                          </div>
-                          {voiceResult.pricing.items.some((i) => i.faltante) && (
-                            <div className="mt-1.5 flex items-center gap-1 text-xs text-red-400">
-                              <AlertTriangle className="h-3 w-3" /> Hay productos sin precio
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {voiceResult.invoice ? (
-                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                          <span className="text-xs text-foreground">
-                            Presupuesto <strong>{voiceResult.invoice.numero}</strong> creado exitosamente
-                          </span>
-                        </div>
-                      ) : voiceResult.error ? (
-                        <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 flex items-center gap-2">
-                          <XCircle className="h-4 w-4 text-red-400" />
-                          <span className="text-xs text-foreground">Error: {voiceResult.error}</span>
-                        </div>
-                      ) : voiceResult.transcription ? (
-                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 flex items-center gap-2">
-                          <AlertTriangle className="h-4 w-4 text-amber-400" />
-                          <span className="text-xs text-foreground">Modo preview — no se creó presupuesto real</span>
-                        </div>
-                      ) : null}
-
-                      {voiceResult.logs.length > 0 && (
-                        <div className="space-y-1.5">
-                          <p className="text-xs font-medium text-muted-foreground">Pipeline completo:</p>
-                          {voiceResult.logs
-                            .filter((l) => l.step !== 'voice_error')
-                            .map((log, i) => {
-                              const meta = VOICE_STEP_LABELS[log.step] || { label: log.step, color: 'bg-muted text-muted-foreground border-border' }
-                              return (
-                                <div key={i} className="rounded-lg border border-border p-2.5">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <Badge variant="outline" className={`text-[10px] ${meta.color}`}>
-                                      {meta.label}
-                                    </Badge>
-                                  </div>
-                                  <pre className="mt-1 text-[10px] text-foreground/70 font-mono whitespace-pre-wrap overflow-x-auto">
-                                    {JSON.stringify(log.data, null, 2)}
-                                  </pre>
-                                </div>
-                              )
-                            })}
-                        </div>
-                      )}
                     </div>
                   )}
                 </TabsContent>

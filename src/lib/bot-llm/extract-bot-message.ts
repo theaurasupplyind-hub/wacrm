@@ -9,7 +9,7 @@ const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema 
 
 Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exacta:
 {
-  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "multi_expense" | "voucher" | "pedido" | "factura" | "otro",
+  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "multi_expense" | "voucher" | "factura" | "otro",
   "confianza": "alta" | "media" | "baja",
   "empleado": "nombre del empleado o null",
   "hora": "HH:MM o null",
@@ -48,26 +48,23 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "gasto": registro de UN gasto del negocio (servicios, insumos, sueldos, proveedores). Necesita monto.
 - "multi_expense": un mismo mensaje contiene DOS O MÁS gastos separados e independientes del negocio. Devolvé la lista en "multipleExpenses". Cada gasto debe tener su propio monto.
 - "voucher": comprobante de pago o transferencia/depósito para pagar una factura.
-- "pedido": el cliente quiere comprar productos del catálogo (bastidores, acrílicos, circulares, telas), pedir presupuesto, precios, o confirmar un pedido.
 - "factura": consulta de facturas pendientes, deudas, saldos.
 - "otro": saludos genéricos ("hola", "gracias"), charla casual, mensajes irrelevantes, o respuestas que no completan ninguna intención pendiente.
 
 === REGLAS (MUY IMPORTANTES) ===
 
-- "compré N [producto]" (ej: "compré 3 bastidores 60x40") → pedido, NUNCA gasto. Si menciona cantidades, medidas o productos del catálogo (bastidor, acrílico, circular, tela, lienzo, marco, moldura) → pedido.
-- "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto.
-- "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela. Solo es pedido si parece una solicitud de cliente con cantidad/medida o sin proveedor.
+- "compré N [producto]" (ej: "compré 3 bastidores 60x40") o "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto con tipo_gasto "compra".
+- "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela.
 - "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo" o si NO hay monto = paga el total), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto, NUNCA gasto aunque falte el monto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo". Ej: "Jo pago en efectivo" → voucher, proveedor:"Jo", monto:null, metodo_pago:"efectivo".
 - "Le pagué/pagamos a [persona]" o "a [Nombre] por sueldo/adelanto" (con "le" + "a" como objeto, o mención explícita sueldo/adelanto) → gasto con empleado_gasto=[persona] y tipo_gasto "pago".
 - "pagué/pagamos a [proveedor]" o "transferí a [persona]" (YO pagué/transferí, verbo en 1ª persona) → gasto con tipo_gasto "pago", proveedor=[proveedor].
 - "[Nombre] pagó/paga [monto] en/por transferencia [a Destino]" (sujeto en 3ª persona, NUNCA "le", NUNCA sueldo) → voucher, proveedor=[Nombre], destino=[Destino] o null, monto o null (=total), metodo_pago="transferencia". Ej: "Jo pago en transferencia a Jorge" → voucher, proveedor:"Jo", destino:"Jorge", monto:null, metodo_pago:"transferencia".
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
-- "pagué el pedido" → pedido (confirmación de pedido), NO gasto.
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/puse plata para factura/comprobante" → voucher, NUNCA gasto.
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
- - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). NUNCA pedido. Si dice "deuda de [Nombre]" / "saldo de [Nombre]" → factura con proveedor="[Nombre]" (ej "Revisemos la deuda de Aldo" → proveedor:"Aldo").
- - "qué podés hacer / quién sos / capacidades" → otro (conversacional), NUNCA pedido/factura.
+ - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). Si dice "deuda de [Nombre]" / "saldo de [Nombre]" → factura con proveedor="[Nombre]" (ej "Revisemos la deuda de Aldo" → proveedor:"Aldo").
+ - "qué podés hacer / quién soy / capacidades" → otro (conversacional), NUNCA factura.
  - Ante la duda, usá confianza "baja" o "media".
 
 === MULTI-EXPENSE ===
@@ -117,8 +114,8 @@ El mensaje puede ser la respuesta a una pregunta pendiente del bot (multi-turn).
 
 === EJEMPLOS ===
 
-Mensaje: "compré 3 bastidores 60x40 sin tela"
-{"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+Mensaje: "compré 3 bastidores 60x40 sin tela a Joaquín por 30000"
+{"intent":"gasto","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":30000,"categoria":null,"proveedor":"Joaquín","empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "pagué 18 mil de luz"
 {"intent":"gasto","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":18000,"categoria":"luz","proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
@@ -178,7 +175,7 @@ DEVOLVÉ SOLO EL JSON, NADA MÁS.`
 
 const VALID_INTENTS: BotIntent[] = [
   'asistencia_llegada', 'asistencia_salida', 'asistencia_estado',
-  'gasto', 'multi_expense', 'voucher', 'pedido', 'factura', 'otro',
+  'gasto', 'multi_expense', 'voucher', 'factura', 'otro',
 ]
 const VALID_CONFIDENCE: Confidence[] = ['alta', 'media', 'baja']
 const VALID_MISSING: MissingField[] = ['empleado', 'hora', 'estado', 'monto', 'categoria', 'proveedor']
@@ -345,7 +342,7 @@ function todayAR(): string {
 }
 
 export interface ExtractBotMessageOpts {
-  /** Dominios con pendiente activo (expense/attendance/voucher/voice) para Jev. */
+  /** Dominios con pendiente activo (expense/attendance/voucher) para Jev. */
   pendingDomains?: string[]
 }
 

@@ -125,7 +125,6 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   let expenseCtx: unknown = null
   let attendanceCtx: unknown = null
   let voucherCtx: unknown = null
-  let voiceCtx: unknown = null
   let contextText = ''
   // Dummy-only: keep reference to raw voucher pending for caption forced search
   let voucherPendingItem: { extraction: { monto: number | null; fecha?: string | null }; candidates: unknown[]; sourceMessageId: string } | null = null
@@ -147,15 +146,11 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
         expenseCtx = exp
         attendanceCtx = att
         voucherCtx = vou
-        // voice_ctx
-        const { data: conv } = await admin!.from('conversations').select('voice_context').eq('id', dummy.conversationId).maybeSingle()
-        voiceCtx = (conv as { voice_context?: unknown })?.voice_context || null
 
         contextText = buildBotContextText({
           expenseCtx: exp as never,
           attendanceCtx: att as never,
           voucherCtx: vou as never,
-          voiceCtx: voiceCtx as never,
         })
         logs.push({ step: 'botbeta_context', data: { dummyConversationId, contextText: contextText.slice(0, 1500), hasPendingExpense: !!(exp as { pendingExpense?: unknown })?.pendingExpense } })
         // Capture first pending voucher for dummy forced-client flow (caption = client name, amount = extractedAmount sole)
@@ -205,19 +200,11 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   const vouCtx = voucherCtx as { pending?: unknown[] } | null
   const hasPendingVoucherFlag = !!vouCtx && Array.isArray(vouCtx.pending) && vouCtx.pending.length > 0
 
-  const voicePendingCtx = voiceCtx as { pendingVariantItems?: unknown[]; pendingClientName?: string | null; pendingInvoice?: unknown } | null
-  const hasPendingVoice = !!voicePendingCtx && (
-    !!(voicePendingCtx.pendingVariantItems && voicePendingCtx.pendingVariantItems.length > 0) ||
-    !!voicePendingCtx.pendingInvoice ||
-    !!voicePendingCtx.pendingClientName
-  )
-
   let extraction: UnifiedExtraction | null = null
   const pendingDomains: string[] = []
   if (hasPendingExpense) pendingDomains.push('expense')
   if (hasPendingAttendance) pendingDomains.push('attendance')
   if (hasPendingVoucherFlag) pendingDomains.push('voucher')
-  if (hasPendingVoice) pendingDomains.push('voice')
 
   try {
     extraction = await extractBotMessage(text, contextText || undefined, { pendingDomains })
@@ -230,7 +217,6 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
     hasPendingExpense,
     hasPendingAttendance,
     hasPendingVoucher: hasPendingVoucherFlag,
-    hasPendingVoice,
     flowConsumed: false,
     interactiveReplyId: null,
     inboundText: text,

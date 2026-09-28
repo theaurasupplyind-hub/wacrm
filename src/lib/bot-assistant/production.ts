@@ -6,6 +6,8 @@ import { latestUserMessage } from '@/lib/ai/query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runAssistant } from './orchestrator'
+import { runAssistantAgent } from './agent'
+import { ASSISTANT_SYSTEM_PROMPT } from './prompts'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import type { ChatMessage } from '@/lib/ai/types'
@@ -106,13 +108,33 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     }
 
     console.log('[assistant production] historyLen=%s knowledgeLen=%s', history.length, knowledge.length)
-    const result = await runAssistant({
-      text,
-      phone,
-      history,
-      knowledge,
-      readonlyExpensePreview: true,
-    })
+    const useAgent = process.env.ASSISTANT_TOOLS_ENABLED === 'true'
+    const result = useAgent
+      ? await runAssistantAgent({
+          text,
+          history,
+          systemPrompt:
+            knowledge.length > 0
+              ? `${ASSISTANT_SYSTEM_PROMPT}\n\nCONOCIMIENTO:\n${knowledge.join('\n---\n')}`
+              : ASSISTANT_SYSTEM_PROMPT,
+          ctx: {
+            db,
+            accountId,
+            userId,
+            conversationId,
+            contactId,
+            accessToken: '',
+            senderPhone: phone,
+            senderName: phone,
+          },
+        })
+      : await runAssistant({
+          text,
+          phone,
+          history,
+          knowledge,
+          readonlyExpensePreview: true,
+        })
 
     let reply = (result.reply || '').trim()
     console.log('[assistant production] replyPreview=%s escalation=%s toolLogs=%s', reply.slice(0, 200), /\/bot-escalations/i.test(reply), JSON.stringify(result.toolLogs?.map((t) => `${t.tool}:${t.error ? 'ERR:'+t.error.slice(0,40) : 'OK'}`)))

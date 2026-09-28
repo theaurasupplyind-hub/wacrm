@@ -9,6 +9,8 @@ export interface PendingVoucherItem {
   mediaBase64: string
   mediaMimeType: string
   multiInvoice?: boolean
+  /** Timestamp (ms) de creación; usado para expirar pendientes abandonados. */
+  createdAt?: number
 }
 
 export interface PendingTextItem {
@@ -22,6 +24,12 @@ export interface VoucherContextState {
 }
 
 const PENDING_TEXT_TTL_MS = 60_000
+
+/**
+ * Un comprobante pendiente sin resolver por más de este tiempo se considera
+ * abandonado y se descarta (evita que un pending viejo "secuestre" textos).
+ */
+export const VOUCHER_PENDING_TTL_MS = 30 * 60 * 1000
 
 function emptyCtx(): VoucherContextState {
   return { pending: [], pendingTexts: [] }
@@ -66,7 +74,18 @@ export async function loadVoucherContext(
       .eq('id', conversationId)
       .maybeSingle()
     const raw = data?.voucher_context
-    return tryMigrateOldContext(raw)
+    const ctx = tryMigrateOldContext(raw)
+    // Expira pendientes abandonados (los creados antes de esta migración no
+    // tienen createdAt: se conservan para no perder nada).
+    const now = Date.now()
+    const fresh = ctx.pending.filter(
+      (p) => p.createdAt == null || now - p.createdAt <= VOUCHER_PENDING_TTL_MS,
+    )
+    if (fresh.length !== ctx.pending.length) {
+      console.log('[voucher] pruning %d expired pending(s)', ctx.pending.length - fresh.length)
+      ctx.pending = fresh
+    }
+    return ctx
   } catch {
     return emptyCtx()
   }
@@ -93,6 +112,7 @@ export async function addPendingVoucher(
   item: PendingVoucherItem,
 ): Promise<void> {
   try {
+    item.createdAt = item.createdAt ?? Date.now()
     await db.rpc('voucher_append_pending', {
       conv_id: conversationId,
       new_item: item as unknown as Record<string, unknown>,
