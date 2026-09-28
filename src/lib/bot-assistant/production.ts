@@ -6,6 +6,8 @@ import { latestUserMessage } from '@/lib/ai/query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runAssistant } from './orchestrator'
+import { buildBotTrace } from '@/lib/bot-trace/build-trace'
+import { recordBotTrace } from '@/lib/bot-trace/record'
 import type { ChatMessage } from '@/lib/ai/types'
 
 interface ProductionArgs {
@@ -148,6 +150,28 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
       })
     } catch (e) {
       console.warn('[assistant production] router_logs insert failed:', e instanceof Error ? e.message : String(e))
+    }
+
+    // Traza visual del flujo (diagrama /bot-flow).
+    try {
+      await recordBotTrace(
+        buildBotTrace({
+          messageId: `assistant-${conversationId}-${Date.now()}`,
+          producer: 'assistant',
+          conversationId,
+          contactId,
+          accountId,
+          source: 'text',
+          rawText: text,
+          extraction: result.extraction ?? null,
+          dispatchedTo: 'assistant',
+          dispatchReason: 'assistant',
+          logs: result.logs ?? [],
+          finalStatus: 'replied',
+        }),
+      )
+    } catch (e) {
+      console.warn('[assistant production] bot_trace failed:', e instanceof Error ? e.message : String(e))
     }
     // Fallback a auto-reply solo si realmente no hay texto; si hay escalamiento, stripear y mandar igual (P3)
     const needsEscalation = /\/bot-escalations/i.test(reply)

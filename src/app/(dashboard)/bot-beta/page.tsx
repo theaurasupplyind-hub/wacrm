@@ -816,6 +816,13 @@ export default function BotBetaPage() {
                       {unifiedDebug.transcription && <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3"><p className="text-xs font-medium text-sky-400 mb-1">Transcripción</p><p className="text-sm text-foreground">{unifiedDebug.transcription}</p></div>}
                       <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">UnifiedExtraction</p><pre className="text-[11px] text-foreground/80 font-mono whitespace-pre-wrap overflow-x-auto">{JSON.stringify(unifiedDebug.extraction, null, 2) || 'null'}</pre></div>
                       {unifiedDebug.extraction?.fallback_reason && <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400" /><span className="text-xs text-foreground">Fallback: {unifiedDebug.extraction.fallback_reason} — {unifiedDebug.extraction.llm_error || ''}</span></div>}
+                      {unifiedDebug.extraction?.jev_error && <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3"><p className="text-xs font-medium text-rose-400 mb-1">Jev (auxiliar) · error</p><pre className="text-[11px] font-mono">{unifiedDebug.extraction.jev_error}</pre></div>}
+                      {unifiedDebug.extraction?.jev_intent != null && (
+                        <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
+                          <p className="text-xs font-medium text-violet-400 mb-1">Jev (auxiliar) · {unifiedDebug.extraction.jev_used ? 'en uso' : 'shadow'}</p>
+                          <pre className="text-[11px] text-foreground/80 font-mono whitespace-pre-wrap">{`intent: ${unifiedDebug.extraction.jev_intent} (conf ${(unifiedDebug.extraction.jev_confidence ?? 0).toFixed(2)})\npending: ${unifiedDebug.extraction.jev_pending_domain ?? '—'} · answersPending=${(unifiedDebug.extraction.jev_answers_pending ?? 0).toFixed(2)} · supersedes=${(unifiedDebug.extraction.jev_supersedes ?? 0).toFixed(2)}`}</pre>
+                        </div>
+                      )}
                       <div className="rounded-lg border border-border p-3"><p className="text-xs font-medium text-muted-foreground mb-1">Router</p><pre className="text-[11px] font-mono">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason} · dummy:{unifiedDebug.dummyConversationId?.slice(0, 8) || '—'}</pre></div>
                     </div>
                   )}

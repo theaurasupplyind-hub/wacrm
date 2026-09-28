@@ -1,4 +1,5 @@
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
+import type { JevPendingSignal } from '@/lib/bot-llm/classify-jev'
 import { shouldSuppressVoiceOrder } from '@/lib/bot-coordination'
 import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
@@ -28,6 +29,13 @@ export type DispatchReason =
  */
 export const PENDING_CONTEXT_TTL_MS = 15 * 60 * 1000
 
+/**
+ * Umbrales de la señal Jev para el ruteo de pendientes. Solo se aplican si el
+ * llamador pasa `jevPending` (JEV_ENABLED=true y JEV_SHADOW=false).
+ */
+export const JEV_ANSWERS_PENDING_MIN = 0.7
+export const JEV_SUPERSEDES_MIN = 0.7
+
 export interface RouterState {
   hasPendingExpense: boolean
   hasPendingAttendance: boolean
@@ -38,6 +46,11 @@ export interface RouterState {
   inboundText: string
   extraction: UnifiedExtraction | null
   mediaConsumedByVoucher: boolean
+  /**
+   * Señal auxiliar de Jev (System One) sobre el mensaje pendiente. Opcional:
+   * si falta, el router se comporta exactamente como antes.
+   */
+  jevPending?: JevPendingSignal | null
 }
 
 export interface RouterDecision {
@@ -50,7 +63,7 @@ function isAsistenciaIntent(intent: BotIntent | undefined): boolean {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, hasPendingVoice, flowConsumed, interactiveReplyId, inboundText, extraction, mediaConsumedByVoucher } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingVoucher, hasPendingVoice, flowConsumed, interactiveReplyId, inboundText, extraction, mediaConsumedByVoucher, jevPending } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -63,6 +76,21 @@ export function decideDispatch(state: RouterState): RouterDecision {
   // Primary dispatch — mirrors webhook route.ts:1538-1600
   if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
     return { dispatchedTo: 'expense', dispatchReason: 'category_correction' }
+  }
+
+  // Jev (System One): ruteo de pendientes con confianza calibrada. Resuelve
+  // respuestas cortas ("5000", "la 2", "8:30") que las reglas duras perdían.
+  const jevSupersede = !!jevPending && jevPending.supersedes >= JEV_SUPERSEDES_MIN
+  if (
+    jevPending &&
+    !jevSupersede &&
+    jevPending.domain !== 'none' &&
+    jevPending.answersPending >= JEV_ANSWERS_PENDING_MIN
+  ) {
+    if (jevPending.domain === 'expense') return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }
+    if (jevPending.domain === 'attendance') return { dispatchedTo: 'attendance', dispatchReason: 'pending_multiturn' }
+    if (jevPending.domain === 'voucher') return { dispatchedTo: 'voucher', dispatchReason: 'pending_multiturn' }
+    if (jevPending.domain === 'voice') return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
   }
   // Escape de intent fuerte: un mensaje completo nuevo (confianza alta/media)
   // no debe quedar atrapado por un pendiente abandonado de otro dominio.
@@ -80,10 +108,10 @@ export function decideDispatch(state: RouterState): RouterDecision {
       return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
     }
   }
-  if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto') {
+  if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto' && !jevSupersede) {
     return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }
   }
-  if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent)) {
+  if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent) && !jevSupersede) {
     return { dispatchedTo: 'attendance', dispatchReason: 'pending_multiturn' }
   }
   if (intent === 'multi_expense') {
@@ -104,7 +132,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (inboundText && conversationalDebtRe.test(inboundText) && !hasPendingVoice) {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
-  if (hasPendingVoice) {
+  if (hasPendingVoice && !jevSupersede) {
     return { dispatchedTo: 'voice', dispatchReason: 'pending_multiturn' }
   }
   if (intent === 'factura') {
@@ -118,11 +146,11 @@ export function decideDispatch(state: RouterState): RouterDecision {
   }
 
   // Fallback regex gates — mirrors webhook fallback
-  const isExpenseText = !flowConsumed && !interactiveReplyId && (hasPendingExpense || (inboundText.trim() && looksLikeExpense(inboundText)))
+  const isExpenseText = !flowConsumed && !interactiveReplyId && ((hasPendingExpense && !jevSupersede) || (inboundText.trim() && looksLikeExpense(inboundText)))
   if (isExpenseText) {
     return { dispatchedTo: 'expense', dispatchReason: 'fallback_regex' }
   }
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && (hasPendingAttendance || looksLikeAttendance(inboundText))) {
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && ((hasPendingAttendance && !jevSupersede) || looksLikeAttendance(inboundText))) {
     return { dispatchedTo: 'attendance', dispatchReason: 'fallback_regex' }
   }
   if (!flowConsumed && !interactiveReplyId && inboundText.trim() && suppressVoice) {

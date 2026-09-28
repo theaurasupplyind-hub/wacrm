@@ -169,3 +169,71 @@ describe('decideDispatch strong-intent escape (Fix 1)', () => {
     expect(r.dispatchReason).toBe('pending_multiturn')
   })
 })
+
+describe('decideDispatch jevPending (System One)', () => {
+  it('voucher pendiente + Jev answersPending alto → voucher (resuelve respuesta corta)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: false,
+      hasPendingAttendance: false,
+      hasPendingVoucher: true,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'la 2',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+      mediaConsumedByVoucher: false,
+      jevPending: { domain: 'voucher', answersPending: 0.9, supersedes: 0.05 },
+    })
+    expect(r.dispatchedTo).toBe('voucher')
+    expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+
+  it('Jev domain "none" no roba el mensaje aunque answersPending sea alto', () => {
+    const r = decideDispatch({
+      hasPendingExpense: false,
+      hasPendingAttendance: false,
+      hasPendingVoucher: true,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'cuánto debo',
+      extraction: extraction({ intent: 'factura', confianza: 'alta' }),
+      mediaConsumedByVoucher: false,
+      jevPending: { domain: 'none', answersPending: 0.9, supersedes: 0.1 },
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('Jev supersedes alto libera el pendiente y deja pasar un "otro" al assistant', () => {
+    const r = decideDispatch({
+      hasPendingExpense: true,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: 'gracias, después sigo',
+      extraction: extraction({ intent: 'otro', confianza: 'alta' }),
+      mediaConsumedByVoucher: false,
+      jevPending: { domain: 'expense', answersPending: 0.2, supersedes: 0.9 },
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('Jev con answersPending bajo cae a las reglas actuales', () => {
+    const r = decideDispatch({
+      hasPendingExpense: true,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      hasPendingVoice: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: '5000',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+      mediaConsumedByVoucher: false,
+      jevPending: { domain: 'expense', answersPending: 0.3, supersedes: 0.1 },
+    })
+    expect(r.dispatchedTo).toBe('expense')
+    expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+})

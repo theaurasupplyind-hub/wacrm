@@ -1,4 +1,6 @@
 import { callOpenRouter } from '@/lib/ai/openrouter'
+import { isJevEnabled, isJevShadow } from '@/lib/ai/jev'
+import { classifyWithJev, confidenceToConfianza, JEV_OVERRIDE_MIN_CONFIDENCE, type JevClassification } from './classify-jev'
 import { fallbackExtract } from './fallback'
 import { extractJson, normalizeDate, normalizeTime, parseMontoSafe } from './sanitize'
 import type { BotIntent, Confidence, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
@@ -342,13 +344,33 @@ function todayAR(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
 }
 
+export interface ExtractBotMessageOpts {
+  /** Dominios con pendiente activo (expense/attendance/voucher/voice) para Jev. */
+  pendingDomains?: string[]
+}
+
 export async function extractBotMessage(
   text: string,
   contextText?: string,
+  opts?: ExtractBotMessageOpts,
 ): Promise<UnifiedExtraction> {
   const raw = (text || '').trim()
   if (!raw) return fallbackExtract(raw)
 
+  // Jev corre en paralelo al LLM (auxiliar de clasificación). Si está apagado,
+  // no se llama y el resultado es idéntico al pipeline anterior.
+  const jevPromise = isJevEnabled()
+    ? classifyWithJev({ text: raw, contextText, pendingDomains: opts?.pendingDomains })
+    : null
+
+  const extraction = await extractWithoutJev(raw, contextText)
+  return applyJev(extraction, raw, jevPromise)
+}
+
+async function extractWithoutJev(
+  raw: string,
+  contextText?: string,
+): Promise<UnifiedExtraction> {
   const today = todayAR()
   const systemPrompt = `${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
 
@@ -417,4 +439,54 @@ export async function extractBotMessage(
       llm_error: msg,
     })
   }
+}
+
+/**
+ * Aplica el resultado de Jev sobre una extracción ya resuelta.
+ * - shadow (default cuando JEV_ENABLED=true): adjunta debug, NO cambia intent.
+ * - activo (JEV_SHADOW=false): usa intent/confianza de Jev, preservando la
+ *   corrección determinística de voucher y los campos abiertos del LLM.
+ */
+async function applyJev(
+  extraction: UnifiedExtraction,
+  raw: string,
+  jevPromise: Promise<JevClassification | null> | null,
+): Promise<UnifiedExtraction> {
+  if (!jevPromise) return extraction
+
+  let jev: JevClassification | null = null
+  try {
+    jev = await jevPromise
+  } catch {
+    jev = null
+  }
+
+  if (!jev) {
+    return { ...extraction, jev_error: extraction.jev_error ?? 'call_failed' }
+  }
+
+  const debug: Partial<UnifiedExtraction> = {
+    jev_intent: jev.intent,
+    jev_confidence: jev.confidence,
+    jev_probabilities: jev.probabilities,
+    jev_pending_domain: jev.pendingDomain,
+    jev_answers_pending: jev.answersPending,
+    jev_supersedes: jev.supersedes,
+    jev_usage: jev.usage,
+  }
+
+  // Shadow, o confianza insuficiente: Jev no decide, solo aporta debug.
+  if (isJevShadow() || jev.confidence < JEV_OVERRIDE_MIN_CONFIDENCE) {
+    return { ...extraction, ...debug, jev_used: false }
+  }
+
+  const merged: UnifiedExtraction = {
+    ...extraction,
+    ...debug,
+    intent: jev.intent,
+    confianza: confidenceToConfianza(jev.confidence),
+    jev_used: true,
+  }
+  // Preservar la red determinística anti-sesgo de voucher sobre el intent de Jev.
+  return applyVoucherCorrection(merged, raw)
 }

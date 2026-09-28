@@ -17,6 +17,7 @@ import {
   LayoutDashboard,
   LogOut,
   MessageSquare,
+  Network,
   Radio,
   Settings,
   Shield,
@@ -103,6 +104,7 @@ const navItems: NavItem[] = [
   { href: "/agents", label: "AI Agents", icon: Bot },
   { href: "/voucher-debug", label: "Voucher Debug", icon: Bug },
   { href: "/bot-debug", label: "Bot Debug", icon: FlaskConical },
+  { href: "/bot-flow", label: "Bot Flow", icon: Network, beta: true },
   { href: "/bot-beta", label: "Bot Beta", icon: FlaskConical, beta: true },
 ];
 

@@ -58,6 +58,43 @@ export function montoDistance(monto: number, saldo: number): number {
   return Math.abs(monto - saldo)
 }
 
+/**
+ * Normaliza un nombre para comparar captions (minúsculas, sin tildes).
+ */
+export function normalizeCaption(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
+}
+
+/**
+ * ¿El nombre escrito en el caption matchea el cliente de una factura?
+ * Tolera coincidencia parcial ("Jesus" vs "Jesus Daniel") y por tokens.
+ */
+export function captionMatchesClient(caption: string, cliente: string): boolean {
+  const cap = normalizeCaption(caption)
+  const cli = normalizeCaption(cliente)
+  if (!cap || !cli) return false
+  if (cli.includes(cap) || cap.includes(cli)) return true
+  const capTokens = cap.split(/\s+/).filter(Boolean)
+  const cliTokens = cli.split(/\s+/).filter(Boolean)
+  if (capTokens.length === 0 || cliTokens.length === 0) return false
+  return capTokens.every((t) => cliTokens.some((c) => c.includes(t) || t.includes(c)))
+}
+
+/**
+ * El caption es una preferencia, nunca un veto: si algún item matchea el
+ * caption se devuelven solo esos; si ninguno matchea, se devuelve la lista
+ * completa (evita dejar el pool vacío y perder montos exactos).
+ */
+export function preferByCaption<T>(
+  items: T[],
+  caption: string | null | undefined,
+  nameOf: (item: T) => string,
+): T[] {
+  if (!caption || items.length === 0) return items
+  const filtered = items.filter((item) => captionMatchesClient(caption, nameOf(item)))
+  return filtered.length > 0 ? filtered : items
+}
+
 function findExactSubsetSum(
   target: number,
   invoices: MatchVoucherCandidate[],

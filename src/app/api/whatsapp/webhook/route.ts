@@ -14,6 +14,7 @@ import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { processVoiceOrder, processTextOrder } from '@/lib/voice-orders'
 import type { VoiceOrderResult } from '@/lib/voice-orders/types'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
+import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
 import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, clearExpenseContext, isCategoryCorrectionCommand } from '@/lib/expenses'
@@ -31,6 +32,8 @@ import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { detectPastedConversation } from '@/lib/voice-orders/pasted-conversation'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
+import { buildBotTrace } from '@/lib/bot-trace/build-trace'
+import { recordBotTrace } from '@/lib/bot-trace/record'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -1574,8 +1577,13 @@ async function processMessage(
   })
   let extraction: UnifiedExtraction | null = null
   if (!pasted && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    const pendingDomains: string[] = []
+    if (hasPendingExpense) pendingDomains.push('expense')
+    if (hasPendingAttendance) pendingDomains.push('attendance')
+    if (hasPendingVoucher) pendingDomains.push('voucher')
+    if (hasPendingVoice) pendingDomains.push('voice')
     try {
-      extraction = await extractBotMessage(inboundText, contextText)
+      extraction = await extractBotMessage(inboundText, contextText, { pendingDomains })
     } catch (err) {
       console.error('[intent] extractor error:', err)
     }
@@ -1593,7 +1601,7 @@ async function processMessage(
   // Regla dura: ningún camino termina en silencio, siempre hay mensaje.
   // ============================================================
   let clarifyHandled = false
-  let clarifyTo = 'clarify'
+  const clarifyTo = 'clarify'
   let clarifyReason = 'clarify_ask'
   let clarifyResolved = false
   let clarifySuperseded = false
@@ -1819,6 +1827,7 @@ async function processMessage(
         inboundText,
         extraction,
         mediaConsumedByVoucher,
+        jevPending: buildJevPending(extraction),
       })
   const dispatchedTo: string = routerDecision.dispatchedTo
   let dispatchReason: string = routerDecision.dispatchReason
@@ -1898,6 +1907,31 @@ async function processMessage(
           dispatchReason,
           contextText,
         })
+        // Traza visual del flujo (diagrama /bot-flow). Fire-and-forget.
+        await recordBotTrace(
+          buildBotTrace({
+            messageId: message.id,
+            producer: 'webhook',
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+            accountId,
+            source: message.type,
+            rawText: inboundText,
+            messageType: message.type,
+            contextFlags: {
+              expense: hasPendingExpense,
+              attendance: hasPendingAttendance,
+              voucher: hasPendingVoucher,
+              voice: hasPendingVoice,
+              clarify: !!clarifyLoad?.state,
+            },
+            extraction,
+            contextText,
+            dispatchedTo,
+            dispatchReason,
+            finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
+          }),
+        )
       })(),
     )
   }

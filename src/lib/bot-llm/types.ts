@@ -81,4 +81,23 @@ export interface UnifiedExtraction {
   llm_error?: string | null
   /** Tokens usados en la llamada al LLM (si se llegó a llamar). */
   llm_usage?: { prompt_tokens: number; completion_tokens: number } | null
+  // ── Debug / decisión Jev (System One, ver src/lib/ai/jev.ts) ──
+  /** Intent propuesto por Jev (siempre presente si Jev respondió). */
+  jev_intent?: BotIntent | null
+  /** `confidence` calibrado de Jev para el intent (0–1). */
+  jev_confidence?: number | null
+  /** Distribución completa de probabilidades del intent. */
+  jev_probabilities?: Record<string, number> | null
+  /** Dominio de pendiente al que responde el mensaje. */
+  jev_pending_domain?: 'expense' | 'attendance' | 'voucher' | 'voice' | 'none' | null
+  /** Probabilidad de que el mensaje responda al pendiente (noul). */
+  jev_answers_pending?: number | null
+  /** Probabilidad de que sea una orden nueva que reemplaza el pendiente (noul). */
+  jev_supersedes?: number | null
+  /** true solo cuando el intent/confianza final provienen de Jev (no shadow). */
+  jev_used?: boolean
+  /** Motivo por el que Jev no aportó (call_failed, etc.). */
+  jev_error?: string | null
+  /** Tokens consumidos por la llamada a Jev. */
+  jev_usage?: { input_tokens: number; output_tokens: number } | null
 }

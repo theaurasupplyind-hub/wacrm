@@ -1,12 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { callOpenRouter } from '@/lib/ai/openrouter'
+import { callJev } from '@/lib/ai/jev'
 import { extractBotMessage } from './extract-bot-message'
 
 vi.mock('@/lib/ai/openrouter', () => ({
   callOpenRouter: vi.fn(),
 }))
 
+vi.mock('@/lib/ai/jev', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/jev')>()
+  return { ...actual, callJev: vi.fn() }
+})
+
 const mockedCall = vi.mocked(callOpenRouter)
+const mockedJev = vi.mocked(callJev)
 
 function mockJson(payload: unknown) {
   mockedCall.mockResolvedValueOnce({
@@ -173,5 +180,105 @@ describe('extractBotMessage — metadatos de debug', () => {
     const r = await extractBotMessage('pagué 18 mil de luz')
     expect(r.fallback_reason).toBe('schema_out_of_range')
     expect(r.llm_raw_json).toEqual({ intent: 'marciano', confianza: 'alta' })
+  })
+})
+
+describe('extractBotMessage — Jev (System One)', () => {
+  const ENV_KEYS = ['JEV_ENABLED', 'JEV_SHADOW'] as const
+  const saved: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    mockedCall.mockClear()
+    mockedJev.mockReset()
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k]
+      delete process.env[k]
+    }
+  })
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  })
+
+  function mockJev(choice: string, confidence: number) {
+    mockedJev.mockResolvedValueOnce({
+      answers: {
+        intent: { type: 'choice', choice, probabilities: { [choice]: confidence }, confidence },
+        pending_domain: { type: 'choice', choice: 'none', probabilities: {}, confidence: 0.5 },
+        answers_pending: { type: 'noul', noul: 0.1 },
+        supersedes: { type: 'noul', noul: 0.1 },
+      },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+  }
+
+  it('activo con confianza alta: el intent de Jev gana y conserva campos del LLM', async () => {
+    process.env.JEV_ENABLED = 'true'
+    process.env.JEV_SHADOW = 'false'
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    mockJev('pedido', 0.9)
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('pedido')
+    expect(r.jev_used).toBe(true)
+    expect(r.monto).toBe(18000)
+    expect(r.jev_intent).toBe('pedido')
+  })
+
+  it('activo con confianza baja: conserva el intent del LLM', async () => {
+    process.env.JEV_ENABLED = 'true'
+    process.env.JEV_SHADOW = 'false'
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    mockJev('pedido', 0.4)
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+    expect(r.jev_used).toBe(false)
+    expect(r.jev_intent).toBe('pedido')
+  })
+
+  it('shadow: Jev no decide, solo aporta debug', async () => {
+    process.env.JEV_ENABLED = 'true'
+    process.env.JEV_SHADOW = 'true'
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    mockJev('pedido', 0.99)
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+    expect(r.jev_used).toBe(false)
+    expect(r.jev_intent).toBe('pedido')
+  })
+
+  it('Jev falla: el pipeline del LLM sigue intacto', async () => {
+    process.env.JEV_ENABLED = 'true'
+    process.env.JEV_SHADOW = 'false'
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    mockedJev.mockRejectedValueOnce(new Error('jev down'))
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+    expect(r.jev_error).toBe('call_failed')
+  })
+
+  it('apagado: no llama a Jev', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: '18 mil', categoria: 'luz',
+      faltan_campos: [], dudoso: false, razon_duda: null,
+    })
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+    expect(r.jev_intent).toBeUndefined()
+    expect(mockedJev).not.toHaveBeenCalled()
   })
 })

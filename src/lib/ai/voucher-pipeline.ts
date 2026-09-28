@@ -2,7 +2,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { extractVoucherData } from './voucher-extraction'
-import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName, pickStickyExact } from './voucher-matching'
+import { type MatchStatus, findExactClientSumMatches, montoDistance, NAME_MATCH_THRESHOLD, getMontoTolerancia, sanitizeClientName, pickStickyExact, captionMatchesClient, preferByCaption } from './voucher-matching'
 import { loadVoucherContext, addPendingVoucher, removePendingVoucher, clearVoucherContext, consumePendingText } from './voucher-context'
 import {
   matchVoucherByName,
@@ -11,6 +11,8 @@ import {
 } from '../facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '../facbal/client'
 import { runVoucherDryRun } from '../bot-beta/voucher-dryrun'
+import { buildBotTrace } from '../bot-trace/build-trace'
+import { recordBotTrace } from '../bot-trace/record'
 
 const MEDIA_TIMEOUT_MS = 15_000
 
@@ -649,9 +651,11 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       voucher.monto, voucher.fecha, voucher.referencia, voucher.banco, voucher.nombre_cliente, voucher.nombre_origen, voucher.nombre_destino, voucher.cbu_destino, voucher.cuit_destino,
     )
 
-    // Caption siempre gana (pago parcial obligado) — si la imagen vino con "Jesus Daniel" en caption, pisa al extraído.
-    // Pero un caption inválido ("Gracias!", "Comprobante") es solo un comentario:
-    // se ignora para no vetar matches exactos (ej. Fase 1 con monto idéntico).
+    // El caption es una PREFERENCIA, no un veto: si la imagen vino con
+    // "Jesus Daniel" prioriza a ese cliente (pago parcial), pero si no
+    // matchea ningún cliente se cae al nombre/monto reales del comprobante.
+    // Un caption inválido ("Gracias!", "Comprobante") se ignora. El nombre
+    // extraído original se conserva por si el caption no sirve.
     const forcedCaptionRaw = args.message.caption?.trim() || null
     const isLetterSelectionCaption = forcedCaptionRaw ? /^[a-zA-Z]\s*$/.test(forcedCaptionRaw) || /^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test(forcedCaptionRaw) : false
     const forcedCaptionCandidate = forcedCaptionRaw && !isLetterSelectionCaption && forcedCaptionRaw.length >= 3 ? forcedCaptionRaw : null
@@ -660,19 +664,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
       console.log('[voucher] forcedCaption descartado como inválido: "%s"', forcedCaptionCandidate)
       debugInfo.invalidCaption = forcedCaptionCandidate
     }
-    function normalizeCaption(s: string): string {
-      return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
-    }
-    function captionMatchesClient(caption: string, cliente: string): boolean {
-      const cap = normalizeCaption(caption)
-      const cli = normalizeCaption(cliente)
-      if (!cap || !cli) return false
-      if (cli.includes(cap) || cap.includes(cli)) return true
-      const capTokens = cap.split(/\s+/).filter(Boolean)
-      const cliTokens = cli.split(/\s+/).filter(Boolean)
-      if (capTokens.length === 0 || cliTokens.length === 0) return false
-      return capTokens.every((t) => cliTokens.some((c) => c.includes(t) || t.includes(c)))
-    }
+    // Nombres reales extraídos del comprobante, antes de que el caption los
+    // pise: sirven de respaldo si el caption no matchea ningún cliente.
+    const nombreClienteVoucher = voucher.nombre_cliente
+    const nombreOrigenVoucher = voucher.nombre_origen
     if (forcedCaption) {
       console.log('[voucher] forcedCaption override: "%s" (replaces nombre_cliente="%s")', forcedCaption, voucher.nombre_cliente)
       extractedNombreCliente = forcedCaption
@@ -763,16 +758,18 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           console.table(phase1ApiResult)
         }
 
+        // El caption prioriza, no veta: si matchea algún exacto se usan esos;
+        // si no matchea ninguno, se agregan todos los exactos (antes quedaba
+        // el pool vacío y se perdía el monto exacto).
+        const exactP1 = amountCandidatesP1.filter(
+          (c) => montoDistance(voucher.monto!, c.saldo_pendiente) === 0,
+        )
+        const exactToAdd = preferByCaption(exactP1, forcedCaption, (c) => c.cliente_nombre)
         let exactCount = 0
-        for (const c of amountCandidatesP1) {
-          if (forcedCaption && !captionMatchesClient(forcedCaption, c.cliente_nombre)) {
-            continue
-          }
-          if (montoDistance(voucher.monto!, c.saldo_pendiente) === 0) {
-            phase1Exact.push(c)
-            if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
-              exactCount++
-            }
+        for (const c of exactToAdd) {
+          phase1Exact.push(c)
+          if (tryAddToPool({ type: 'single', invoices: [c], total: c.saldo_pendiente, clientName: c.cliente_nombre })) {
+            exactCount++
           }
         }
 
@@ -834,11 +831,9 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
         }
 
         const exactSums = findExactClientSumMatches(voucher.monto, allCandidates)
+        const sumsToAdd = preferByCaption(exactSums, forcedCaption, (g) => g.clientName)
         let sumCount = 0
-        for (const group of exactSums) {
-          if (forcedCaption && !captionMatchesClient(forcedCaption, group.clientName)) {
-            continue
-          }
+        for (const group of sumsToAdd) {
           if (tryAddToPool({ type: 'sum', invoices: group.invoices, total: group.total, clientName: group.clientName })) {
             sumCount++
           }
@@ -885,6 +880,39 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
           allDestinationCandidates.push(...nameResult.destination_candidates)
         }
         console.log('[voucher-debug] Phase 3 API: %d candidates, %d destinations', nameCandidates.length, nameResult.destination_candidates?.length || 0)
+
+        // Si el caption no matcheó ningún cliente ni hubo score confiable,
+        // reintentar con el nombre real del comprobante (el caption no debe
+        // borrar el nombre que traía el voucher).
+        const captionHasNameMatchP3 = forcedCaption
+          ? nameCandidates.some(c => captionMatchesClient(forcedCaption, c.cliente_nombre))
+          : false
+        const hasReliableP3 = nameCandidates.some(c => c.score >= NAME_MATCH_THRESHOLD)
+        if (forcedCaption && !captionHasNameMatchP3 && !hasReliableP3 && (nombreClienteVoucher || nombreOrigenVoucher)) {
+          console.log('[voucher-debug] Phase 3 retry con nombre real del voucher (caption sin match): cliente="%s" origen="%s"', nombreClienteVoucher, nombreOrigenVoucher)
+          try {
+            const retryResult = await matchVoucherByName({
+              nombre_cliente: nombreClienteVoucher,
+              nombre_origen: nombreOrigenVoucher,
+              nombre_destino: voucher.nombre_destino,
+              cbu_destino: voucher.cbu_destino,
+              cuit_destino: voucher.cuit_destino,
+              monto: voucher.monto,
+              tolerancia: 50,
+            })
+            if (retryResult.destination_candidates?.length) {
+              allDestinationCandidates.push(...retryResult.destination_candidates)
+            }
+            if ((retryResult.invoice_candidates || []).length > 0) {
+              nameCandidates = retryResult.invoice_candidates
+              console.log('[voucher-debug] Phase 3 retry: %d candidates', nameCandidates.length)
+            }
+          } catch (retryErr) {
+            const msg = retryErr instanceof Error ? retryErr.message : String(retryErr)
+            console.error('[voucher-debug] Phase 3 retry failed:', msg)
+          }
+        }
+
         const phase3ApiResult = nameCandidates.map(c => ({
           factura: c.numero_factura,
           cliente: c.cliente_nombre,
@@ -950,18 +978,22 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     const nameIsReliable = nameCandidates.length > 0
       && nameCandidates.some(c => c.score >= NAME_MATCH_THRESHOLD)
-    const forcedReliable = forcedCaption ? nameCandidates.some(c => captionMatchesClient(forcedCaption, c.cliente_nombre)) : false
-    const effectiveReliable = nameIsReliable || forcedReliable
+    // El caption solo filtra si realmente matchea algún candidato; si no,
+    // se usa el score (el caption no debe vetar ni dejar el pool vacío).
+    const captionHasMatch = forcedCaption
+      ? nameCandidates.some(c => captionMatchesClient(forcedCaption, c.cliente_nombre))
+      : false
+    const effectiveReliable = nameIsReliable || captionHasMatch
+    const nameFilter = (c: MatchVoucherCandidate) =>
+      captionHasMatch ? captionMatchesClient(forcedCaption!, c.cliente_nombre) : c.score >= NAME_MATCH_THRESHOLD
 
-    console.log('[voucher-debug] Phase 4: hasName=%s nameIsReliable=%s forcedReliable=%s nameCands=%d',
-      !!hasName, nameIsReliable, forcedReliable, nameCandidates.length)
+    console.log('[voucher-debug] Phase 4: hasName=%s nameIsReliable=%s captionHasMatch=%s nameCands=%d',
+      !!hasName, nameIsReliable, captionHasMatch, nameCandidates.length)
 
     // CASE A: Pool has multiple entries → narrow down by name
     if (candidatePool.length > 1 && effectiveReliable) {
       const highScoreIds = new Set(
-        nameCandidates
-          .filter(c => forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : c.score >= NAME_MATCH_THRESHOLD)
-          .map(c => c.invoice_id)
+        nameCandidates.filter(nameFilter).map(c => c.invoice_id)
       )
       const filteredPool = candidatePool.filter(entry =>
         entry.invoices.some(inv => highScoreIds.has(inv.invoice_id))
@@ -978,7 +1010,7 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
 
     // CASE B: Pool is empty → try to add best name match
     if (candidatePool.length === 0 && effectiveReliable) {
-      const eligible = nameCandidates.filter(c => forcedCaption ? captionMatchesClient(forcedCaption, c.cliente_nombre) : c.score >= NAME_MATCH_THRESHOLD)
+      const eligible = nameCandidates.filter(nameFilter)
       const bestMatch = eligible.sort((a, b) => b.score - a.score)[0]
       if (bestMatch) {
         if (tryAddToPool({ type: 'single', invoices: [bestMatch], total: bestMatch.saldo_pendiente, clientName: bestMatch.cliente_nombre })) {
@@ -995,9 +1027,10 @@ export async function processVoucherMessage(args: PipelineArgs): Promise<void> {
     // comprobante sí identifica al cliente real.
     if (candidatePool.length === 0) {
       const fallbackName =
-        sanitizeClientName(voucher.nombre_origen) ??
+        sanitizeClientName(nombreOrigenVoucher) ??
+        sanitizeClientName(nombreClienteVoucher) ??
         sanitizeClientName(voucher.nombre_destino) ??
-        (effectiveReliable ? null : sanitizeClientName(voucher.nombre_cliente))
+        (effectiveReliable ? null : sanitizeClientName(forcedCaption))
       if (fallbackName) {
         console.log('[voucher-debug] Phase 4b: fallback name-only search nombre="%s"', fallbackName)
         try {
@@ -1932,6 +1965,20 @@ async function saveAttempt(args: {
       error_message: args.errorMessage ?? null,
       debug_info: args.debugInfo ?? null,
     })
+    // Traza visual del flujo (diagrama /bot-flow). Se mergea con la que ya
+    // haya registrado el webhook para el mismo message_id.
+    await recordBotTrace(
+      buildBotTrace({
+        messageId: args.messageId,
+        producer: 'voucher',
+        contactId: args.contactId,
+        source: 'voucher',
+        voucherDebug: args.debugInfo ?? null,
+        voucherStatus: args.matchStatus,
+        finalStatus: args.matchStatus,
+        errorMessage: args.errorMessage ?? null,
+      }),
+    )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('relation') && msg.includes('does not exist')) {

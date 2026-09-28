@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
+import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import { decideDispatch } from '@/lib/bot/router'
 import { runAssistant } from '@/lib/bot-assistant/orchestrator'
@@ -190,15 +191,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
     contextText = args.history.slice(-10).map((t) => `${t.role}: ${t.content}`).join('\n')
   }
 
-  let extraction: UnifiedExtraction | null = null
-  try {
-    extraction = await extractBotMessage(text, contextText || undefined)
-    logs.push({ step: 'assistant_extraction', data: { extraction } })
-  } catch (err) {
-    logs.push({ step: 'assistant_extraction_error', data: { error: err instanceof Error ? err.message : String(err) } })
-  }
-
-  // Derive pending flags same as webhook
+  // Derive pending flags before extraction so Jev recibe los dominios activos.
   const expCtx = expenseCtx as { pendingExpense?: unknown; pendingMultiple?: unknown; stage?: string; correctingCategory?: boolean } | null
   const hasPendingExpense = !!expCtx && (
     ((!!expCtx.pendingExpense || !!expCtx.pendingMultiple) &&
@@ -212,15 +205,38 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   const vouCtx = voucherCtx as { pending?: unknown[] } | null
   const hasPendingVoucherFlag = !!vouCtx && Array.isArray(vouCtx.pending) && vouCtx.pending.length > 0
 
+  const voicePendingCtx = voiceCtx as { pendingVariantItems?: unknown[]; pendingClientName?: string | null; pendingInvoice?: unknown } | null
+  const hasPendingVoice = !!voicePendingCtx && (
+    !!(voicePendingCtx.pendingVariantItems && voicePendingCtx.pendingVariantItems.length > 0) ||
+    !!voicePendingCtx.pendingInvoice ||
+    !!voicePendingCtx.pendingClientName
+  )
+
+  let extraction: UnifiedExtraction | null = null
+  const pendingDomains: string[] = []
+  if (hasPendingExpense) pendingDomains.push('expense')
+  if (hasPendingAttendance) pendingDomains.push('attendance')
+  if (hasPendingVoucherFlag) pendingDomains.push('voucher')
+  if (hasPendingVoice) pendingDomains.push('voice')
+
+  try {
+    extraction = await extractBotMessage(text, contextText || undefined, { pendingDomains })
+    logs.push({ step: 'assistant_extraction', data: { extraction } })
+  } catch (err) {
+    logs.push({ step: 'assistant_extraction_error', data: { error: err instanceof Error ? err.message : String(err) } })
+  }
+
   const decision = decideDispatch({
     hasPendingExpense,
     hasPendingAttendance,
     hasPendingVoucher: hasPendingVoucherFlag,
+    hasPendingVoice,
     flowConsumed: false,
     interactiveReplyId: null,
     inboundText: text,
     extraction,
     mediaConsumedByVoucher: false,
+    jevPending: buildJevPending(extraction),
   })
 
   logs.push({ step: 'botbeta_router', data: { decision, hasPendingExpense, hasPendingAttendance, hasPendingVoucher: hasPendingVoucherFlag } })
