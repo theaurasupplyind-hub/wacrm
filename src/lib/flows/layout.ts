@@ -52,6 +52,12 @@ export interface LayoutOptions {
   defaultWidth?: number;
   /** Default node height when a node's height isn't measured yet. */
   defaultHeight?: number;
+  /**
+   * Dagre ranker. `network-simplex` (default) minimizes edge length but can
+   * fan nodes out; `tight-tree` keeps the graph more compact and predictable
+   * for dense topologies with heavy fan-in/fan-out.
+   */
+  ranker?: "network-simplex" | "tight-tree" | "longest-path";
 }
 
 const DEFAULTS: Required<LayoutOptions> = {
@@ -60,6 +66,7 @@ const DEFAULTS: Required<LayoutOptions> = {
   nodeSep: 60,
   defaultWidth: 240,
   defaultHeight: 90,
+  ranker: "network-simplex",
 };
 
 /**
@@ -97,6 +104,7 @@ export function autoLayout(
     rankdir: opts.direction,
     ranksep: opts.rankSep,
     nodesep: opts.nodeSep,
+    ranker: opts.ranker,
   });
 
   for (const n of nodes) {

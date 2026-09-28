@@ -80,7 +80,7 @@ function TopoNodeCard({ data }: NodeProps) {
         visited ? 'border-border' : 'border-dashed border-border',
       )}
     >
-      <Handle type="target" position={Position.Left} className="!invisible" />
+      <Handle type="target" position={Position.Top} className="!invisible" />
       <div className="flex items-center gap-2">
         <span
           className="h-2 w-2 shrink-0 rounded-full"
@@ -98,7 +98,7 @@ function TopoNodeCard({ data }: NodeProps) {
       <div className="mt-1 truncate text-xs font-medium text-foreground" title={node.label}>
         {node.label}
       </div>
-      <Handle type="source" position={Position.Right} className="!invisible" />
+      <Handle type="source" position={Position.Bottom} className="!invisible" />
     </div>
   );
 }
@@ -136,7 +136,7 @@ function Inner({ trace, onSelectNode, className }: BotFlowDiagramProps) {
         height: NODE_HEIGHT,
       })),
       BOT_TOPOLOGY.edges.map((e) => ({ source: e.source, target: e.target })),
-      { direction: 'TB', rankSep: 70, nodeSep: 40, defaultWidth: NODE_WIDTH, defaultHeight: NODE_HEIGHT },
+      { direction: 'TB', rankSep: 90, nodeSep: 60, ranker: 'tight-tree', defaultWidth: NODE_WIDTH, defaultHeight: NODE_HEIGHT },
     );
 
     const lastNode = path.length > 0 ? path[path.length - 1] : null;
@@ -156,8 +156,8 @@ function Inner({ trace, onSelectNode, className }: BotFlowDiagramProps) {
         type: 'topo',
         position: pos,
         data,
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
         draggable: true,
         style: { width: NODE_WIDTH },
       };
@@ -171,12 +171,17 @@ function Inner({ trace, onSelectNode, className }: BotFlowDiagramProps) {
         id: e.id,
         source: e.source,
         target: e.target,
+        type: 'smoothstep',
         label: e.label,
         animated: traversed,
         style: traversed
           ? { stroke: 'var(--primary, #3b82f6)', strokeWidth: 2 }
-          : { stroke: '#cbd5e1', strokeWidth: 1, opacity: 0.5 },
-        labelStyle: { fontSize: 10, fill: '#64748b', opacity: traversed ? 1 : 0.5 },
+          : { stroke: '#cbd5e1', strokeWidth: 1, opacity: 0.4 },
+        labelStyle: {
+          fontSize: 10,
+          fill: '#64748b',
+          opacity: traversed ? 1 : 0.35,
+        },
         labelBgStyle: { fill: 'var(--card, #fff)', fillOpacity: 0.8 },
       };
     });
