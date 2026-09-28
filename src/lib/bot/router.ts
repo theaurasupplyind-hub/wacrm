@@ -49,6 +49,13 @@ export interface RouterState {
    * si falta, el router se comporta exactamente como antes.
    */
   jevPending?: JevPendingSignal | null
+  /**
+   * El usuario respondió a una aclaración pendiente (botones/tap o texto) y
+   * eligió este intent. Es la autoridad de ruteo de esa respuesta: gana al
+   * fallback regex, que de lo contrario lee el título del botón como orden
+   * (ej. "Me pagó (cobro)" matchea looksLikeExpense).
+   */
+  clarifyAnsweredIntent?: BotIntent | null
 }
 
 export interface RouterDecision {
@@ -60,13 +67,24 @@ function isAsistenciaIntent(intent: BotIntent | undefined): boolean {
   return intent === 'asistencia_llegada' || intent === 'asistencia_salida' || intent === 'asistencia_estado'
 }
 
+/** Mapea el intent elegido al responder una aclaración a su dominio de dispatch. */
+function resolveClarifyIntent(intent: BotIntent): RouterDecision {
+  if (intent === 'gasto' || intent === 'multi_expense') return { dispatchedTo: 'expense', dispatchReason: 'clarify_resolve' }
+  if (intent === 'voucher') return { dispatchedTo: 'voucher', dispatchReason: 'clarify_resolve' }
+  if (isAsistenciaIntent(intent)) return { dispatchedTo: 'attendance', dispatchReason: 'clarify_resolve' }
+  return { dispatchedTo: 'assistant', dispatchReason: 'clarify_resolve' }
+}
+
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending } = state
+  const { hasPendingExpense, hasPendingAttendance, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
   // Flow / interactive already consumed
   if (flowConsumed) return { dispatchedTo: 'flow', dispatchReason: 'consumed' }
+  // Respuesta a una aclaración: el intent elegido manda. Va antes del check
+  // interactivo y del fallback regex para no re-clasificar el título del botón.
+  if (clarifyAnsweredIntent) return resolveClarifyIntent(clarifyAnsweredIntent)
   if (interactiveReplyId) return { dispatchedTo: 'interactive', dispatchReason: 'consumed' }
 
   // Primary dispatch — mirrors webhook route.ts

@@ -18,6 +18,8 @@ export interface Ambiguity {
   kind: 'pago' | 'baja_confianza'
   question: string
   options: ClarifyOption[]
+  /** Sujeto que paga (caso pago), para no perder el nombre si el LLM no lo extrajo. */
+  subject?: string | null
 }
 
 /** ¿El texto tiene forma de pago de cliente? (Nombre con mayúscula + verbo en 3ª persona) */
@@ -66,6 +68,7 @@ export function detectAmbiguity(
           { id: 'clarify_cobro', title: 'Me pagó (cobro)', intent: 'voucher' },
           { id: 'clarify_gasto', title: 'Pagué yo (gasto)', intent: 'gasto' },
         ],
+        subject: nombre,
       }
     }
     return null

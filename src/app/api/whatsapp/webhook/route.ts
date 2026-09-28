@@ -29,7 +29,7 @@ import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-s
 import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
 import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
-import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
+import { loadClarifyContext, saveClarifyContext, clearClarifyContext, resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
@@ -1404,6 +1404,7 @@ async function processMessage(
     expenseCtx,
     attendanceCtx,
     voucherCtx,
+    clarifyCtx: clarifyLoad?.state ?? null,
   })
   let extraction: UnifiedExtraction | null = null
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
@@ -1434,6 +1435,7 @@ async function processMessage(
   let clarifyReason = 'clarify_ask'
   let clarifyResolved = false
   let clarifySuperseded = false
+  let clarifyAnsweredIntent: BotIntent | null = null
   const clarifySendCtx = {
     accountId, userId: configOwnerUserId,
     conversationId: conversation.id, contactId: contactRecord.id,
@@ -1498,24 +1500,15 @@ async function processMessage(
       const chosen = matchClarifyOption(inboundText, interactiveReplyId, clarifyState.options)
       if (chosen) {
         await clearClarifyContext(supabaseAdmin(), conversation.id)
-        if (extraction) {
-          const orig = clarifyState.origExtra
-          extraction = {
-            ...extraction,
-            intent: chosen.intent,
-            proveedor: orig?.proveedor ?? extraction.proveedor,
-            monto: orig?.monto ?? extraction.monto,
-            metodo_pago: orig?.metodo_pago ?? extraction.metodo_pago,
-            destino: orig?.destino ?? extraction.destino,
-            empleado: orig?.empleado ?? extraction.empleado,
-            hora: orig?.hora ?? extraction.hora,
-            categoria: orig?.categoria ?? extraction.categoria,
-            fecha: orig?.fecha ?? extraction.fecha,
-            faltan_campos: [],
-            dudoso: false,
-            razon_duda: null,
-          }
-        }
+        // El extractor no corre en replies interactivos, así que la extracción
+        // resuelta se sintetiza con el intent elegido + los campos originales.
+        extraction = resolveClarifyExtraction(
+          extraction,
+          clarifyState.origExtra,
+          chosen.intent,
+          inboundText,
+        )
+        clarifyAnsweredIntent = chosen.intent
         clarifyResolved = true
         console.log('[clarify] resolved -> intent=%s conversation=%s', chosen.intent, conversation.id)
       } else if (/^cancelar$/i.test(inboundText.trim())) {
@@ -1569,7 +1562,7 @@ async function processMessage(
           options: ambiguity.options,
           originalIntent: extraction.intent,
           origExtra: {
-            proveedor: extraction.proveedor,
+            proveedor: extraction.proveedor ?? ambiguity.subject ?? null,
             monto: extraction.monto,
             metodo_pago: extraction.metodo_pago,
             destino: extraction.destino,
@@ -1644,6 +1637,7 @@ async function processMessage(
         extraction,
         mediaConsumedByVoucher,
         jevPending: buildJevPending(extraction),
+        clarifyAnsweredIntent,
       })
   const dispatchedTo: string = routerDecision.dispatchedTo
   let dispatchReason: string = routerDecision.dispatchReason
@@ -1768,7 +1762,7 @@ async function processMessage(
     const isVoucherText =
       !hasPendingVoucher &&
       !flowConsumed &&
-      !interactiveReplyId &&
+      (!interactiveReplyId || clarifyResolved) &&
       inboundText.trim() &&
       extraction?.intent === 'voucher' &&
       (montoVoucherText == null || montoVoucherText > 0) &&
@@ -1847,6 +1841,18 @@ async function processMessage(
         )
       }
     }
+  }
+
+  // Aclaración resuelta a voucher pero sin datos suficientes para matchear
+  // (sin cliente): nunca terminar en silencio.
+  if (clarifyResolved && !responded && extraction?.intent === 'voucher') {
+    console.log('[clarify] resolved voucher without client -> conversation=%s', conversation.id)
+    bgTasks.push(
+      sendClarifyText(
+        'No pude registrar el pago. Pasame el nombre del cliente y el monto, por ejemplo: "Marlon pagó 65000 en efectivo".',
+      ).then(() => {}),
+    )
+    responded = true
   }
 
   // ── Fallback conversacional ──

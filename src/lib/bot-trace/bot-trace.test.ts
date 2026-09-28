@@ -20,6 +20,14 @@ describe('topology', () => {
     expect(dispatchNodeId('none')).toBe('d_none')
     expect(dispatchNodeId(null)).toBeNull()
   })
+
+  it('modela la respuesta de aclaración re-entrando al router', () => {
+    expect(
+      BOT_TOPOLOGY.edges.some(
+        (e) => e.id === 'e_ctxc_router' && e.source === 'ctx_clarify' && e.target === 'router',
+      ),
+    ).toBe(true)
+  })
 })
 
 describe('buildBotTrace', () => {

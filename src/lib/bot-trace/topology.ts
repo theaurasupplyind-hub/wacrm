@@ -112,6 +112,7 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
 
     { id: 'e_extract_router', source: 'extract', target: 'router', label: 'intent/confianza' },
     { id: 'e_extract_clarify', source: 'extract', target: 'h_clarify', label: 'ambiguo' },
+    { id: 'e_ctxc_router', source: 'ctx_clarify', target: 'router', label: 'respuesta resuelve intent' },
 
     { id: 'e_router_dexp', source: 'router', target: 'd_expense', label: 'expense' },
     { id: 'e_router_datt', source: 'router', target: 'd_attendance', label: 'attendance' },

@@ -1,11 +1,13 @@
 import type { ExpenseContextState } from '@/lib/expenses/types'
 import type { AttendanceContextState } from '@/lib/attendance/context'
 import type { VoucherContextState } from '@/lib/ai/voucher-context'
+import type { ClarifyContextState } from './clarify-context'
 
 export interface BotContextInput {
   expenseCtx?: ExpenseContextState | null
   attendanceCtx?: AttendanceContextState | null
   voucherCtx?: VoucherContextState | null
+  clarifyCtx?: ClarifyContextState | null
 }
 
 /**
@@ -71,6 +73,14 @@ export function buildBotContextText(input: BotContextInput): string {
   if (vc?.pending && vc.pending.length > 0) {
     lines.push(
       `Voucher: hay ${vc.pending.length} comprobante(s) pendiente(s) de confirmar. El usuario puede responder con una letra (A, B...), "sí", o un nombre.`,
+    )
+  }
+
+  const cc = input.clarifyCtx
+  if (cc && Array.isArray(cc.options) && cc.options.length > 0) {
+    const opciones = cc.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o.title}`).join(' · ')
+    lines.push(
+      `Aclaración pendiente: "${cc.question}" Opciones: ${opciones}. Si el mensaje responde a esto, devolvé el intent de la opción elegida.`,
     )
   }
 

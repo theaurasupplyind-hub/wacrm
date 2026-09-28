@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { decideDispatch } from './router'
+import { looksLikeExpense } from '@/lib/expenses'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 
 function extraction(overrides: Partial<UnifiedExtraction>): UnifiedExtraction {
@@ -192,5 +193,70 @@ describe('decideDispatch jevPending (System One)', () => {
     })
     expect(r.dispatchedTo).toBe('expense')
     expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+})
+
+describe('decideDispatch clarifyAnsweredIntent', () => {
+  const base = {
+    hasPendingExpense: false,
+    hasPendingAttendance: false,
+    hasPendingVoucher: false,
+    flowConsumed: false,
+    interactiveReplyId: null,
+    extraction: null,
+    mediaConsumedByVoucher: false,
+  }
+
+  it('documenta la trampa: el título del botón matchea looksLikeExpense', () => {
+    expect(looksLikeExpense('Me pagó (cobro)')).toBe(true)
+  })
+
+  it('voucher resuelto gana al fallback regex aunque no haya extracción', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Me pagó (cobro)',
+      clarifyAnsweredIntent: 'voucher',
+    })
+    expect(r.dispatchedTo).toBe('voucher')
+    expect(r.dispatchReason).toBe('clarify_resolve')
+  })
+
+  it('gasto resuelto → expense', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Pagué yo (gasto)',
+      clarifyAnsweredIntent: 'gasto',
+    })
+    expect(r.dispatchedTo).toBe('expense')
+    expect(r.dispatchReason).toBe('clarify_resolve')
+  })
+
+  it('asistencia resuelta → attendance', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Es asistencia',
+      clarifyAnsweredIntent: 'asistencia_llegada',
+    })
+    expect(r.dispatchedTo).toBe('attendance')
+    expect(r.dispatchReason).toBe('clarify_resolve')
+  })
+
+  it('factura resuelta → assistant', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Es consulta de deuda',
+      clarifyAnsweredIntent: 'factura',
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+    expect(r.dispatchReason).toBe('clarify_resolve')
+  })
+
+  it('sin señal de clarify, un tap interactivo se mantiene interactivo', () => {
+    const r = decideDispatch({
+      ...base,
+      interactiveReplyId: 'expense_confirm',
+      inboundText: 'Confirmar',
+    })
+    expect(r.dispatchedTo).toBe('interactive')
   })
 })

@@ -133,6 +133,15 @@ describe('detectAmbiguity', () => {
   it('hola → null (nunca interrogar saludos)', () => {
     expect(detectAmbiguity(extraction({ intent: 'otro', confianza: 'baja' }), 'hola')).toBeNull()
   })
+
+  it('expone el sujeto que paga aunque el LLM no lo haya extraído', () => {
+    const a = detectAmbiguity(
+      extraction({ intent: 'gasto', confianza: 'media', proveedor: null, metodo_pago: 'efectivo', dudoso: true }),
+      'Test pago 65 000 en efectivo',
+    )
+    expect(a?.kind).toBe('pago')
+    expect(a?.subject).toBe('Test')
+  })
 })
 
 describe('matchClarifyOption', () => {
