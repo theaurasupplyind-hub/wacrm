@@ -25,8 +25,12 @@ export type DispatchReason =
  * Tiempo máximo que un contexto multi-turn (gasto/asistencia) bloquea
  * mensajes de otro intent. Pasado este TTL el pendiente se considera
  * abandonado y un intent fuerte lo reemplaza (ver route.ts).
+ *
+ * 24 h: WhatsApp es asíncrono; una aclaración ("¿es proveedor o empleado?")
+ * puede responderse horas después. Con 15 min el borrador se perdía y una
+ * respuesta corta posterior reiniciaba el flujo (bug "80000 a julian").
  */
-export const PENDING_CONTEXT_TTL_MS = 15 * 60 * 1000
+export const PENDING_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
  * Umbrales de la señal Jev para el ruteo de pendientes. Solo se aplican si el

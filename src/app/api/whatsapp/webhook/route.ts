@@ -794,13 +794,65 @@ async function handleExpenseMessage(args: {
     }, args.extraction)
     if (result.handled) {
       console.log('[expense] handled conversation=%s expenseId=%s', args.conversationId, result.expenseId)
+      const guarded = await garantirRespuestaGasto(args, result)
+      // Traza veraz: el terminal depende del resultado REAL del handler
+      // (respondido / sin respuesta / error), no del dispatch optimista.
+      await recordExpenseOutcome(
+        args,
+        result.error ? 'error' : result.replied || guarded ? 'replied' : 'no_reply',
+        result.error ?? null,
+      )
       return true
     }
+    // El router despachó a gastos pero el handler declinó: la traza debe
+    // decirlo (antes quedaba sin terminal y parecía atendido).
+    await recordExpenseOutcome(args, 'no_reply')
     return false
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] handler error:', msg)
+    await recordExpenseOutcome(args, 'error', msg)
     return false
+  }
+}
+
+/**
+ * Registra el terminal real del turno de gastos en la traza. El webhook ya
+ * grabó el path/extracción con `includeTerminal:false`; esto es lo que
+ * enciende "Respondido" sólo cuando de verdad hubo respuesta, y expone
+ * "Sin respuesta"/"Error" en `/bot-flow` cuando falló.
+ */
+async function recordExpenseOutcome(
+  args: {
+    messageId?: string | null
+    messageType: string
+    text?: string | null
+    accountId: string
+    userId: string
+    conversationId: string
+    contactId: string
+  },
+  finalStatus: 'replied' | 'no_reply' | 'error',
+  errorMessage: string | null = null,
+): Promise<void> {
+  try {
+    await recordBotTrace(
+      buildBotTrace({
+        messageId: args.messageId ?? `expense-${args.conversationId}-${Date.now()}`,
+        producer: 'expense',
+        conversationId: args.conversationId,
+        contactId: args.contactId,
+        accountId: args.accountId,
+        source: args.messageType,
+        rawText: args.text ?? null,
+        messageType: args.messageType,
+        dispatchedTo: 'expense',
+        finalStatus,
+        errorMessage,
+      }),
+    )
+  } catch (err) {
+    console.error('[expense] trace record error:', err)
   }
 }
 
@@ -832,12 +884,53 @@ async function handleExpenseConfirmReply(args: {
     )
     if (result.handled) {
       console.log('[expense] confirm reply handled conversation=%s reply=%s', args.conversationId, args.replyId)
+      await garantirRespuestaGasto(args, result)
       return true
     }
     return false
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] confirm reply handler error:', msg)
+    return false
+  }
+}
+
+/**
+ * Garantía anti-silencio: si el handler de gastos marcó el turno como
+ * atendido pero nunca envió un mensaje (ramas que devolvían `text` sin
+ * `sendTextResponse`, o fallo silencioso del backend), enviamos aquí el texto
+ * para que el usuario nunca quede sin respuesta. Deja traza en consola para
+ * diagnóstico.
+ */
+async function garantirRespuestaGasto(
+  args: {
+    accessToken: string
+    senderPhone: string
+    senderName: string
+    accountId: string
+    userId: string
+    conversationId: string
+    contactId: string
+  },
+  result: { replied?: boolean; text?: string },
+): Promise<boolean> {
+  if (result.replied || !result.text) return false
+  console.warn(
+    '[expense] NO-REPLY GUARD: handler no envió nada, enviando "%s" conversation=%s',
+    result.text.slice(0, 60),
+    args.conversationId,
+  )
+  try {
+    await engineSendText({
+      accountId: args.accountId,
+      userId: args.userId,
+      conversationId: args.conversationId,
+      contactId: args.contactId,
+      text: result.text,
+    })
+    return true
+  } catch (sendErr) {
+    console.error('[expense] NO-REPLY GUARD send error:', sendErr)
     return false
   }
 }
@@ -956,7 +1049,7 @@ async function processMessage(
     typeof expenseCtx.updatedAt === 'number' &&
     Date.now() - expenseCtx.updatedAt > PENDING_CONTEXT_TTL_MS
   if (expenseStale) {
-    console.log('[expense] pending expired (>15min), clearing -> conversation=%s', conversation.id)
+    console.log('[expense] pending expired (>24h), clearing -> conversation=%s', conversation.id)
     await clearExpenseContext(supabaseAdmin(), conversation.id)
   }
   const hasPendingExpense = !expenseStale && (
@@ -971,7 +1064,7 @@ async function processMessage(
     typeof attendanceCtx.updatedAt === 'number' &&
     Date.now() - attendanceCtx.updatedAt > PENDING_CONTEXT_TTL_MS
   if (attendanceStale) {
-    console.log('[attendance] pending expired (>15min), clearing -> conversation=%s', conversation.id)
+    console.log('[attendance] pending expired (>24h), clearing -> conversation=%s', conversation.id)
     await clearAttendanceContext(supabaseAdmin(), conversation.id)
   }
   const hasPendingAttendance = !attendanceStale && (
@@ -1741,6 +1834,9 @@ async function processMessage(
           dispatchedTo,
           dispatchReason,
           finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
+          // Para gastos el terminal lo escribe el handler (arriba) con el
+          // resultado real; evita pintar "Respondido" cuando quedó mudo.
+          includeTerminal: dispatchedTo !== 'expense',
         }),
       )
     })(),

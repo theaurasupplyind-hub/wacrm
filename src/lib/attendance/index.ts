@@ -1,5 +1,6 @@
 import {
   searchEmployees,
+  listEmployees,
   getEmployee,
   createAttendance,
   getAttendance,
@@ -8,6 +9,7 @@ import {
   type AttendanceRow,
 } from '@/lib/facbal/client'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
+import { normalizeText } from '@/lib/text/normalize'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   loadAttendanceContext,
@@ -155,8 +157,8 @@ async function sendAttendanceButtons(ctx: {
 }
 
 function tokenScore(a: string, b: string): number {
-  const na = a.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  const nb = b.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  const na = normalizeText(a)
+  const nb = normalizeText(b)
   if (!na || !nb) return 0
   if (na === nb) return 1
   if (na.startsWith(nb) || nb.startsWith(na)) return 0.95
@@ -401,7 +403,13 @@ async function resolveEmployeeAndRecord(args: ResolveArgs): Promise<ProcessAtten
   }
 
   try {
-    const employees = await searchEmployees(name)
+    let employees = await searchEmployees(name)
+    // Fallback accent-insensitive: el backend filtra con tildes, así que
+    // "julian" no trae a "Julián". Si no hubo candidatos, usamos la lista
+    // completa y el matching local (tokenScore) los resuelve.
+    if (!employees || employees.length === 0) {
+      employees = await listEmployees()
+    }
 
     let bestMatch: Employee | null = null
     let bestScore = 0

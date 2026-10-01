@@ -59,6 +59,11 @@ export interface BuildTraceInput {
   logs?: HandlerLog[]
   finalStatus?: string | null
   errorMessage?: string | null
+  /**
+   * Si es false, no se agrega el nodo terminal: lo escribirá más tarde otro
+   * productor que sí conoce el resultado real (p. ej. el handler de gastos).
+   */
+  includeTerminal?: boolean
 }
 
 /** Mapea el nombre de un log del handler a un nodo de la topología. */
@@ -100,6 +105,10 @@ function terminalNodeFor(
   dispatchedTo: string | null | undefined,
 ): string {
   switch (finalStatus) {
+    case 'error':
+      return 't_error'
+    case 'no_reply':
+      return 't_no_reply'
     case 'matched':
       return 't_matched'
     case 'ambiguous':
@@ -218,14 +227,16 @@ export function buildBotTrace(input: BuildTraceInput): BotTrace {
   }
 
   // 6) Terminal.
-  const terminal = terminalNodeFor(input.finalStatus ?? input.voucherStatus, input.dispatchedTo)
-  pushNode(terminal)
-  pushStep(
-    terminal,
-    input.finalStatus ? `Estado final: ${input.finalStatus}` : 'Fin',
-    input.errorMessage ? 'error' : 'ok',
-    { errorMessage: input.errorMessage ?? null },
-  )
+  if (input.includeTerminal !== false) {
+    const terminal = terminalNodeFor(input.finalStatus ?? input.voucherStatus, input.dispatchedTo)
+    pushNode(terminal)
+    pushStep(
+      terminal,
+      input.finalStatus ? `Estado final: ${input.finalStatus}` : 'Fin',
+      input.errorMessage ? 'error' : 'ok',
+      { errorMessage: input.errorMessage ?? null },
+    )
+  }
 
   return BotTraceSchema.parse({
     messageId: input.messageId,

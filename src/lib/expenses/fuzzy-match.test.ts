@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { tokenScore } from './fuzzy-match'
+import { tokenScore, resetEntityListCache } from './fuzzy-match'
+import { searchEmployees, listEmployees } from '@/lib/facbal/client'
 
 const mockProviders = [{ id: 1, name: 'Jolden S.A. Grapas', balance: 0, stock_qty: 0 }]
 const mockEmployees: unknown[] = []
@@ -20,6 +21,8 @@ const mockCategories = [
 vi.mock('@/lib/facbal/client', () => ({
   searchProviders: vi.fn(async () => mockProviders),
   searchEmployees: vi.fn(async () => mockEmployees),
+  listProviders: vi.fn(async () => []),
+  listEmployees: vi.fn(async () => []),
   listExpenseCategories: vi.fn(async () => mockCategories),
   createExpenseCategory: vi.fn(async () => {
     throw new Error('should not create category in these tests')
@@ -67,6 +70,7 @@ describe('resolveExpenseEntities', () => {
   beforeEach(async () => {
     const mod = await import('./fuzzy-match')
     fuzzyMatchExpense = mod.fuzzyMatchExpense
+    resetEntityListCache()
   })
 
   function parsed(provider: string) {
@@ -95,5 +99,17 @@ describe('resolveExpenseEntities', () => {
     const match = await fuzzyMatchExpense(parsed('Jolden'))
     expect(match.providerId).toBe(1)
     expect(match.providerName).toBe('Jolden S.A. Grapas')
+  })
+
+  it('resuelve entidades con tilde aunque el backend no las devuelva (fallback a lista)', async () => {
+    // El backend busca con tildes: "julian" no trae a "Julián" → lista vacía.
+    vi.mocked(searchEmployees).mockResolvedValueOnce([])
+    vi.mocked(listEmployees).mockResolvedValueOnce([
+      { id: 7, name: 'Julián', active: true },
+    ] as never)
+
+    const match = await fuzzyMatchExpense(parsed('julian'))
+    expect(match.employeeId).toBe(7)
+    expect(match.employeeName).toBe('Julián')
   })
 })

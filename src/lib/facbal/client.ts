@@ -1,3 +1,5 @@
+import { normalizeText as normalizeTextShared } from '@/lib/text/normalize'
+
 export interface FacturaPendiente {
   invoice_id: number
   numero_factura: string
@@ -403,13 +405,7 @@ export interface FacbalClient {
 }
 
 function normalizeText(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeTextShared(s)
 }
 
 function similarity(a: string, b: string): number {

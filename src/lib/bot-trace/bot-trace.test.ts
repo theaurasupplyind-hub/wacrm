@@ -64,6 +64,54 @@ describe('buildBotTrace', () => {
     expect(trace.path).toContain('t_matched')
     expect(trace.status).toBe('matched')
   })
+
+  it('un gasto con error termina en t_error (no "Respondido")', () => {
+    const trace = buildBotTrace({
+      messageId: 'm-exp-err',
+      producer: 'expense',
+      source: 'text',
+      rawText: '80000',
+      dispatchedTo: 'expense',
+      dispatchReason: 'pending_multiturn',
+      finalStatus: 'error',
+      errorMessage: 'FacBal caído',
+    })
+    expect(trace.path).toContain('h_expense')
+    expect(trace.path).toContain('t_error')
+    expect(trace.path).not.toContain('t_replied')
+    expect(trace.errorMessage).toBe('FacBal caído')
+  })
+
+  it('un gasto sin enviar nada termina en t_no_reply', () => {
+    const trace = buildBotTrace({
+      messageId: 'm-exp-mute',
+      producer: 'expense',
+      source: 'text',
+      rawText: '80000',
+      dispatchedTo: 'expense',
+      dispatchReason: 'pending_multiturn',
+      finalStatus: 'no_reply',
+    })
+    expect(trace.path).toContain('t_no_reply')
+    expect(trace.path).not.toContain('t_replied')
+  })
+
+  it('includeTerminal:false no agrega terminal (lo escribe el handler)', () => {
+    const trace = buildBotTrace({
+      messageId: 'm-exp-defer',
+      producer: 'webhook',
+      source: 'text',
+      rawText: '80000',
+      dispatchedTo: 'expense',
+      dispatchReason: 'pending_multiturn',
+      finalStatus: 'expense',
+      includeTerminal: false,
+    })
+    expect(trace.path).toContain('h_expense')
+    expect(trace.path).not.toContain('t_replied')
+    expect(trace.path).not.toContain('t_no_reply')
+    expect(trace.path).not.toContain('t_error')
+  })
 })
 
 describe('mergeBotTraces', () => {

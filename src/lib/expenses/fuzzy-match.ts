@@ -3,10 +3,13 @@ import {
   createExpenseCategory,
   searchProviders,
   searchEmployees,
+  listProviders,
+  listEmployees,
   type ExpenseCategory,
   type Provider,
   type Employee,
 } from '@/lib/facbal/client'
+import { normalizeText } from '@/lib/text/normalize'
 import type { ParsedExpense, ExpenseFuzzyMatch } from './types'
 
 // Caché en memoria de categorías (TTL corto) para evitar un round-trip a FacBal
@@ -63,14 +66,47 @@ async function safeEntitySearch<T>(
 // query like "easy" matches the single letters "s" and "a", inflating the score.
 const MIN_SUBSTR_LEN = 3
 
+// Listas completas de empleados/proveedores (TTL corto). El backend busca
+// filtrando con tildes, así que no alcanza con `search*`: mezclamos el
+// resultado del server con la lista completa y el matching local
+// (accent-insensitive) resuelve "julian" → "Julián" y las coincidencias
+// parciales que el server no devuelve.
+let providersListCache: { data: Provider[]; expiresAt: number } | null = null
+let employeesListCache: { data: Employee[]; expiresAt: number } | null = null
+const ENTITY_LIST_TTL_MS = 5 * 60 * 1000
+
+async function getCachedProvidersList(): Promise<Provider[]> {
+  const now = Date.now()
+  if (providersListCache && providersListCache.expiresAt > now) return providersListCache.data
+  const data = await safeEntitySearch('providers', () => listProviders())
+  providersListCache = { data, expiresAt: now + ENTITY_LIST_TTL_MS }
+  return data
+}
+
+async function getCachedEmployeesList(): Promise<Employee[]> {
+  const now = Date.now()
+  if (employeesListCache && employeesListCache.expiresAt > now) return employeesListCache.data
+  const data = await safeEntitySearch('employees', () => listEmployees())
+  employeesListCache = { data, expiresAt: now + ENTITY_LIST_TTL_MS }
+  return data
+}
+
+/** Une resultados del server con la lista completa, sin duplicar por id. */
+function mergeById<T extends { id: number }>(a: T[], b: T[]): T[] {
+  if (a.length === 0) return b
+  if (b.length === 0) return a
+  const seen = new Set(a.map((x) => x.id))
+  return [...a, ...b.filter((x) => !seen.has(x.id))]
+}
+
+/** Invalida el cache de listas de entidades (uso interno / tests). */
+export function resetEntityListCache() {
+  providersListCache = null
+  employeesListCache = null
+}
+
 export function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeText(text)
 }
 
 export function tokenScore(a: string, b: string): number {
@@ -216,11 +252,24 @@ export async function resolveExpenseEntities(
 
   const needsMatch = Boolean(parsed.provider || parsed.employee)
   const entityQuery = parsed.provider || parsed.employee || ''
-  const [categories, providers, employees] = await Promise.all([
+  const [categories, providersSearch, employeesSearch] = await Promise.all([
     getCachedCategories(),
-    needsMatch && parsed.provider ? safeEntitySearch('providers', () => searchProviders(entityQuery)) : Promise.resolve([]),
-    needsMatch ? safeEntitySearch('employees', () => searchEmployees(entityQuery)) : Promise.resolve([]),
+    needsMatch && parsed.provider ? safeEntitySearch('providers', () => searchProviders(entityQuery)) : Promise.resolve<Provider[]>([]),
+    needsMatch ? safeEntitySearch('employees', () => searchEmployees(entityQuery)) : Promise.resolve<Employee[]>([]),
   ])
+
+  // Mezcla con la lista completa (cacheada) para rescatar las coincidencias
+  // que el server no devuelve por tildes (p. ej. "julian" vs "Julián").
+  let providers: Provider[] = providersSearch
+  let employees: Employee[] = employeesSearch
+  if (needsMatch) {
+    const [allProviders, allEmployees] = await Promise.all([
+      getCachedProvidersList(),
+      getCachedEmployeesList(),
+    ])
+    providers = mergeById(providersSearch, allProviders)
+    employees = mergeById(employeesSearch, allEmployees)
+  }
 
   // Cross-match parsed.provider against BOTH lists
   if (parsed.provider) {

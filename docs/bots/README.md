@@ -15,6 +15,7 @@ webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 | [`voice-orders.md`](./voice-orders.md) | Bot de pedidos por voz/texto: estado actual + mejoras pendientes | Activo |
 | [`plan-mejora-gastos-asistencia.md`](./plan-mejora-gastos-asistencia.md) | Plan de mejora de los bots de gastos y asistencia (llegada/salida) — implementado | Implementado |
 | [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) | Plan del extractor unificado LLM (intents + parseo de asistencia/gastos, fallback regex) — implementado | Implementado |
+| [`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md) | Plan de unificación del motor de ruteo: converger webhook y bot-beta en un orquestador único con ports & adapters (clarify, voucher, asistente) | Planificado |
 | [`archive/README.md`](./archive/README.md) | Índice de planes e integraciones históricas | Archivo |
 
 ## Visión de un vistazo

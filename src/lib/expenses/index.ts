@@ -43,6 +43,12 @@ export interface ProcessExpenseResult {
   expenseId?: number | null
   text?: string
   error?: string
+  /**
+   * True si el handler ya envió un mensaje al usuario. Lo consume el webhook
+   * para garantizar que, si `handled` y hay `text` pero nadie respondió, se
+   * envíe igual y nunca quede mudo (bug "no respondió").
+   */
+  replied?: boolean
 }
 
 function todaysDate(): string {
@@ -114,9 +120,25 @@ async function sendTextResponse(args: ProcessExpenseMessageArgs, text: string) {
       contactId: args.contactId,
       text,
     })
+    markReplied(args)
   } catch (sendErr) {
     console.error('[expense] send error:', sendErr)
   }
+}
+
+/**
+ * Marca, sobre el propio `args`, que el turno ya envió algo al usuario.
+ * El flag viaja con el objeto por todas las ramas internas, así que los
+ * wrappers públicos pueden reportar `replied` sin anotar cada return.
+ */
+type RepliableExpenseArgs = ProcessExpenseMessageArgs & { __expenseReplied?: boolean }
+
+function markReplied(args: ProcessExpenseMessageArgs) {
+  ;(args as RepliableExpenseArgs).__expenseReplied = true
+}
+
+function wasReplied(args: ProcessExpenseMessageArgs): boolean {
+  return !!(args as RepliableExpenseArgs).__expenseReplied
 }
 
 interface ExpenseLogEntry {
@@ -519,6 +541,7 @@ async function sendExpenseConfirmButtons(args: ProcessExpenseMessageArgs, text: 
         { id: EXP_CANCEL_ID, title: '❌ Cancelar' },
       ],
     })
+    markReplied(args)
   } catch (err) {
     console.error('[expense] confirm buttons error:', err)
     await sendTextResponse(args, text)
@@ -573,6 +596,15 @@ async function executeAndConfirmExpense(
  * ❌ Cancelar (o cualquier otra reply) → limpia el contexto.
  */
 export async function processExpenseConfirmReply(
+  args: ProcessExpenseMessageArgs,
+  replyId: string,
+): Promise<ProcessExpenseResult> {
+  ;(args as RepliableExpenseArgs).__expenseReplied = false
+  const result = await processExpenseConfirmReplyInner(args, replyId)
+  return { ...result, replied: result.replied ?? wasReplied(args) }
+}
+
+async function processExpenseConfirmReplyInner(
   args: ProcessExpenseMessageArgs,
   replyId: string,
 ): Promise<ProcessExpenseResult> {
@@ -694,6 +726,7 @@ async function sendMultiConfirmButtons(args: ProcessExpenseMessageArgs, text: st
         { id: EXP_MULTI_CANCEL_ID, title: '❌ Cancelar' },
       ],
     })
+    markReplied(args)
   } catch (err) {
     console.error('[expense] multi confirm buttons error:', err)
     await sendTextResponse(args, text)
@@ -994,6 +1027,15 @@ export async function processMultipleExpenses(
 }
 
 export async function processExpenseMessage(
+  args: ProcessExpenseMessageArgs,
+  extraction?: UnifiedExtraction,
+): Promise<ProcessExpenseResult> {
+  ;(args as RepliableExpenseArgs).__expenseReplied = false
+  const result = await processExpenseMessageInner(args, extraction)
+  return { ...result, replied: result.replied ?? wasReplied(args) }
+}
+
+async function processExpenseMessageInner(
   args: ProcessExpenseMessageArgs,
   extraction?: UnifiedExtraction,
 ): Promise<ProcessExpenseResult> {
