@@ -19,6 +19,17 @@ describe('sanitizeClientName (Fix 4)', () => {
     expect(sanitizeClientName('Jo Pérez')).toBe('Jo Pérez')
     expect(sanitizeClientName('Mathias')).toBe('Mathias')
   })
+
+  it('descarta nombres de archivo y variantes pegadas (Fix 3)', () => {
+    expect(sanitizeClientName('Comprobante.pdf')).toBeNull()
+    expect(sanitizeClientName('comprobantepdf')).toBeNull()
+    expect(sanitizeClientName('IMG_1234.jpg')).toBeNull()
+    expect(sanitizeClientName('captura.png')).toBeNull()
+  })
+
+  it('descarta nombres con dígitos', () => {
+    expect(sanitizeClientName('Cliente 123')).toBeNull()
+  })
 })
 
 describe('pickStickyExact (sticky Fase 1)', () => {

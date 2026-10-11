@@ -9,7 +9,6 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { processVoucherMessage, processVoucherText, isVoucherClarificationReply, VOUCHER_CONFIRM_ID, VOUCHER_CANCEL_ID } from '@/lib/ai/voucher-pipeline'
-import { CHATBOT_ENABLED, processChatMessage } from '@/lib/ai/chatbot'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
 import { transcribeAudio, type TranscribeLog } from '@/lib/audio/transcribe'
@@ -27,6 +26,7 @@ import {
 import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
+import { isPhoneAllowed } from '@/lib/bot/whitelist'
 import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext, resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
@@ -590,109 +590,6 @@ async function handleReaction(
   }
 }
 
-/**
- * Debounce: espera 8s para juntar mensajes fragmentados del mismo usuario.
- * Si llega otro mensaje durante la espera, el nuevo mensaje se encarga del batch.
- */
-async function debouncedChatMessage(
-  inboundText: string,
-  conversationId: string,
-  chatArgs: { text: string; phone: string; accountId: string; userId: string; contactId: string; conversationId: string },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  getAdmin: () => any,
-  accessToken: string,
-  senderPhone: string,
-) {
-  const admin = getAdmin()
-  const DEBOUNCE_MS = 8000
-  const now = new Date().toISOString()
-  const t0 = Date.now()
-
-  console.log(`[debounce] START conv=${conversationId.slice(0,8)} phone=${senderPhone.slice(-6)} text=${JSON.stringify(inboundText.slice(0,60))} t=0ms`)
-
-  try {
-    await admin
-      .from('chatbot_pending_batches')
-      .upsert({
-        conversation_id: conversationId,
-        accumulated_text: inboundText,
-        last_message_at: now,
-      }, { onConflict: 'conversation_id' })
-    console.log(`[debounce] upsert OK t=${Date.now()-t0}ms`)
-
-    // Send "dame un segundo" while we wait for fragmented messages
-    try {
-      await fetch(`https://graph.facebook.com/v21.0/me/messages`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          recipient_type: 'individual',
-          to: senderPhone,
-          type: 'text',
-          text: { body: 'Dame un segundo que reviso...' },
-        }),
-        signal: AbortSignal.timeout(5000),
-      })
-      console.log(`[debounce] "dame un segundo" sent t=${Date.now()-t0}ms`)
-    } catch (e) {
-      console.log(`[debounce] "dame un segundo" failed: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  } catch (e) {
-    console.log(`[debounce] upsert FAILED (table missing?), running without debounce: ${e instanceof Error ? e.message : String(e)}`)
-    // Table doesn't exist yet — proceed without debounce
-    const t1 = Date.now()
-    console.log(`[debounce] dispatching processChatMessage (no-debounce) t=${t1-t0}ms`)
-    await processChatMessage(chatArgs)
-    console.log(`[debounce] processChatMessage DONE (no-debounce) total=${Date.now()-t0}ms`)
-    return
-  }
-
-  console.log(`[debounce] waiting ${DEBOUNCE_MS}ms... t=${Date.now()-t0}ms`)
-  await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS))
-  console.log(`[debounce] wait done t=${Date.now()-t0}ms`)
-
-  try {
-    const { data: pending } = await admin
-      .from('chatbot_pending_batches')
-      .select('last_message_at, accumulated_text')
-      .eq('conversation_id', conversationId)
-      .maybeSingle()
-
-    if (!pending) {
-      console.log(`[debounce] batch already processed by another instance, exiting t=${Date.now()-t0}ms`)
-      return
-    }
-
-    const lastMsgTime = new Date(pending.last_message_at).getTime()
-    const ourTime = new Date(now).getTime()
-
-    if (lastMsgTime > ourTime) {
-      console.log(`[debounce] newer message arrived, deferring to it t=${Date.now()-t0}ms`)
-      return
-    }
-
-    const accumulatedText = pending.accumulated_text || inboundText
-    console.log(`[debounce] processing batch text=${JSON.stringify(accumulatedText.slice(0,60))} t=${Date.now()-t0}ms`)
-
-    await admin.from('chatbot_pending_batches').delete().eq('conversation_id', conversationId)
-
-    const tDispatch = Date.now()
-    console.log(`[debounce] dispatching processChatMessage t=${tDispatch-t0}ms`)
-    await processChatMessage({
-      ...chatArgs,
-      text: accumulatedText,
-    })
-    console.log(`[debounce] processChatMessage DONE total=${Date.now()-t0}ms`)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(`[debounce] Error processing: ${msg} t=${Date.now()-t0}ms`)
-    // Best-effort fallback: process the original message
-    await processChatMessage(chatArgs)
-    console.log(`[debounce] processChatMessage DONE (fallback) total=${Date.now()-t0}ms`)
-  }
-}
-
 // ─── Attendance helpers ───
 
 async function handleAttendanceMessage(args: {
@@ -1035,6 +932,14 @@ async function processMessage(
     })
   }
 
+  // Whitelist: solo números autorizados disparan el bot determinístico
+  // (gastos/asistencia/voucher/asistente). Los no autorizados (clientes) siguen
+  // por Flows / AI auto-reply. Fail-open si falta la tabla (ver whitelist.ts).
+  const botAllowed = await isPhoneAllowed(supabaseAdmin(), accountId, senderPhone)
+  if (!botAllowed) {
+    console.log('[whitelist] number NOT allowed -> bot skipped conv=%s', conversation.id)
+  }
+
   // Reactions short-circuit here — they aren't messages. We never insert
   // into `messages`, never bump unread_count, never update last_message_text.
   // Done before parseMessageContent so the media-URL fetch is skipped.
@@ -1212,7 +1117,7 @@ async function processMessage(
     clarifyLoad && !clarifyLoad.expired ? clarifyLoad.state.options.map((o) => o.id) : []
   const clarifyTapConsumed = !!interactiveReplyId &&
     (clarifyButtonIds.includes(interactiveReplyId) || interactiveReplyId.startsWith('clarify_'))
-  if (interactiveReplyId && !clarifyTapConsumed) {
+  if (botAllowed && interactiveReplyId && !clarifyTapConsumed) {
     const expenseConfirming =
       expenseCtx.stage === 'confirming' &&
       (!!expenseCtx.pendingExpense || !!expenseCtx.pendingMultiple)
@@ -1291,7 +1196,7 @@ async function processMessage(
   // ============================================================
   let mediaConsumedByVoucher = false
 
-  if (message.type === 'image' || message.type === 'document') {
+  if (botAllowed && (message.type === 'image' || message.type === 'document')) {
     mediaConsumedByVoucher = true
     const captionForVoucher = message.image?.caption || message.document?.caption || null
     bgTasks.push(
@@ -1318,7 +1223,7 @@ async function processMessage(
   // ============================================================
   // Expense Bot: image or document with expense intent in caption.
   // ============================================================
-  if ((message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense && !mediaConsumedByVoucher) {
+  if (botAllowed && (message.type === 'image' || message.type === 'document') && mediaLooksLikeExpense && !mediaConsumedByVoucher) {
     const msgType = message.type as 'image' | 'document'
     bgTasks.push(
       (async () => {
@@ -1346,87 +1251,12 @@ async function processMessage(
   // Los audios se transcriben arriba (después de parseMessageContent) y se
   // rutean por el mismo pipeline de texto: gasto / asistencia / assistant.
 
-  // ============================================================
-  // Flow runner dispatch.
-  //
-  // If the runner consumes the message (it either advanced an active
-  // run or started a new one), we suppress the `new_message_received`
-  // + `keyword_match` automation triggers for this inbound. Customer
-  // is navigating the bot menu, not sending a fresh trigger word
-  // that should fork into automations.
-  //
-  // The relationship-level triggers (`new_contact_created`,
-  // `first_inbound_message`) still fire even when consumed — those
-  // are about WHO is messaging, not what they said.
-  //
-  // Awaited (not fire-and-forget) because we need the `consumed`
-  // result before deciding whether to dispatch automations. The
-  // runner has its own try/catch and never throws. Accounts with
-  // no active flows take the runner's early-exit "no_match" path
-  // basically for free (one indexed SELECT for the active run).
-  // ============================================================
-  const flowResult = interactiveConsumed
-    ? { consumed: true }
-    : await dispatchInboundToFlows({
-        accountId,
-        userId: configOwnerUserId,
-        contactId: contactRecord.id,
-        conversationId: conversation.id,
-        message:
-          interactiveReplyId
-            ? {
-                kind: 'interactive_reply',
-                reply_id: interactiveReplyId,
-                reply_title: contentText ?? '',
-                meta_message_id: message.id,
-              }
-            : {
-                kind: 'text',
-                text: contentText ?? message.text?.body ?? '',
-                meta_message_id: message.id,
-              },
-        isFirstInboundMessage,
-      })
-  const flowConsumed = flowResult.consumed
+  // Los flows se despachan DESPUÉS del bot (ver más abajo): para números
+  // autorizados el bot corre primero y los flows actúan solo si el bot no se
+  // hizo cargo; para no autorizados, los flows corren como siempre.
+  let flowConsumed = false
 
-  // Fire any automations that react to this webhook event. All dispatches
-  // run here (not earlier) so the contact, conversation, and inbound
-  // message all exist before any step — including send_message — runs.
-  // Fire-and-forget: a slow or failing automation must not block the
-  // webhook's 200 OK response to Meta.
   const inboundText = audioTranscription ?? contentText ?? message.text?.body ?? ''
-  console.log('[webhook] dispatch decision | flowConsumed=%s interactiveReply=%s text=%s',
-    flowConsumed, !!interactiveReplyId, inboundText.slice(0, 80))
-  const automationTriggers: (
-    | 'new_contact_created'
-    | 'first_inbound_message'
-    | 'new_message_received'
-    | 'keyword_match'
-  )[] = []
-  // Content-level triggers are suppressed when a flow consumed the
-  // message — see the comment block above.
-  if (!flowConsumed) {
-    automationTriggers.push('new_message_received', 'keyword_match')
-  }
-  // new_contact_created fires only when the webhook just auto-created the
-  // contact row. first_inbound_message fires whenever this is the contact's
-  // first-ever customer-sent message — a superset that also catches
-  // manually-imported contacts sending for the first time. We dispatch both
-  // so users can pick whichever semantic they want; an automation that
-  // listens to only one trigger runs only when that trigger matches.
-  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
-  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
-  for (const triggerType of automationTriggers) {
-    runAutomationsForTrigger({
-      accountId,
-      triggerType,
-      contactId: contactRecord.id,
-      context: {
-        message_text: inboundText,
-        conversation_id: conversation.id,
-      },
-    }).catch((err) => console.error('[automations] dispatch failed:', err))
-  }
 
   // AI auto-reply movido a fallback del asistente (production.ts).
   // El bloque await previo se removió para que 'assistant' sea primero
@@ -1435,7 +1265,7 @@ async function processMessage(
   // ── COMANDO DE CONTEXTO (cancelar / reiniciar) ──
   // Se resuelve antes del extractor/ruteo para que ningún handler (ni el
   // asistente) conteste de más. Solo aplica a texto libre.
-  const ctxCommand = !flowConsumed && !interactiveReplyId
+  const ctxCommand = botAllowed && !flowConsumed && !interactiveReplyId
     ? classifyContextCommand(inboundText)
     : null
   if (ctxCommand) {
@@ -1500,7 +1330,7 @@ async function processMessage(
     clarifyCtx: clarifyLoad?.state ?? null,
   })
   let extraction: UnifiedExtraction | null = null
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (botAllowed && !flowConsumed && !interactiveReplyId && inboundText.trim()) {
     const pendingDomains: string[] = []
     if (hasPendingExpense) pendingDomains.push('expense')
     if (hasPendingAttendance) pendingDomains.push('attendance')
@@ -1577,7 +1407,7 @@ async function processMessage(
       extraction.intent === 'asistencia_salida' ||
       extraction.intent === 'asistencia_estado')
 
-  if (!flowConsumed && (inboundText.trim() || interactiveReplyId)) {
+  if (botAllowed && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
     if (clarifyLoad?.expired) {
       await clearClarifyContext(supabaseAdmin(), conversation.id)
       bgTasks.push(
@@ -1715,7 +1545,9 @@ async function processMessage(
   // Primary dispatch — now via shared router. Keep logging same as before.
   // Si clarify ya respondió (ask/reask/expired/cancel), no se despacha nada más.
   // Si clarify resolvió, se despacha con la extracción corregida.
-  const routerDecision = clarifyHandled
+  const routerDecision = !botAllowed
+    ? { dispatchedTo: 'none' as const, dispatchReason: 'none' as const }
+    : clarifyHandled
     ? {
         dispatchedTo: clarifyTo as 'clarify',
         dispatchReason: clarifyReason as 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
@@ -1779,6 +1611,7 @@ async function processMessage(
               userId: configOwnerUserId,
               text: inboundText,
               phone: message.from,
+              messageId: message.id,
             }).catch((err) => console.error('[assistant] dispatch error:', err)),
           )
           responded = true
@@ -1794,56 +1627,58 @@ async function processMessage(
       break
   }
 
-  // Auditoría: registrar la decisión del router en router_logs (fire-and-forget).
-  bgTasks.push(
-    (async () => {
-      await logRouterDecision({
-        messageId: message.id,
-        contactId: contactRecord.id,
-        conversationId: conversation.id,
-        accountId,
-        rawText: inboundText,
-        source: message.type,
-        flowConsumed,
-        interactive: !!interactiveReplyId && !clarifyTapConsumed,
-        hadContext: !!contextText,
-        extraction,
-        dispatchedTo,
-        dispatchReason,
-        contextText,
-      })
-      // Traza visual del flujo (diagrama /bot-flow). Fire-and-forget.
-      await recordBotTrace(
-        buildBotTrace({
-          messageId: message.id,
-          producer: 'webhook',
-          conversationId: conversation.id,
-          contactId: contactRecord.id,
-          accountId,
-          source: message.type,
-          rawText: inboundText,
-          messageType: message.type,
-          contextFlags: {
-            expense: hasPendingExpense,
-            attendance: hasPendingAttendance,
-            voucher: hasPendingVoucher,
-            clarify: !!clarifyLoad?.state,
-          },
-          extraction,
-          contextText,
-          dispatchedTo,
-          dispatchReason,
-          finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
-          // Para gastos el terminal lo escribe el handler (arriba) con el
-          // resultado real; evita pintar "Respondido" cuando quedó mudo.
-          includeTerminal: dispatchedTo !== 'expense',
-        }),
-      )
-    })(),
+  // Auditoría: registrar la decisión del router en router_logs. Se hace
+  // sincrónico (no en bgTasks) para que la fila exista antes de que corran
+  // los handlers en background: el asistente la enriquece con un UPDATE en vez
+  // de insertar una segunda fila (evita el log duplicado por turno).
+  await logRouterDecision({
+    messageId: message.id,
+    contactId: contactRecord.id,
+    conversationId: conversation.id,
+    accountId,
+    rawText: inboundText,
+    source: message.type,
+    flowConsumed,
+    interactive: !!interactiveReplyId && !clarifyTapConsumed,
+    hadContext: !!contextText,
+    extraction,
+    dispatchedTo,
+    dispatchReason,
+    contextText,
+  })
+
+  // Traza visual del flujo (diagrama /bot-flow). Sincrónica por el mismo
+  // motivo: el asistente/handlers en background enriquecen la MISMA traza
+  // (recordBotTrace mergea por message_id) en vez de crear una segunda.
+  await recordBotTrace(
+    buildBotTrace({
+      messageId: message.id,
+      producer: 'webhook',
+      conversationId: conversation.id,
+      contactId: contactRecord.id,
+      accountId,
+      source: message.type,
+      rawText: inboundText,
+      messageType: message.type,
+      contextFlags: {
+        expense: hasPendingExpense,
+        attendance: hasPendingAttendance,
+        voucher: hasPendingVoucher,
+        clarify: !!clarifyLoad?.state,
+      },
+      extraction,
+      contextText,
+      dispatchedTo,
+      dispatchReason,
+      finalStatus: mediaConsumedByVoucher ? null : dispatchedTo,
+      // Para gastos el terminal lo escribe el handler (arriba) con el
+      // resultado real; evita pintar "Respondido" cuando quedó mudo.
+      includeTerminal: dispatchedTo !== 'expense',
+    }),
   )
 
   // (El reset de contexto se maneja arriba como "context-command".)
-  if (!clarifyHandled) {
+  if (botAllowed && !clarifyHandled) {
     // ── VOUCHER POR TEXTO (sin imagen): efectivo o transferencia — dryRun ──
     // Sin monto ("Jo pago en efectivo", "Jo pago en transferencia a Jorge"):
     // se busca por nombre y se paga el total (1 factura) o se pregunta
@@ -1952,14 +1787,15 @@ async function processMessage(
   }
 
   // ── Fallback conversacional ──
-  // Garantiza que ningún mensaje de texto quede sin respuesta: si ningún
-  // handler se hizo cargo, pedimos que lo repita.
+  // Garantiza que ningún mensaje de un número autorizado quede sin respuesta.
+  const hasUsableText = inboundText.trim().length > 0
   if (
+    botAllowed &&
     !responded &&
     !clarifyHandled &&
     !flowConsumed &&
     !interactiveReplyId &&
-    inboundText.trim() &&
+    hasUsableText &&
     message.type === 'text'
   ) {
     console.log('[webhook] fallback no-entendi -> conversation=%s', conversation.id)
@@ -1970,6 +1806,96 @@ async function processMessage(
         text: 'No te entendí 🤔 ¿me repetís? Puedo registrar gastos, pagos/comprobantes o asistencias, y consultar saldos de clientes.',
       }).then(() => {}).catch((err) => console.error('[webhook] fallback reply error:', err)),
     )
+  } else if (
+    botAllowed &&
+    !responded &&
+    !clarifyHandled &&
+    !flowConsumed &&
+    !interactiveReplyId &&
+    !hasUsableText &&
+    !mediaConsumedByVoucher
+  ) {
+    // Media que no es voucher/gasto ni trae texto (sticker, video sin caption,
+    // tipo no soportado): nunca quedar mudo.
+    console.log('[webhook] fallback media-no-leida type=%s -> conversation=%s', message.type, conversation.id)
+    bgTasks.push(
+      engineSendText({
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        text: 'No pude leer eso 🤔 Mandame el detalle por texto (ej: "gasté 5000 en luz") o una foto del comprobante.',
+      }).then(() => {}).catch((err) => console.error('[webhook] fallback media reply error:', err)),
+    )
+  }
+
+  // ── Flows fallback (después del bot) ──
+  // Flows está deshabilitado por defecto (poner FLOWS_ENABLED=true para
+  // activarlo): con 0 flows activos es un no-op, pero apagarlo evita 2 SELECTs
+  // por mensaje y cualquier interferencia futura. Para números autorizados,
+  // además, el bot corre primero: los flows solo actuarían si el bot no se hizo
+  // cargo. Los botones de confirmación del bot (interactiveConsumed) nunca
+  // llegan a flows.
+  const flowsEnabled = process.env.FLOWS_ENABLED === 'true'
+  const botTookMessage =
+    !interactiveReplyId &&
+    (dispatchedTo !== 'none' || clarifyHandled || mediaConsumedByVoucher || responded)
+  if (flowsEnabled && !interactiveConsumed && (!botAllowed || !botTookMessage)) {
+    const flowResult = await dispatchInboundToFlows({
+      accountId,
+      userId: configOwnerUserId,
+      contactId: contactRecord.id,
+      conversationId: conversation.id,
+      message:
+        interactiveReplyId
+          ? {
+              kind: 'interactive_reply',
+              reply_id: interactiveReplyId,
+              reply_title: contentText ?? '',
+              meta_message_id: message.id,
+            }
+          : {
+              kind: 'text',
+              text: contentText ?? message.text?.body ?? '',
+              meta_message_id: message.id,
+            },
+      isFirstInboundMessage,
+    })
+    flowConsumed = flowResult.consumed
+  }
+
+  // Fire any automations that react to this webhook event. All dispatches
+  // run here (not earlier) so the contact, conversation, and inbound
+  // message all exist before any step — including send_message — runs.
+  // Fire-and-forget: a slow or failing automation must not block the
+  // webhook's 200 OK response to Meta.
+  const automationTriggers: (
+    | 'new_contact_created'
+    | 'first_inbound_message'
+    | 'new_message_received'
+    | 'keyword_match'
+  )[] = []
+  // Content-level triggers are suppressed when a flow consumed the
+  // message — see the comment block above.
+  if (!flowConsumed) {
+    automationTriggers.push('new_message_received', 'keyword_match')
+  }
+  // new_contact_created fires only when the webhook just auto-created the
+  // contact row. first_inbound_message fires whenever this is the contact's
+  // first-ever customer-sent message — a superset that also catches
+  // manually-imported contacts sending for the first time. We dispatch both
+  // so users can pick whichever semantic they want; an automation that
+  // listens to only one trigger runs only when that trigger matches.
+  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
+  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+  for (const triggerType of automationTriggers) {
+    runAutomationsForTrigger({
+      accountId,
+      triggerType,
+      contactId: contactRecord.id,
+      context: {
+        message_text: inboundText,
+        conversation_id: conversation.id,
+      },
+    }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

@@ -18,6 +18,7 @@ import {
   searchEmployees,
   listEmployees,
   listExpenseCategories,
+  buscarProductos,
 } from '@/lib/facbal/client'
 import { processExpenseMessage } from '@/lib/expenses'
 import { processAttendanceMessage } from '@/lib/attendance'
@@ -148,6 +149,24 @@ export const AGENT_TOOLS: AgentTool[] = [
     execute: async () => {
       const data = await listExpenseCategories()
       return { data, summary: `Categorías: ${Array.isArray(data) ? data.length : 0}.` }
+    },
+  },
+  {
+    name: 'buscar_productos',
+    description:
+      'Busca productos del catálogo (bastidores, telas, medidas, variantes) por texto. Usala para "¿tenés boxy fit lisas?", "precio de un bastidor 60x40", consultas de catálogo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Texto de búsqueda del producto (ej: "boxy fit lisas", "bastidor 60x40").' },
+      },
+      required: ['query'],
+    },
+    execute: async (args) => {
+      const q = str(args.query)
+      if (!q) return { data: null, summary: 'Falta el texto de búsqueda.' }
+      const data = await buscarProductos(q)
+      return { data, summary: `Productos: ${Array.isArray(data) ? data.length : 0}.` }
     },
   },
   {

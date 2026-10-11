@@ -25,9 +25,28 @@ const INVALID_CLIENT_NAMES = new Set([
   'deposito', 'factura', 'saldo', 'total', 'importe', 'alias', 'cbu',
 ])
 
+/**
+ * Nombres que son en realidad nombres de archivo del comprobante
+ * ("Comprobante.pdf", "IMG_1234.jpg"). El extractor a veces los devuelve
+ * como nombre_cliente; nunca son un cliente real.
+ */
+const FILENAME_RE = /\.(pdf|jpe?g|png|webp|gif|bmp|tiff?|docx?|xlsx?|csv|txt)$/i
+
+/**
+ * Forma compacta (solo letras/dígitos) de palabras basura: cubre variantes
+ * pegadas como "comprobantepdf" (de "Comprobante.pdf").
+ */
+const INVALID_COMPACT = new Set([
+  'comprobante', 'comprobantepdf', 'comprobantejpg', 'comprobantejpeg',
+  'comprobantepng', 'comprobantewebp', 'gracias', 'factura', 'transferencia',
+  'pago', 'pagado', 'deposito', 'saldo', 'total', 'importe', 'alias', 'cbu',
+])
+
 export function sanitizeClientName(raw: string | null | undefined): string | null {
   const v = (raw ?? '').trim()
   if (v.length < 3) return null
+  // Nombre de archivo (con extensión) → nunca es un cliente.
+  if (FILENAME_RE.test(v)) return null
   const norm = v
     .toLowerCase()
     .normalize('NFD')
@@ -35,6 +54,10 @@ export function sanitizeClientName(raw: string | null | undefined): string | nul
     .replace(/[!¡?¿.,;:()[\]"]/g, '')
     .trim()
   if (!norm || INVALID_CLIENT_NAMES.has(norm)) return null
+  // Variantes pegadas ("comprobantepdf") y nombres con dígitos no son clientes.
+  const compact = norm.replace(/[^a-z0-9]/g, '')
+  if (INVALID_COMPACT.has(compact)) return null
+  if (/[0-9]/.test(norm)) return null
   return v
 }
 

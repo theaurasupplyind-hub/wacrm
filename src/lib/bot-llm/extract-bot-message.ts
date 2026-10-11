@@ -384,6 +384,7 @@ async function extractWithoutJev(
       jsonMode: true,
       temperature: 0.1,
       maxTokens: 1100,
+      model: process.env.EXTRACTOR_MODEL || undefined,
     })
     rawText = result.text
     usage = result.usage

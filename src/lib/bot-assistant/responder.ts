@@ -15,6 +15,7 @@ export async function generateAssistantReply(args: {
     userMessage,
     temperature: 0.6,
     maxTokens: 600,
+    model: process.env.ASSISTANT_MODEL || undefined,
   })
   return text
 }

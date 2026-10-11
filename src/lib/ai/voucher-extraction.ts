@@ -339,7 +339,10 @@ Reglas:
 - No inventes datos si la imagen está borrosa o no se lee bien.
 - El monto debe ser solo el número, sin símbolos ni texto.
 - Distinguí correctamente entre origen (quien paga) y destino (quien cobra).
-- El CBU/CVU son números largos (22 dígitos). CUIT tiene formato XX-XXXXXXXX-X.`
+- El CBU/CVU son números largos (22 dígitos). CUIT tiene formato XX-XXXXXXXX-X.
+- NUNCA devuelvas un nombre de archivo como nombre_cliente/nombre_origen/nombre_destino
+  (ej: "Comprobante.pdf", "IMG_1234.jpg", "captura.png"). Solo nombres de personas o
+  empresas que aparezcan como texto en el comprobante; si no hay, poné null.`
 
 export async function extractVoucherData(args: {
   base64: string
