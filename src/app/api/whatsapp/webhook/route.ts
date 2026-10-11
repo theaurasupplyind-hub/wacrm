@@ -848,6 +848,11 @@ async function logRouterDecision(args: {
   dispatchedTo: string
   dispatchReason: string
   contextText?: string
+  /** Flags de contexto para que el log sea 100% replayable. */
+  contextFlags?: { expense: boolean; attendance: boolean; voucher: boolean; clarify: boolean }
+  interactiveReplyId?: string | null
+  mediaConsumedByVoucher?: boolean
+  whitelistAllowed?: boolean
 }): Promise<void> {
   try {
     await supabaseAdmin().from('router_logs').insert({
@@ -870,6 +875,11 @@ async function logRouterDecision(args: {
       debug_info: {
         context_text: args.contextText || null,
         extraction: args.extraction,
+        // Replay: estos flags permiten reconstruir el RouterState exacto.
+        context_flags: args.contextFlags ?? null,
+        interactive_reply_id: args.interactiveReplyId ?? null,
+        media_consumed_by_voucher: args.mediaConsumedByVoucher ?? null,
+        whitelist_allowed: args.whitelistAllowed ?? null,
       },
     })
   } catch (err) {
@@ -1645,6 +1655,15 @@ async function processMessage(
     dispatchedTo,
     dispatchReason,
     contextText,
+    contextFlags: {
+      expense: hasPendingExpense,
+      attendance: hasPendingAttendance,
+      voucher: hasPendingVoucher,
+      clarify: !!clarifyLoad?.state,
+    },
+    interactiveReplyId,
+    mediaConsumedByVoucher,
+    whitelistAllowed: botAllowed,
   })
 
   // Traza visual del flujo (diagrama /bot-flow). Sincrónica por el mismo
