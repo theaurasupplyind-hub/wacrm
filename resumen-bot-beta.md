@@ -1,5 +1,11 @@
 # Bot Beta — Resumen para agente validador
 
+> ⚠️ **Nota de estado (2026-10):** este resumen quedó desactualizado en lo que
+> refiere a Voice Orders/pedidos: `src/lib/voice-orders/*`, `handleVoiceText`,
+> `processTextOrder`, `createPresupuesto` y `/api/budget-image` **ya no existen**.
+> `BotIntent` no tiene `pedido`. Lo vigente: Flows, Voucher (imagen/texto),
+> Gastos, Asistencia y el asistente (`bot-assistant/`). Ver `docs/bots/architecture.md`.
+
 > Estado actual (no plan). Fuentes verificadas en código. Para otro agente que debe validar el bot antes de promoverlo a producción.
 
 ---

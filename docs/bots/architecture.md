@@ -4,6 +4,14 @@
 > Documentos relacionados:
 > - Voucher: [`vouchers.md`](./vouchers.md) · Voice Orders: [`voice-orders.md`](./voice-orders.md)
 > - Históricos: [`archive/README.md`](./archive/README.md)
+>
+> ⚠️ **Nota de estado (2026-10):** el pipeline de **Voice Orders / pedidos**
+> (`src/lib/voice-orders/*`, `handleVoiceText`, `processTextOrder`,
+> `createPresupuesto`, `/api/budget-image`, `hasPendingVoice`) **ya no existe en
+> el código**. `BotIntent` no incluye `pedido` y los pedidos/presupuestos por
+> WhatsApp están fuera de alcance. Las secciones 2 y 6 que los describen quedan
+> como referencia histórica. Lo que sí está vivo: Flows, Voucher
+> (imagen/texto), Gastos, Asistencia y el asistente conversacional.
 
 ## Visión General del Ecosistema
 
