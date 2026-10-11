@@ -19,16 +19,13 @@ import {
   type JevQuestion,
   type JevUsage,
 } from '@/lib/ai/jev'
-import type { BotIntent, Confidence, UnifiedExtraction } from './types'
+import type { BotIntent, UnifiedExtraction } from './types'
+import { JEV_OVERRIDE_MIN_CONFIDENCE, confidenceToConfianza } from './confidence'
 
 export type JevPendingDomain = 'expense' | 'attendance' | 'voucher' | 'none'
 
-/**
- * Confianza mínima del intent de Jev para sobrescribir al LLM. Por debajo de
- * este umbral se conserva el intent del LLM (Jev queda solo como debug) para
- * no degradar casos ambiguos.
- */
-export const JEV_OVERRIDE_MIN_CONFIDENCE = 0.6
+// Re-export de la fuente única de calibración (compat de imports existentes).
+export { JEV_OVERRIDE_MIN_CONFIDENCE, confidenceToConfianza }
 
 export interface JevPendingSignal {
   domain: JevPendingDomain
@@ -85,13 +82,6 @@ const PENDING_CRITERIA: Record<string, string | null> = {
 
 function todayAR(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
-}
-
-/** Confianza discreta derivada de la `confidence` calibrada de Jev. */
-export function confidenceToConfianza(confidence: number): Confidence {
-  if (confidence >= 0.75) return 'alta'
-  if (confidence >= 0.45) return 'media'
-  return 'baja'
 }
 
 function parseChoice(answer: JevAnswer | undefined): { choice: string; confidence: number; probabilities: Record<string, number> } | null {

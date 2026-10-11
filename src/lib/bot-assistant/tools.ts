@@ -148,9 +148,6 @@ export async function runToolsForQuery(args: {
       console.log('[debt-followup] detected confirmed name="%s" from prior proposal', name)
       return name
     }
-    // fallback: última propuesta con comillas
-    const m2 = hist.match(/"([^"]+Chiappe[^"]*)"/i)
-    if (m2 && m2[1]) return m2[1].trim()
     return null
   }
 

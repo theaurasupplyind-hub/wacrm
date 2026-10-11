@@ -1,5 +1,6 @@
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
 import type { JevPendingSignal } from '@/lib/bot-llm/classify-jev'
+import { isStrongConfidence, JEV_ANSWERS_PENDING_MIN, JEV_SUPERSEDES_MIN } from '@/lib/bot-llm/confidence'
 import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
@@ -35,9 +36,10 @@ export const PENDING_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000
 /**
  * Umbrales de la señal Jev para el ruteo de pendientes. Solo se aplican si el
  * llamador pasa `jevPending` (JEV_ENABLED=true y JEV_SHADOW=false).
+ * Definidos en `bot-llm/confidence.ts` (fuente única); se re-exportan acá por
+ * compat de imports existentes.
  */
-export const JEV_ANSWERS_PENDING_MIN = 0.7
-export const JEV_SUPERSEDES_MIN = 0.7
+export { JEV_ANSWERS_PENDING_MIN, JEV_SUPERSEDES_MIN }
 
 export interface RouterState {
   hasPendingExpense: boolean
@@ -113,7 +115,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
   // no debe quedar atrapado por un pendiente abandonado de otro dominio.
   // Sin esto, "Eze llegó 9:15" con un gasto a medio completar iba a
   // expense/pending_multiturn y nunca se registraba la asistencia.
-  const strongIntent = confianza === 'alta' || confianza === 'media'
+  const strongIntent = isStrongConfidence(confianza)
   if (!flowConsumed && !interactiveReplyId && strongIntent) {
     if (isAsistenciaIntent(intent)) {
       return { dispatchedTo: 'attendance', dispatchReason: 'intent' }

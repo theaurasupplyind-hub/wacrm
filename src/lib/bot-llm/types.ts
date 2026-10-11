@@ -10,6 +10,16 @@ export type BotIntent =
 
 export type Confidence = 'alta' | 'media' | 'baja'
 
+/**
+ * Persona gramatical del verbo de pago/voucher. `first` = "pagué/transferí"
+ * (yo pago); `third` = "X pagó/paga" (un tercero paga). Se usa para decidir
+ * voucher (cobro) vs gasto (pago) por ROL y no por regex de capitalización.
+ */
+export type PaymentVoice = 'first' | 'third' | null
+
+/** Dirección del dinero: `cobro` (un cliente nos paga) o `pago` (nosotros pagamos). */
+export type PaymentDirection = 'cobro' | 'pago' | null
+
 export type MissingField =
   | 'empleado'
   | 'hora'
@@ -57,6 +67,15 @@ export interface UnifiedExtraction {
   /** Destinatario que recibe en un voucher ("Jo pagó a Jorge" → Jorge). */
   destino: string | null
   metodo_pago: string | null
+  // ── Roles tipados de pago (fuente para decidir voucher vs gasto) ──
+  /** Quien paga/transfiere ("Jo pagó..." → Jo). */
+  payer?: string | null
+  /** Quien recibe ("...a Jorge" → Jorge). */
+  payee?: string | null
+  /** Persona gramatical del verbo ("pagué" → first; "Jo pagó" → third). */
+  voice?: PaymentVoice
+  /** Dirección del dinero (cobro/pago). */
+  direction?: PaymentDirection
   // multi-expense (solo si intent es 'multi_expense')
   multipleExpenses?: MultiExpenseItem[]
   // común

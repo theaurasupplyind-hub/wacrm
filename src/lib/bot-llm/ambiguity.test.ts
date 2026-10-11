@@ -28,49 +28,44 @@ function extraction(overrides: Partial<UnifiedExtraction> = {}): UnifiedExtracti
 }
 
 describe('applyVoucherCorrection', () => {
-  it('Jo pago en efectivo (gasto/media del LLM) → voucher', () => {
+  it('forma PELADA no se promueve (queda para la aclaración)', () => {
     const r = applyVoucherCorrection(
       extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo', metodo_pago: 'efectivo', dudoso: true }),
       'Jo pago en efectivo',
     )
-    expect(r.intent).toBe('voucher')
-    expect(r.confianza).toBe('alta')
-    expect(r.proveedor).toBe('Jo')
-    expect(r.monto).toBeNull()
-    expect(r.metodo_pago).toBe('efectivo')
+    expect(r.intent).toBe('gasto')
   })
 
-  it('con monto lo conserva', () => {
-    const r = applyVoucherCorrection(
-      extraction({ intent: 'gasto', confianza: 'media' }),
-      'Marlon Pago 2000000',
-    )
-    expect(r.intent).toBe('voucher')
-    expect(r.proveedor).toBe('Marlon')
-    expect(r.monto).toBe(2000000)
+  it('forma pelada con monto tampoco se promueve', () => {
+    const r = applyVoucherCorrection(extraction({ intent: 'gasto', confianza: 'media' }), 'Marlon Pago 2000000')
+    expect(r.intent).toBe('gasto')
   })
 
-  it('Jo pago en transferencia a Jorge → voucher con destino', () => {
+  it('forma pelada con destino tampoco se promueve', () => {
     const r = applyVoucherCorrection(
       extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo' }),
       'Jo pago en transferencia a Jorge',
     )
-    expect(r.intent).toBe('voucher')
-    expect(r.proveedor).toBe('Jo')
-    expect(r.destino).toBe('Jorge')
-    expect(r.monto).toBeNull()
-    expect(r.metodo_pago).toBe('transferencia')
+    expect(r.intent).toBe('gasto')
   })
 
-  it('con monto + destino conserva ambos', () => {
+  it('marcador explícito de cobro → voucher', () => {
     const r = applyVoucherCorrection(
-      extraction({ intent: 'gasto', confianza: 'media' }),
-      'Jo pago 200000 en transferencia a Jorge',
+      extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo', metodo_pago: 'efectivo' }),
+      'Me pagó Jo 2000000 en efectivo',
     )
     expect(r.intent).toBe('voucher')
-    expect(r.monto).toBe(200000)
-    expect(r.destino).toBe('Jorge')
-    expect(r.metodo_pago).toBe('transferencia')
+    expect(r.confianza).toBe('alta')
+    expect(r.proveedor).toBe('Jo')
+    expect(r.metodo_pago).toBe('efectivo')
+  })
+
+  it('marcador sin tilde también resuelve (normalización)', () => {
+    const r = applyVoucherCorrection(
+      extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo' }),
+      'me pago Jo en efectivo',
+    )
+    expect(r.intent).toBe('voucher')
   })
 
   it('no toca transferí/Le pagué (1ª persona)', () => {
@@ -90,12 +85,12 @@ describe('applyVoucherCorrection', () => {
 
   it('no toca voucher ya correcto', () => {
     const ex = extraction({ intent: 'voucher', confianza: 'alta', proveedor: 'Jo' })
-    expect(applyVoucherCorrection(ex, 'Jo pago en efectivo')).toBe(ex)
+    expect(applyVoucherCorrection(ex, 'Me pagó Jo en efectivo')).toBe(ex)
   })
 })
 
 describe('detectAmbiguity', () => {
-  it('forma de pago con intent gasto → pregunta pago', () => {
+  it('forma de pago pelada → pregunta pago', () => {
     const a = detectAmbiguity(
       extraction({ intent: 'gasto', confianza: 'media', proveedor: 'Jo', metodo_pago: 'efectivo', dudoso: true }),
       'Jo pago en efectivo ayer',
@@ -104,9 +99,17 @@ describe('detectAmbiguity', () => {
     expect(a?.options.map((o) => o.intent)).toEqual(['voucher', 'gasto'])
   })
 
-  it('voucher firme → null (va directo)', () => {
+  it('aunque el LLM diga voucher alta, la banda ambigua igual pregunta (seguridad)', () => {
+    const a = detectAmbiguity(
+      extraction({ intent: 'voucher', confianza: 'alta', proveedor: 'Jo' }),
+      'Jo pago en efectivo',
+    )
+    expect(a?.kind).toBe('pago')
+  })
+
+  it('marcador explícito de cobro → null (va directo)', () => {
     expect(
-      detectAmbiguity(extraction({ intent: 'voucher', confianza: 'alta', proveedor: 'Jo' }), 'Jo pago en efectivo'),
+      detectAmbiguity(extraction({ intent: 'voucher', confianza: 'alta', proveedor: 'Jo' }), 'Me pagó Jo en efectivo'),
     ).toBeNull()
   })
 

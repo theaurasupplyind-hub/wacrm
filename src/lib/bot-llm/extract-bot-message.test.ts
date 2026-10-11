@@ -96,6 +96,47 @@ describe('extractBotMessage — LLM responde JSON válido', () => {
   })
 })
 
+describe('extractBotMessage — corrección determinística de pago', () => {
+  beforeEach(() => {
+    mockedCall.mockClear()
+  })
+
+  it('marcador explícito de cobro ("me pagó") → promueve a voucher', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'media', monto: 2000000, proveedor: 'Jo',
+      metodo_pago: 'efectivo',
+    })
+    const r = await extractBotMessage('Me pagó Jo 2000000 en efectivo')
+    expect(r.intent).toBe('voucher')
+    expect(r.proveedor).toBe('Jo')
+    expect(r.empleado_gasto).toBeNull()
+  })
+
+  it('forma PELADA no se promueve (queda para la aclaración)', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'media', monto: 2000000, proveedor: 'Jo',
+    })
+    const r = await extractBotMessage('Jo pago 2000000')
+    expect(r.intent).toBe('gasto')
+  })
+
+  it('1ª persona NO se promueve (queda gasto)', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: 18000,
+    })
+    const r = await extractBotMessage('pagué 18 mil de luz')
+    expect(r.intent).toBe('gasto')
+  })
+
+  it('pago a empleado/sueldo no se convierte en voucher', async () => {
+    mockJson({
+      intent: 'gasto', confianza: 'alta', monto: 2000000, empleado_gasto: 'Marlon',
+    })
+    const r = await extractBotMessage('Le pagué a Marlon 2000000 por sueldo')
+    expect(r.intent).toBe('gasto')
+  })
+})
+
 describe('extractBotMessage — fallback ante fallos', () => {
   beforeEach(() => {
     mockedCall.mockClear()

@@ -1,7 +1,8 @@
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
-import { buildHistoryText } from './history'
+import { buildHistoryText, buildHistoryTextWithCurrent } from './history'
 import { generateAssistantReply } from './responder'
 import { runToolsForQuery, type ToolLog } from './tools'
+import { shouldCallTools } from './tool-policy'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 import { fuzzyMatchExpense } from '@/lib/expenses/fuzzy-match'
 import type { ParsedExpense } from '@/lib/expenses/types'
@@ -14,25 +15,6 @@ export interface AssistantResult {
   logs: { step: string; data: unknown }[]
   pendingState?: unknown
   toolLogs?: ToolLog[]
-}
-
-function shouldCallTools(extraction: UnifiedExtraction | null, text: string): boolean {
-  if (!extraction) return false
-  const q = text.toLowerCase()
-  // Identidad: nunca tools (evita listExpenses para "quien sos")
-  if (/quien\s*(sos|eres|es)\b/.test(q) || /\bque\s*sos\b/.test(q) || q.trim() === 'quien sos' || q.trim() === 'quien eres') return false
-  const factualKeywords = ['cuanto', 'cuánto', 'cuando', 'cuándo', 'quien', 'quién', 'cuantos', 'qué', 'que paso', 'saldo', 'debo', 'debe', 'gasto', 'gasté', 'gaste', 'hoy', 'ayer', 'factura', 'facturas', 'tiene', 'proveedor', 'empleado', 'asistencia', 'faltó', 'falto', 'llegó', 'pagó', 'pago']
-  const hasFactualKeyword = factualKeywords.some((k) => q.includes(k))
-  // Siempre tools si intent no es "otro" con baja, o si hay keyword factual
-  if (extraction.intent !== 'otro' && extraction.confianza !== 'baja') return true
-  if (hasFactualKeyword) return true
-  // factura siempre necesita dato real
-  if (extraction.intent === 'factura') return true
-  // asistencia siempre
-  if (extraction.intent.startsWith('asistencia')) return true
-  // gasto/multi_expense
-  if (extraction.intent === 'gasto' || extraction.intent === 'multi_expense') return true
-  return false
 }
 
 export async function runAssistant(args: {
@@ -166,7 +148,7 @@ export async function runAssistant(args: {
   let reply = ''
   try {
     reply = await generateAssistantReply({
-      historyText: historyText ? `${historyText}\nuser: ${args.text}` : `user: ${args.text}`,
+      historyText: buildHistoryTextWithCurrent(args.history, args.text),
       extraction,
       toolResults,
       knowledge,
@@ -175,7 +157,7 @@ export async function runAssistant(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logs.push({ step: 'assistant_response_error', data: { error: msg } })
-    reply = 'Che, se me complicó responder ahora. Probá de nuevo en un toque. Si es urgente lo dejamos en /bot-escalations.'
+    reply = 'Che, se me complicó responder ahora. Probá de nuevo en un toque.'
   }
 
   return {

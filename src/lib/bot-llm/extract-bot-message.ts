@@ -3,7 +3,9 @@ import { isJevEnabled, isJevShadow } from '@/lib/ai/jev'
 import { classifyWithJev, confidenceToConfianza, JEV_OVERRIDE_MIN_CONFIDENCE, type JevClassification } from './classify-jev'
 import { fallbackExtract } from './fallback'
 import { extractJson, normalizeDate, normalizeTime, parseMontoSafe } from './sanitize'
-import type { BotIntent, Confidence, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
+import { applyRoleFields } from './intent-roles'
+import { classifyPaymentIntent } from './payment-intent'
+import type { BotIntent, Confidence, MissingField, MultiExpenseItem, PaymentDirection, PaymentVoice, UnifiedExtraction } from './types'
 
 const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema de WhatsApp (taller de bastidores GAL + gestión de gastos, asistencia y vouchers).
 
@@ -21,6 +23,10 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
   "proveedor": "nombre del proveedor o null",
   "empleado_gasto": "nombre del empleado si es pago de sueldo, o null",
   "destino": "quien recibe en un voucher (\"Jo pagó a Jorge\" → \"Jorge\") o null",
+  "payer": "quien paga si el mensaje tiene sujeto que paga (\"Jo pagó\" → \"Jo\"; \"pagué la luz\" → null) o null",
+  "payee": "quien recibe (\"...a Jorge\" → \"Jorge\") o null",
+  "voice": "first si el verbo está en 1ª persona (pagué, transferí, compré, aboné); third si está en 3ª persona (pagó, paga, abonó); null si no hay verbo de pago",
+  "direction": "cobro si un cliente nos paga su factura/pedido; pago si nosotros pagamos; null si no aplica",
   "metodo_pago": "efectivo" | "transferencia" | "debito" | "credito" | "mercado pago" | "qr" | null,
   "fecha": "YYYY-MM-DD o null",
   "multipleExpenses": [
@@ -60,6 +66,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "pagué/pagamos a [proveedor]" o "transferí a [persona]" (YO pagué/transferí, verbo en 1ª persona) → gasto con tipo_gasto "pago", proveedor=[proveedor].
 - "[Nombre] pagó/paga [monto] en/por transferencia [a Destino]" (sujeto en 3ª persona, NUNCA "le", NUNCA sueldo) → voucher, proveedor=[Nombre], destino=[Destino] o null, monto o null (=total), metodo_pago="transferencia". Ej: "Jo pago en transferencia a Jorge" → voucher, proveedor:"Jo", destino:"Jorge", monto:null, metodo_pago:"transferencia".
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
+- ROLES (completar SIEMPRE que haya verbo de pago): "voice" = first para "pagué/transferí/compré/aboné", third para "pagó/paga/abonó"; "payer" = sujeto que paga (solo en 3ª persona); "payee" = quien recibe; "direction" = "cobro" si un cliente nos paga, "pago" si nosotros pagamos. Sirven para desambiguar voucher vs gasto (3ª persona con sujeto que paga → voucher; 1ª persona → gasto). Si la forma es pelada ("Jo pagó 2000", sin marcador de cobro), igual devolvé tu mejor intent: el sistema pedirá confirmación al usuario cuando corresponda.
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/puse plata para factura/comprobante" → voucher, NUNCA gasto.
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
@@ -181,41 +188,32 @@ const VALID_CONFIDENCE: Confidence[] = ['alta', 'media', 'baja']
 const VALID_MISSING: MissingField[] = ['empleado', 'hora', 'estado', 'monto', 'categoria', 'proveedor']
 const VALID_ESTADOS = ['vacaciones', 'licencia', 'ausente'] as const
 const VALID_EXPENSE_TYPES = ['compra', 'pago', 'gasto'] as const
+const VALID_VOICE = ['first', 'third'] as const
+const VALID_DIRECTION = ['cobro', 'pago'] as const
 
 function strOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
 }
 
 /**
- * Red determinística anti-sesgo: "[Nombre] pagó/paga [monto] [en efectivo/en
- * transferencia] [todo] [a Destino]" SIEMPRE es voucher (el cliente paga su
- * factura; sin monto = paga el total), aunque el LLM —sesgado por un gasto
- * pendiente en el contexto— lo clasifique como gasto. No toca:
- * "Le pagué a X" (tiene le), sueldos/adelantos, ni verbos en 1ª persona
- * ("pagué la luz", "transferí a Jorge").
+ * Corrección determinística de voucher.
+ *
+ * Solo PROMUEVE a voucher cuando el texto trae un marcador EXPLÍCITO de cobro
+ * ("me pagó", "nos transfirió", "pago recibido"...). La forma pelada
+ * ("Jo pagó 2000") es ambigua por diseño: NO se promueve acá — la resuelve
+ * `detectAmbiguity` con una aclaración. Los verbos en 1ª persona / sueldos
+ * quedan como gasto. Los marcadores se normalizan sin tilde (ver
+ * `payment-intent.ts`).
  */
-const VOUCHER_PAYMENT_RE =
-  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)(?:\s+\$?\s*[\d][\d.,]*\s*(?:mil|k|m)?)?(?:\s+(?:todo|total|completo|todo el saldo))?(?:\s+(?:en\s+efectivo|en\s+transferencia|por\s+transferencia))?(?:\s+(?:todo|total|completo))?(?:\s+a\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2}))?\s*$/i
-
-const VOUCHER_PAYMENT_EXCLUSIONS_RE = /\b(le|les|sueldo|sueldos|salario|adelanto|a\s+cuenta)\b/i
-
 export function applyVoucherCorrection(
   extraction: UnifiedExtraction,
   raw: string,
 ): UnifiedExtraction {
-  if (extraction.intent === 'voucher') return extraction
+  if (extraction.intent === 'voucher') return applyRoleFields(extraction)
   const text = (raw || '').trim()
   if (!text) return extraction
-  if (VOUCHER_PAYMENT_EXCLUSIONS_RE.test(text)) return extraction
-  const m = text.match(VOUCHER_PAYMENT_RE)
-  if (!m) return extraction
-  // El nombre debe empezar en mayúscula ("Jo paga..."); "tambien pago..."
-  // en minúsculas no es un sujeto que paga.
-  const payerName = m[1].trim()
-  if (!payerName || payerName[0] !== payerName[0].toUpperCase()) return extraction
+  if (classifyPaymentIntent(text) !== 'voucher') return extraction
 
-  const montoMatch = text.match(/\$?\s*([\d][\d.,]*\s*(?:mil|k|m)?)\s*(?:todo|total|completo|en\s+efectivo|en\s+transferencia|por\s+transferencia|$)/i)
-  const monto = montoMatch ? parseMontoSafe(montoMatch[1]) : null
   const metodo = /efectivo/i.test(text)
     ? 'efectivo'
     : /transferencia/i.test(text)
@@ -226,12 +224,11 @@ export function applyVoucherCorrection(
     ...extraction,
     intent: 'voucher',
     confianza: 'alta',
-    proveedor: payerName,
+    proveedor: extraction.proveedor ?? extraction.payer ?? null,
     empleado_gasto: null,
-    destino: m[3]?.trim() || null,
+    destino: extraction.destino ?? extraction.payee ?? null,
     categoria: null,
     tipo_gasto: null,
-    monto,
     metodo_pago: metodo,
     faltan_campos: [],
     dudoso: false,
@@ -266,6 +263,13 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     ? (parsed.tipo_gasto as (typeof VALID_EXPENSE_TYPES)[number])
     : null
 
+  const voice: PaymentVoice = VALID_VOICE.includes(parsed.voice as (typeof VALID_VOICE)[number])
+    ? (parsed.voice as 'first' | 'third')
+    : null
+  const direction: PaymentDirection = VALID_DIRECTION.includes(parsed.direction as (typeof VALID_DIRECTION)[number])
+    ? (parsed.direction as 'cobro' | 'pago')
+    : null
+
   const multipleExpenses = Array.isArray(parsed.multipleExpenses)
     ? parsed.multipleExpenses
         .map(sanitizeMultiExpenseItem)
@@ -286,6 +290,10 @@ function sanitizeParsed(parsed: Record<string, unknown>, raw: string): UnifiedEx
     proveedor: strOrNull(parsed.proveedor),
     empleado_gasto: strOrNull(parsed.empleado_gasto),
     destino: strOrNull(parsed.destino),
+    payer: strOrNull(parsed.payer),
+    payee: strOrNull(parsed.payee),
+    voice,
+    direction,
     metodo_pago: strOrNull(parsed.metodo_pago),
     multipleExpenses,
     fecha: normalizeDate(parsed.fecha),

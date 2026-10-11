@@ -1,4 +1,5 @@
 import type { BotIntent, UnifiedExtraction } from './types'
+import { classifyPaymentIntent } from './payment-intent'
 
 /**
  * Bot conversacional ante ambigüedad: cuando el intent no es firme pero hay
@@ -22,22 +23,16 @@ export interface Ambiguity {
   subject?: string | null
 }
 
-/** ¿El texto tiene forma de pago de cliente? (Nombre con mayúscula + verbo en 3ª persona) */
-const PAYMENT_SHAPE_RE =
-  /^\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron)\b/i
-
-const PAYMENT_EXCLUSIONS_RE = /\b(le|les|sueldo|sueldos|salario|adelanto|a\s+cuenta)\b/i
-
 function norm(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
 }
 
 /**
  * Detecta si corresponde preguntar antes de despachar.
- * - Voucher firme (intent voucher + alta, o corrección determinística ya
- *   aplicada) → null, va directo.
- * - Forma de pago pero intent distinto / confianza no alta / dudoso →
- *   pregunta gasto↔voucher.
+ * - Forma de pago PELADA (marcador ambiguo determinístico) → SIEMPRE pregunta
+ *   gasto↔voucher, aunque el LLM haya dicho voucher con confianza alta. Es la
+ *   compuerta de seguridad: los vouchers escriben automático, no se adivina.
+ * - Marcador explícito de cobro/pago → no pregunta (lo resuelve el texto).
  * - Confianza baja con hipótesis concretas (monto+proveedor, empleado+hora)
  *   → pregunta genérica con esas opciones.
  */
@@ -48,33 +43,24 @@ export function detectAmbiguity(
   const text = (rawText || '').trim()
   if (!text) return null
 
-  // Caso pago: forma de pago sin exclusiones. El nombre debe empezar en
-  // mayúscula ("tambien pago..." no es un sujeto que paga).
-  const shapeMatch = PAYMENT_SHAPE_RE.test(text) && !PAYMENT_EXCLUSIONS_RE.test(text)
-    ? text.match(PAYMENT_SHAPE_RE)
-    : null
-  const shapeName = shapeMatch?.[1]?.trim() ?? ''
-  if (shapeMatch && shapeName && shapeName[0] === shapeName[0].toUpperCase()) {
-    const voucherFirme = extraction.intent === 'voucher' && extraction.confianza === 'alta'
-    if (!voucherFirme) {
-      const nombre = extraction.proveedor || text.split(/\s+/)[0]
-      const destino = extraction.destino ? ` transfiriendo a ${extraction.destino}` : ''
-      return {
-        kind: 'pago',
-        question:
-          `No me quedó claro: ¿${nombre} te pagó a vos${destino} o pagaste vos? ` +
-          `Tocá una opción o respondé A/B.`,
-        options: [
-          { id: 'clarify_cobro', title: 'Me pagó (cobro)', intent: 'voucher' },
-          { id: 'clarify_gasto', title: 'Pagué yo (gasto)', intent: 'gasto' },
-        ],
-        subject: nombre,
-      }
+  // Compuerta determinística de pago: la banda ambigua siempre se aclara.
+  if (classifyPaymentIntent(text) === 'ambiguous') {
+    const nombre = extraction.proveedor || extraction.payer || text.split(/\s+/)[0]
+    const destino = extraction.destino ? ` transfiriendo a ${extraction.destino}` : ''
+    return {
+      kind: 'pago',
+      question:
+        `No me quedó claro: ¿${nombre} te pagó a vos${destino} o pagaste vos? ` +
+        `Tocá una opción o respondé A/B.`,
+      options: [
+        { id: 'clarify_cobro', title: 'Me pagó (cobro)', intent: 'voucher' },
+        { id: 'clarify_gasto', title: 'Pagué yo (gasto)', intent: 'gasto' },
+      ],
+      subject: nombre,
     }
-    return null
   }
 
-  // Caso genérico: confianza baja/dudoso PERO con hipótesis concretas
+  // Caso genérico: confianza baja/dudoso PERO con hipótesis concretas.
   if (extraction.confianza === 'baja' || extraction.dudoso) {
     const options: ClarifyOption[] = []
     if (extraction.monto != null || extraction.proveedor || extraction.categoria) {
