@@ -22,6 +22,18 @@ export function isWhitelistEnforced(): boolean {
   return process.env.BOT_WHITELIST_ENFORCED !== 'false'
 }
 
+/** Normaliza un teléfono de whitelist (solo dígitos). Null si es inválido/corto. */
+export function normalizeAllowedPhone(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const p = normalizePhone(raw)
+  return p.length >= 7 ? p : null
+}
+
+/** Normaliza y deduplica una lista de teléfonos (para alta individual o bulk). */
+export function normalizeAllowedPhones(raw: unknown[]): string[] {
+  return [...new Set(raw.map(normalizeAllowedPhone).filter((p): p is string => !!p))]
+}
+
 export async function isPhoneAllowed(
   db: SupabaseClient,
   accountId: string,

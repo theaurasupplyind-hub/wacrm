@@ -47,6 +47,7 @@ import {
   ChevronRight,
   SlidersHorizontal,
   Filter,
+  Bot,
   X,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
@@ -56,6 +57,7 @@ import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { loadWhitelist } from '@/lib/bot/whitelist-client';
 
 const PAGE_SIZE = 25;
 
@@ -87,6 +89,7 @@ export default function ContactsPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [authorizing, setAuthorizing] = useState(false);
 
   // Bulk selection (page-scoped — only the loaded rows are selectable)
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -312,6 +315,34 @@ export default function ContactsPage() {
     setBulkDeleteOpen(false);
   }
 
+  async function authorizeContacts(phones: string[]) {
+    const valid = phones.filter(Boolean);
+    if (valid.length === 0) return;
+    setAuthorizing(true);
+    try {
+      const res = await fetch('/api/bot/whitelist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phones: valid }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(payload.error || 'No se pudo autorizar');
+        return;
+      }
+      toast.success(
+        valid.length === 1
+          ? 'Número autorizado en el bot'
+          : `${valid.length} números autorizados en el bot`,
+      );
+      await loadWhitelist(true);
+    } catch {
+      toast.error('No se pudo conectar con el servidor');
+    } finally {
+      setAuthorizing(false);
+    }
+  }
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
@@ -512,6 +543,26 @@ export default function ContactsPage() {
             >
               Clear
             </Button>
+            {canEditSettings && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={authorizing}
+                onClick={() =>
+                  authorizeContacts(
+                    contacts.filter((c) => selected.has(c.id)).map((c) => c.phone),
+                  )
+                }
+                className="border-border text-muted-foreground hover:bg-muted"
+              >
+                {authorizing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Bot className="size-4" />
+                )}
+                Autorizar en el bot
+              </Button>
+            )}
             <GatedButton
               variant="destructive"
               size="sm"
@@ -671,6 +722,18 @@ export default function ContactsPage() {
                           <Pencil className="size-4" />
                           Edit
                         </DropdownMenuItem>
+                        {canEditSettings && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              authorizeContacts([contact.phone]);
+                            }}
+                            className="text-popover-foreground focus:bg-muted focus:text-foreground"
+                          >
+                            <Bot className="size-4" />
+                            Autorizar en el bot
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator className="bg-border" />
                         <DropdownMenuItem
                           variant="destructive"

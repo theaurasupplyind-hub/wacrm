@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { AuthorizeBotButton } from "@/components/bot/authorize-button";
 import { format } from "date-fns";
 
 interface ContactSidebarProps {
@@ -172,6 +173,12 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                 <span className="truncate">{contact.email}</span>
               </div>
             )}
+
+            <AuthorizeBotButton
+              phone={contact.phone}
+              name={contact.name}
+              className="w-full justify-center"
+            />
           </div>
 
           {/* Divider */}

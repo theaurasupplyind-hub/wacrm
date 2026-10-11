@@ -10,6 +10,7 @@ import {
   TemplatePicker,
   type TemplateSendValues,
 } from '@/components/inbox/template-picker';
+import { AuthorizeBotButton } from '@/components/bot/authorize-button';
 import {
   Sheet,
   SheetContent,
@@ -436,7 +437,7 @@ export function ContactDetailView({
                   </div>
                 </div>
               </div>
-              <div className="mt-3">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   onClick={() => setTemplatePickerOpen(true)}
@@ -450,6 +451,7 @@ export function ContactDetailView({
                   )}
                   Send template
                 </Button>
+                <AuthorizeBotButton phone={contact.phone} name={contact.name} />
               </div>
             </SheetHeader>
 
