@@ -48,8 +48,8 @@ describe('executePedido', () => {
     const r = await executePedido({
       clienteNombre: 'Juan',
       clienteId: 7,
+      clienteTelefono: '5491133344444',
       items: [item],
-      senderPhone: '5491100000000',
       tipoEntrega: 'Envio',
       fechaEntrega: '{"desde":"7/11","hasta":"7/11","extras":[]}',
       descuento: { mode: 'percent', value: 10, amount: 3600 },
@@ -65,12 +65,14 @@ describe('executePedido', () => {
       tipo_entrega: string
       fecha_entrega: string
       cliente_id: number | null
+      cliente_telefono: string
       total: number
       items: { descripcion: string; total: number; precio_unitario: number }[]
     }
     expect(payload.tipo_entrega).toBe('Envio')
     expect(payload.fecha_entrega).toBe('{"desde":"7/11","hasta":"7/11","extras":[]}')
     expect(payload.cliente_id).toBe(7)
+    expect(payload.cliente_telefono).toBe('5491133344444')
     expect(payload.total).toBe(32400)
 
     const desc = payload.items.find(i => i.descripcion === 'DESCUENTO')
@@ -88,5 +90,24 @@ describe('executePedido', () => {
     expect(payload.tipo_entrega).toBe('Retira')
     expect(payload.fecha_entrega).toBe('')
     expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(false)
+  })
+
+  it('no asocia el teléfono del dueño al cliente nuevo ni al presupuesto', async () => {
+    await executePedido({ clienteNombre: 'Fede', items: [item] })
+
+    expect(mocks.searchClients).toHaveBeenCalledWith('Fede')
+    expect(mocks.createClient).toHaveBeenCalledWith({ nombre: 'Fede' })
+    const payload = mocks.createInvoice.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.cliente_telefono).toBeUndefined()
+  })
+
+  it('rechaza un número como nombre de cliente antes de crear registros', async () => {
+    await expect(
+      executePedido({ clienteNombre: '5491125491605', items: [item] }),
+    ).rejects.toThrow('El teléfono del remitente no puede usarse como nombre de cliente.')
+
+    expect(mocks.searchClients).not.toHaveBeenCalled()
+    expect(mocks.createClient).not.toHaveBeenCalled()
+    expect(mocks.createInvoice).not.toHaveBeenCalled()
   })
 })

@@ -13,6 +13,7 @@ export interface PedidoPreview {
   total: number
   items: PedidoItem[]
   faltantes: string[]
+  clienteNombre: string | null
 }
 
 export async function previewPedido(
@@ -44,9 +45,10 @@ export async function previewPedido(
     notaSupuestos: resolved.notaSupuestos,
   }
   return {
-    text: buildOrderSummary(ctx),
+    text: buildOrderSummary(ctx, { confirm: false, title: 'Cotización estimada:' }),
     total: resolved.total,
     items: resolved.items,
     faltantes: resolved.faltantes,
+    clienteNombre: parsed.cliente ?? opts.context?.clienteNombre ?? null,
   }
 }

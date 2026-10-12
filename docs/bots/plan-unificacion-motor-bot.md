@@ -1,6 +1,31 @@
 # Plan: Unificación del motor de ruteo del bot (webhook ↔ bot-beta)
 
-> Para un agente implementador. **Estado:** planificado — no iniciado.
+> **Estado:** **parcialmente implementado (2026-10-12).** El motor de turno puro
+> (`src/lib/bot/engine.ts`) y el adapter webhook están hechos (Fases 1-2 de este
+> doc, ver "Estado de implementación"); además se agregó un planner LLM opt-in
+> (Fases 3-5 del plan de turnos). **La migración de Bot Beta (Fases 3-4 de este
+> doc) quedó FUERA DE ALCANCE** por decisión: se priorizó producción y no se
+> tocó `src/lib/bot-beta/*`. El wrapper `runAssistantForWebhook` y el agente con
+> tools ya existían.
+
+## Estado de implementación (2026-10-12)
+
+Plan de turnos ejecutado (ver `C:\Users\jesus\.opencode\plan\plan-motor-turnos-agente-planner.md`):
+
+| Fase | Estado | Artefacto |
+|---|---|---|
+| 0 — red de seguridad | ✅ | `router.test.ts`, `engine.test.ts` (matriz de paridad + regresiones) |
+| 1 — motor puro + adapter webhook | ✅ | `engine.ts`, `actions.ts`, `ports.ts`, `policy.ts`; `route.ts` adelgazado |
+| 2 — adapter Bot Beta | ⛔ fuera de alcance | `unified-handler.ts` intacto (drift aceptado) |
+| 3 — planner en sombra | ✅ | `planner.ts`, flag `ASSISTANT_AGENT_PLANNER=shadow` |
+| 4 — planner por dominio | ✅ | `ASSISTANT_PLANNER_DOMAINS`, `reconcilePlans` |
+| 5 — policy real (escrituras) | ✅ | `maxWritesPerTurn=1`, texto del usuario, `ASSISTANT_PLANNER_WRITES` |
+
+Diferencia con el diseño original: el motor es una **función pura** (`planTurn`)
+y el I/O lo hace el adapter (no hay ports con I/O todavía); `ports.ts` queda como
+contratos para el futuro. Vouchers **congelados** (pass-through). Pending real:
+idempotencia durable por `metaMessageId` (hoy por turno).
+
 > **Objetivo:** converger los dos orquestadores que hoy rutean mensajes
 > (`src/app/api/whatsapp/webhook/route.ts` y `src/lib/bot-beta/unified-handler.ts`)
 > en un solo **motor de turno** transport-agnóstico, para que extracción,
@@ -12,8 +37,8 @@
 >   **extracción** (un LLM → `UnifiedExtraction`). Este plan unifica la
 >   **orquestación** alrededor del router.
 > - [`plan-bot-beta-a-produccion-asistente.md`](./plan-bot-beta-a-produccion-asistente.md)
->   — promueve `runAssistant` al webhook. Este plan es el paso previo/conviviente:
->   cuando exista un motor único, ese plan se implementa como un adapter más.
+>   — plan histórico, superado: el wrapper productivo ya existe. La unificación
+>   descrita aquí sigue pendiente y debe preservar el agente/handlers actuales.
 > - Contexto base: [`architecture.md`](./architecture.md) §6 (orden de dispatch),
 >   [`resumen-bot-beta.md`](../../resumen-bot-beta.md).
 
@@ -135,13 +160,14 @@ type TurnAction =
 
 ## 3. Fases de implementación
 
-### Fase 0 — Red de seguridad (caracterización)
+### Fase 0 — Red de seguridad (caracterización; rehacer sobre el estado actual)
 - Tests de paridad que fijen las decisiones actuales: matriz
   `(intent, confianza, pendings, interactivo, clarify) → dispatchedTo/reason`.
   Reutilizar `router.test.ts` + casos nuevos.
 - Snapshot de escenarios E2E conocidos (los de `plan-bot-llm-unificado.md` §Verificación
   y el caso voucher→gasto de §6) como tabla de regresión.
-- `lint` limpio (hoy hay 8 errores pendientes según `plan-bot-beta-a-produccion-asistente.md` §1).
+- Revalidar `lint`, typecheck y tests sobre la rama actual; el conteo de errores
+  citado en el plan histórico de producción ya no es una referencia vigente.
 
 ### Fase 1 — Tipos y motor mínimo
 - Crear `src/lib/bot/engine.ts` con `TurnInput`, `TurnResult`, `TurnAction`, `TurnDeps`.

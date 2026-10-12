@@ -60,6 +60,8 @@ export interface OrderContext {
   stage: 'confirming'
   items: PedidoItem[]
   clienteNombre: string | null
+  /** Teléfono del cliente elegido, nunca el teléfono interno del remitente. */
+  clienteTelefono?: string | null
   /**
    * Cliente vinculado. `undefined` = todavía no se resolvió (hay que buscar
    * candidatos); `null` = confirmado como cliente nuevo (se crea al ejecutar).
@@ -80,6 +82,12 @@ export interface OrderContext {
   notaSupuestos: string[]
   /** True cuando el usuario confirmó pero falta el nombre del cliente. */
   awaitingCliente?: boolean
+  /** Estamos mostrando una cotización, aún no se inició la creación/guardado. */
+  awaitingQuoteApproval?: boolean
+  /** Texto original usado para reconstruir el presupuesto si el usuario acepta. */
+  quoteText?: string | null
+  /** El dueño pidió crear un presupuesto pero todavía no indicó los ítems. */
+  awaitingOrderItems?: boolean
   /** True cuando mostramos candidatos de cliente y esperamos la elección. */
   awaitingClienteChoice?: boolean
   /** True cuando esperamos el tipo de entrega (Retira/Envío/Ret+Env). */

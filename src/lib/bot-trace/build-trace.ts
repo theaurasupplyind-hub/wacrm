@@ -69,6 +69,7 @@ export interface BuildTraceInput {
 /** Mapea el nombre de un log del handler a un nodo de la topología. */
 function mapLogToNode(step: string): string {
   const s = step.toLowerCase()
+  if (s.includes('planner')) return 'planner'
   if (s.includes('router') || s.includes('dispatch')) return 'router'
   if (s.includes('extract') || s.includes('jev') || s.includes('ambigu')) return 'extract'
   if (s.includes('voucher') || s.includes('payment') || s.includes('pago')) return 'h_voucher_media'

@@ -87,7 +87,17 @@ export function buildBotContextText(input: BotContextInput): string {
   }
 
   const order = input.orderCtx
-  if (order && order.stage === 'confirming') {
+  if (order?.awaitingOrderItems) {
+    lines.push('El dueño pidió crear un presupuesto y está por indicar los productos/medidas. Todavía no hay presupuesto guardado.')
+  } else if (order?.awaitingQuoteApproval) {
+    const itemsTxt = order.items
+      .filter(it => !it.faltante)
+      .map((it, i) => `${i + 1}. ${it.cantidad > 1 ? `${it.cantidad}x ` : ''}${it.descripcion}`)
+      .join(' · ')
+    lines.push(
+      `Cotización pendiente (solo preview; todavía NO se creó ningún presupuesto): ${itemsTxt || '(sin ítems)'}. Total ${order.total}. El usuario puede aceptar para iniciar la creación o cancelar.`,
+    )
+  } else if (order && order.stage === 'confirming') {
     const itemsTxt = order.items
       .filter(it => !it.faltante)
       .map((it, i) => `${i + 1}. ${it.cantidad > 1 ? `${it.cantidad}x ` : ''}${it.descripcion}`)

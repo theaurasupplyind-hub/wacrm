@@ -11,7 +11,7 @@ describe('classifyOrderReply', () => {
     }
   })
   it('detecta cancelaciones', () => {
-    for (const t of ['no', 'cancelar', 'dejalo', 'anular', 'no, nada', 'no gracias']) {
+    for (const t of ['no', 'cancelar', 'dejalo', 'anular', 'no, nada', 'no gracias', 'no lo creas, era una prueba', 'no quiero un presupuesto']) {
       expect(classifyOrderReply(t)).toBe('cancel')
     }
   })
@@ -117,6 +117,8 @@ describe('previewPedido', () => {
     expect(preview!.text).toContain('Bastidor')
     expect(preview!.text).toContain('Sin Tela')
     expect(preview!.text).toContain('Juan')
+    expect(preview!.text).toContain('Cotización estimada:')
+    expect(preview!.text).not.toContain('¿Confirmás?')
   })
 
   it('null si no hay ítems', async () => {

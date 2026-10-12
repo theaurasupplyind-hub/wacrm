@@ -22,6 +22,7 @@ import {
   isOrderContextActive,
 } from './context'
 import { executePedido, pedidoItemsNeto } from './execute'
+import { previewPedido } from './preview'
 import { sendPedidoReceipt } from './send-receipt'
 import {
   buildOrderSummary,
@@ -33,6 +34,13 @@ import {
 import { applyOrderGlossary, loadGlossary, parseGlossaryMeanings, upsertGlossary } from './glossary'
 import { buildKnownVocab, detectUnknownTerms } from './classify-item'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
+import {
+  isPhoneLikeClientName,
+  isSenderPhone,
+  isSenderPhoneCandidate,
+  normalizeClientNameReply,
+} from './client-identity'
+import { isExplicitBudgetCreationRequest, mentionsOrderItems } from './intent'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import type {
@@ -249,14 +257,19 @@ async function searchCandidates(
   nombre: string,
 ): Promise<ClienteCandidato[]> {
   try {
-    if (args.findClientsFn) return await args.findClientsFn(nombre, args.senderPhone)
-    const matches = await findClientMatches(nombre, args.senderPhone)
-    return matches.map(m => ({
-      id: m.client.id,
-      nombre: m.client.nombre,
-      telefono: m.client.telefono ?? null,
-      score: m.score,
-    }))
+    if (isPhoneLikeClientName(nombre, args.senderPhone)) return []
+    const candidates = args.findClientsFn
+      ? await args.findClientsFn(nombre)
+      : (await findClientMatches(nombre)).map(m => ({
+          id: m.client.id,
+          nombre: m.client.nombre,
+          telefono: m.client.telefono ?? null,
+          score: m.score,
+        }))
+    // El número interno identifica al remitente, no al cliente del presupuesto.
+    return candidates
+      .filter(c => !isSenderPhoneCandidate(c, args.senderPhone))
+      .map(c => isSenderPhone(c.telefono, args.senderPhone) ? { ...c, telefono: null } : c)
   } catch (err) {
     console.error('[pedido] búsqueda de clientes falló:', err)
     return []
@@ -303,7 +316,7 @@ async function advance(
   if (state.clienteId === undefined) {
     const matches = await searchCandidates(args, clienteNombre)
     if (matches.length === 0) {
-      state = { ...state, clienteId: null, clienteCandidatos: [] }
+      state = { ...state, clienteId: null, clienteTelefono: null, clienteCandidatos: [] }
     } else if (matches.length === 1) {
       const c = matches[0]
       const updated = { ...state, clienteCandidatos: matches, awaitingClienteChoice: true }
@@ -378,8 +391,8 @@ async function executeConfirmed(
     const result = await executePedido({
       clienteNombre: ctx.clienteNombre,
       clienteId: ctx.clienteId ?? null,
+      clienteTelefono: ctx.clienteTelefono ?? null,
       items: ctx.items,
-      senderPhone: args.senderPhone,
       tipoEntrega: ctx.tipoEntrega,
       fechaEntrega: ctx.fechaEntrega,
       descuento: ctx.descuento ?? null,
@@ -470,8 +483,12 @@ async function resolveAndSave(
   const resolved = resolveItems({ items, refs, rules })
   if (resolved.items.length === 0) return { handled: false }
 
-  const nextClienteNombre = parsed.cliente || existing?.clienteNombre || null
-  const clienteChanged = !!parsed.cliente && parsed.cliente !== existing?.clienteNombre
+  const invalidParsedClient = isPhoneLikeClientName(parsed.cliente, args.senderPhone)
+  const invalidExistingClient = isPhoneLikeClientName(existing?.clienteNombre, args.senderPhone)
+  const parsedCliente = invalidParsedClient ? null : parsed.cliente
+  const existingClienteNombre = invalidExistingClient ? null : existing?.clienteNombre
+  const nextClienteNombre = parsedCliente || existingClienteNombre || null
+  const clienteChanged = !!parsedCliente && parsedCliente !== existingClienteNombre
 
   const baseNeto = resolved.total
   let descuento: DescuentoState | null | undefined = existing?.descuento
@@ -489,11 +506,14 @@ async function resolveAndSave(
     stage: 'confirming',
     items: resolved.items,
     clienteNombre: nextClienteNombre,
-    clienteId: clienteChanged ? undefined : existing?.clienteId,
-    clienteCandidatos: clienteChanged ? [] : existing?.clienteCandidatos,
-    tipoEntrega: parsed.tipoEntrega ?? existing?.tipoEntrega,
-    fechaEntrega: nextFecha,
-    descuento,
+    clienteTelefono: clienteChanged || invalidExistingClient ? undefined : existing?.clienteTelefono,
+    clienteId: clienteChanged || invalidExistingClient ? undefined : existing?.clienteId,
+    clienteCandidatos: clienteChanged || invalidExistingClient ? [] : existing?.clienteCandidatos,
+    // Alineado con Facturacion.svelte: Retira/no date/no discount are defaults;
+    // only ask for these details when the user explicitly supplies/corrects them.
+    tipoEntrega: parsed.tipoEntrega ?? existing?.tipoEntrega ?? 'Retira',
+    fechaEntrega: nextFecha ?? '',
+    descuento: descuento ?? null,
     total: resolved.total,
     faltantes: resolved.faltantes,
     notaSupuestos: resolved.notaSupuestos,
@@ -501,6 +521,17 @@ async function resolveAndSave(
 
   await saveCtx(args, state)
   await logOrderDecision(args, state, existing ? 'pedido_correction' : 'pedido_new')
+
+  if ((invalidParsedClient || invalidExistingClient) && !nextClienteNombre) {
+    const updated = { ...state, awaitingCliente: true }
+    await saveCtx(args, updated)
+    const msg = buildOrderSummary(updated, {
+      confirm: false,
+      prompt: 'Ese es el teléfono desde el que me escribís; no lo voy a guardar como cliente. ¿A nombre de quién armo el presupuesto?',
+    })
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
 
   return advance(args, state, { includeSummary: true })
 }
@@ -554,12 +585,13 @@ async function handleButton(
       ...ctx,
       clienteId: c?.id ?? null,
       clienteNombre: c?.nombre ?? ctx.clienteNombre,
+      clienteTelefono: c?.telefono ?? null,
       clienteCandidatos: [],
       awaitingClienteChoice: false,
     })
   }
   if (buttonId === 'pedido_cli_no') {
-    return advance(args, { ...ctx, clienteId: null, clienteCandidatos: [], awaitingClienteChoice: false })
+    return advance(args, { ...ctx, clienteId: null, clienteTelefono: null, clienteCandidatos: [], awaitingClienteChoice: false })
   }
   const entrega: Record<string, TipoEntrega> = {
     pedido_entrega_retira: 'Retira',
@@ -579,11 +611,33 @@ async function handleClienteChoiceText(
   text: string,
 ): Promise<ProcessPedidoResult> {
   const t = text.trim().toLowerCase()
-  if (/cancel/.test(t)) return cancelOrder(args)
+  if (classifyOrderReply(text) === 'cancel') return cancelOrder(args)
 
   const cands = ctx.clienteCandidatos ?? []
   const reask = async (): Promise<ProcessPedidoResult> => {
     const msg = '¿Es alguno de esos? Respondé el número, "sí" (el primero), o "otro" para crear uno nuevo.'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  if (t === 'otro' || t === 'otra') {
+    const updated: OrderContext = {
+      ...ctx,
+      clienteNombre: null,
+      clienteId: undefined,
+      clienteTelefono: undefined,
+      clienteCandidatos: [],
+      awaitingClienteChoice: false,
+      awaitingCliente: true,
+    }
+    await saveCtx(args, updated)
+    const msg = 'Dale, no voy a vincular esos candidatos. ¿Cuál es el nombre del cliente nuevo?'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  if (isPhoneLikeClientName(text, args.senderPhone)) {
+    const msg = 'Ese es el teléfono desde el que me escribís; no lo voy a usar como cliente. Respondé el número del cliente, "otro" o "cancelar".'
     await sendText(args, msg)
     return { handled: true, text: msg }
   }
@@ -597,6 +651,7 @@ async function handleClienteChoiceText(
         ...ctx,
         clienteId: c.id,
         clienteNombre: c.nombre,
+        clienteTelefono: c.telefono,
         clienteCandidatos: [],
         awaitingClienteChoice: false,
       })
@@ -611,26 +666,102 @@ async function handleClienteChoiceText(
       ...ctx,
       clienteId: c.id,
       clienteNombre: c.nombre,
+      clienteTelefono: c.telefono,
       clienteCandidatos: [],
       awaitingClienteChoice: false,
     })
   }
   if (yn === 'no') {
-    return advance(args, { ...ctx, clienteId: null, clienteCandidatos: [], awaitingClienteChoice: false })
+    return advance(args, { ...ctx, clienteId: null, clienteTelefono: null, clienteCandidatos: [], awaitingClienteChoice: false })
   }
 
   // Escribió un nombre nuevo: lo tomamos como cliente (y re-buscamos candidatos).
-  if (text.trim().length >= 2) {
+  const nombreNuevo = normalizeClientNameReply(text, args.senderPhone)
+  if (nombreNuevo) {
     return advance(args, {
       ...ctx,
-      clienteNombre: text.trim(),
+      clienteNombre: nombreNuevo,
       clienteId: undefined,
+      clienteTelefono: undefined,
       clienteCandidatos: [],
       awaitingClienteChoice: false,
     })
   }
 
   return reask()
+}
+
+async function presentQuote(
+  args: ProcessPedidoMessageArgs,
+  text: string,
+  context: OrderContext | null = null,
+): Promise<ProcessPedidoResult> {
+  const preview = await previewPedido(text, {
+    context,
+    refs: args.refs,
+    rules: args.rules,
+    parseFn: args.parseFn,
+  })
+  if (!preview) {
+    const msg = context?.awaitingQuoteApproval
+      ? 'No actualicé la cotización ni guardé un presupuesto. Si querés crear el presupuesto, respondé "sí"; si querés cambiar el producto, decime cuál.'
+      : 'No pude identificar el producto para cotizar. Decime qué producto y medida querés consultar.'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  const quoteText = context?.quoteText
+    ? `${context.quoteText}\n${text}`
+    : text
+  const state: OrderContext = {
+    stage: 'confirming',
+    items: preview.items,
+    clienteNombre: preview.clienteNombre,
+    total: preview.total,
+    faltantes: preview.faltantes,
+    notaSupuestos: [],
+    awaitingQuoteApproval: true,
+    quoteText,
+  }
+  await saveCtx(args, state)
+  const msg = buildOrderSummary(state, {
+    confirm: false,
+    title: 'Cotización estimada:',
+    prompt: '¿Querés que la convierta en presupuesto?',
+  })
+  await sendText(args, msg)
+  return { handled: true, text: msg }
+}
+
+async function handleQuoteApproval(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  text: string,
+): Promise<ProcessPedidoResult> {
+  const reply = classifyOrderReply(text)
+  if (reply === 'cancel') {
+    await clearOrderContext(args.db, args.conversationId)
+    const msg = 'Listo. Era solo una cotización; no guardé ni creé ningún presupuesto.'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  if (reply === 'confirm' || isExplicitBudgetCreationRequest(text)) {
+    const readyToCreate: OrderContext = {
+      ...ctx,
+      awaitingQuoteApproval: false,
+      quoteText: null,
+      tipoEntrega: ctx.tipoEntrega ?? 'Retira',
+      fechaEntrega: ctx.fechaEntrega ?? '',
+      descuento: ctx.descuento ?? null,
+    }
+    await saveCtx(args, readyToCreate)
+    return advance(args, readyToCreate, { includeSummary: true })
+  }
+
+  // A correction while the quote is open updates the preview; unrelated prose
+  // cannot be mistaken for the customer's name at this stage.
+  return presentQuote(args, text, ctx)
 }
 
 async function handlePending(
@@ -642,6 +773,19 @@ async function handlePending(
 
   const text = (args.text || '').trim()
   if (!text) return { handled: false }
+
+  if (ctx.awaitingQuoteApproval) {
+    return handleQuoteApproval(args, ctx, text)
+  }
+
+  if (ctx.awaitingOrderItems) {
+    if (classifyOrderReply(text) === 'cancel') return cancelOrder(args)
+    const result = await resolveAndSave(args, ctx, text)
+    if (result.handled) return result
+    const msg = 'No pude identificar los productos o medidas. Escribilos, por ejemplo: "2 bastidores 60x40 sin tela".'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
 
   // Estamos esperando la explicación de un término desconocido (glosario).
   if (ctx.awaitingGlossary) {
@@ -657,10 +801,26 @@ async function handlePending(
       await sendText(args, msg)
       return { handled: true, text: msg }
     }
+    if (mentionsOrderItems(text)) {
+      // A correction containing product/measure data is not a client name.
+      return resolveAndSave(args, ctx, text)
+    }
+    if (isPhoneLikeClientName(text, args.senderPhone)) {
+      const msg = 'Ese es el teléfono desde el que me escribís; no lo voy a guardar como cliente. Decime el nombre del cliente.'
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
+    const nombreCliente = normalizeClientNameReply(text, args.senderPhone)
+    if (!nombreCliente) {
+      const msg = 'Todavía no guardé el presupuesto. Necesito el nombre del cliente; si querés cancelar, decí "cancelar".'
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
     return advance(args, {
       ...ctx,
-      clienteNombre: text,
+      clienteNombre: nombreCliente,
       clienteId: undefined,
+      clienteTelefono: undefined,
       clienteCandidatos: [],
       awaitingCliente: false,
     })
@@ -735,9 +895,32 @@ export async function processPedidoMessage(
 ): Promise<ProcessPedidoResult> {
   ;(args as RepliablePedidoArgs).__pedidoReplied = false
   const ctx = await loadOrderContext(args.db, args.conversationId)
-  const result = isOrderContextActive(ctx)
-    ? await handlePending(args, ctx as OrderContext)
-    : await resolveAndSave(args, null)
+  const active = isOrderContextActive(ctx)
+  let result: ProcessPedidoResult
+  if (active) {
+    result = await handlePending(args, ctx as OrderContext)
+  } else if (isExplicitBudgetCreationRequest(args.text)) {
+    result = await resolveAndSave(args, null)
+    if (!result.handled) {
+      await saveCtx(args, {
+        stage: 'confirming',
+        items: [],
+        clienteNombre: null,
+        tipoEntrega: 'Retira',
+        fechaEntrega: '',
+        descuento: null,
+        total: 0,
+        faltantes: [],
+        notaSupuestos: [],
+        awaitingOrderItems: true,
+      })
+      const msg = 'Claro, ¿qué productos y medidas incluyo en el presupuesto?'
+      await sendText(args, msg)
+      result = { handled: true, text: msg }
+    }
+  } else {
+    result = await presentQuote(args, args.text)
+  }
   return { ...result, replied: (args as RepliablePedidoArgs).__pedidoReplied }
 }
 

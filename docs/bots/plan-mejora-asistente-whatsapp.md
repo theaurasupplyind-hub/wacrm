@@ -1,8 +1,11 @@
 # Plan: Mejora del asistente de WhatsApp — diagnóstico de logs + fixes
 
-> Para un agente implementador. **Estado:** planificado — no iniciado.
-> Basado en análisis de logs reales en Supabase (`router_logs`, `bot_traces`,
-> `voucher_extractions`) y en una comparativa de modelos con visión.
+> **Estado (2026-10): parcialmente implementado; no ejecutar como lista de tareas original.**
+> Los hallazgos de logs de §1 son una muestra histórica, no métricas actuales.
+> Whitelist, fallback conversacional, comando de contexto, tools del agente,
+> saneamiento básico de nombres de voucher y trazas ya existen en el código.
+> Quedan por validar calidad/cobertura con datos actuales, añadir controles de
+> escritura al runtime y ejecutar el piloto de modelo descrito en §2.
 > Contexto: `docs/bots/architecture.md`, `resumen-bot-beta.md`,
 > `docs/bots/plan-unificacion-motor-bot.md`.
 
@@ -12,8 +15,13 @@
 - **Whitelist de números**: tabla **nueva** `bot_allowed_numbers`. Solo algunos números pueden hablarle al bot. El resto (clientes) sigue por Flows / AI auto-reply.
 - **Números no autorizados: ignorar** (no responder nada).
 - **Orden de prioridad**: 1) whitelist → 2) nunca-mudo → 3) vouchers → 4) razonamiento → 5) observabilidad.
-- **Probar DeepSeek** (piloto, visión) antes de cambiar producción.
+- Mantener **OpenRouter**. Piloto primero para asistente/extractor; vouchers
+  permanecen en Gemini hasta validar el conjunto de imágenes.
 - Escrituras sin confirmación: solo las actuales. Las nuevas nacen con confirmación.
+
+> **Modelo aún sin cambiar:** `deepseek/deepseek-v4.1-flash` no está confirmado
+> en las envs de Vercel ni validado en producción. No confundir el plan con un
+> despliegue realizado.
 
 ---
 
@@ -61,72 +69,78 @@ Causas raíz (del `debug_info`):
 
 ---
 
-## 2. Modelos LLM con visión — comparativa de costos
+## 2. Piloto de modelo por OpenRouter (pendiente)
 
-| Modelo | Modalidad | Precio in/out (1M) | Notas |
-|---|---|---|---|
-| `deepseek/deepseek-v4.1-flash` | texto+imagen | $0.30 / $1.20 | Nativo, **no experimental**, ctx 1.05M |
-| `deepseek/deepseek-v4-flash-vision-exp` | texto+imagen | $0.216 / $0.647 | Experimental |
-| `deepseek/deepseek-v4-flash-0731` | solo texto | $0.018 / $0.320 | Muy barato para extracción/parseo |
-| *(actual)* `gemini-2.5-flash` | visión | ~$0.30 / ~$2.50 | Vouchers |
-| *(actual)* `gemini-2.5-flash-lite` | texto | ~$0.075 / ~$0.30 | Extractor/parseo |
-| *(actual)* `openai/whisper-1` | audio | por minuto | Transcripción |
+El runtime actual llama a OpenRouter (`src/lib/ai/openrouter.ts`); las
+variables de Vercel seleccionan el modelo, no cambian el proveedor.
 
-Recomendación: **piloto A/B de visión** con `deepseek-v4.1-flash` para vouchers, con el golden set, **antes** de cambiar producción. Config en `src/lib/ai/openrouter.ts` + env `VOUCHER_AI_MODEL` / `ASSISTANT_MODEL`. Rollback por env.
+| Variable en Vercel | Piloto propuesto | Estado |
+|---|---|---|
+| `ASSISTANT_MODEL` | `deepseek/deepseek-v4.1-flash` | Pendiente |
+| `EXTRACTOR_MODEL` | `deepseek/deepseek-v4.1-flash` | Pendiente |
+| `VOUCHER_AI_MODEL` | Mantener `google/gemini-2.5-flash` | No cambiar en este piloto |
+
+Antes de habilitarlo en producción: cambiar las dos primeras variables en
+Preview, redeployar y comparar una muestra fija con Gemini. Evaluar español
+rioplatense, clasificación/extracción, selección de herramientas, JSON, errores,
+latencia y costo observados en OpenRouter. Mantener rollback por env. Los precios
+son dinámicos por modelo/proveedor; consultar la ficha vigente de OpenRouter en
+vez de copiar una tarifa histórica a este plan.
 
 ---
 
 ## 3. Fases de implementación
 
-### Fase 1 — Whitelist de números (prioridad)
-- **Tabla nueva** (migración Supabase): `bot_allowed_numbers`
-  - `id`, `account_id uuid`, `phone text` (normalizado), `label text`, `active boolean default true`, `created_at`.
-  - Índice único `(account_id, phone)`.
-  - RLS: `is_account_member` para lectura; service-role para escritura.
-- **Gate** en `src/app/api/whatsapp/webhook/route.ts`: el bloque del bot (gastos/asistencia/voucher/asistente) solo corre si `message.from` está en la whitelist (activa). Si no → **ignorar** (no responder).
-  - Flows / AI auto-reply de clientes **no se tocan**.
-- Gate equivalente en `/api/bot-beta/*` y dentro de `runAssistantForWebhook`.
-- Seed inicial: números del taller (pedir al dueño).
-- UI mínima (luego): settings para administrar números.
+### Fase 1 — Whitelist de números (**implementada**)
+La migración `050_bot_allowed_numbers.sql`, el gate del webhook y la defensa
+adicional en `runAssistantForWebhook` están implementados. El gate afecta al bot
+interno; Flows/AI Auto-Reply para los demás contactos siguen separados. La
+vigencia de los números habilitados es configuración operativa, no trabajo de
+código de esta fase.
 
-### Fase 2 — Nunca mudo (UX)
-- `case 'none'` en el webhook: si hay texto/imagen no consumida (de número autorizado) → responder algo útil (pedir texto, o "no pude leer la imagen, mandame el detalle").
-- `"cancelar"` global: manejar cancelación en cualquier contexto pendiente (expense/attendance/voucher), no solo clarify.
-- Garantía: ningún mensaje de un número autorizado termina sin respuesta.
+### Fase 2 — Nunca mudo (UX) (**implementada; revisar métricas actuales**)
+El webhook responde ante texto/media no procesados y resuelve comandos
+`cancelar`/`reiniciar` antes del extractor; ahora también limpian
+`order_context` y reconocen "no lo creas, era una prueba". Revalidar con trazas actuales: la
+intención de esta fase es evitar silencios para remitentes autorizados; los no
+autorizados se ignoran por diseño.
 
-### Fase 3 — Vouchers
-- Filtrar nombres basura: `sanitizeClientName` debe descartar filenames/extensiones y palabras genéricas (`comprobantepdf`, `.pdf`, `.jpg`, etc.).
-- Mejorar name-match: tokens + apellidos, umbral calibrado, normalización; usar `nombre_origen`/`nombre_destino` y caption.
-- Caption como **preferencia fuerte** (ya existe `preferByCaption`): si el usuario escribe "son de X", priorizar X.
-- Ante ambigüedad: **preguntar el cliente** con botones (flujo ya existe) en vez de quedar en `ambiguous` sin respuesta.
-- Ajustar el prompt de `voucher-extraction.ts` para no devolver filename como nombre.
+### Fase 3 — Vouchers (**fixes principales presentes; medir resultado actual**)
+El código filtra nombres de archivo/genéricos (`sanitizeClientName`), da
+preferencia al caption cuando identifica un candidato, conserva alternativas
+cuando no hay match y pregunta/deriva en casos ambiguos. Los conteos de §1 son
+anteriores a esos cambios: no inferir la tasa de éxito actual; reprocesar un
+conjunto vigente antes de cerrar la fase.
 
-### Fase 4 — Calidad de razonamiento del asistente
-- Modelo compartido (piloto DeepSeek V4.1 Flash) + bajar latencia.
-- Nuevas capacidades: catálogo/productos (lectura), resolución de entidades.
-- Tool-calling por defecto (hoy detrás de `ASSISTANT_TOOLS_ENABLED`).
-- Reforzar prompt anti-alucinación y de "qué puedo hacer" (sin prometer presupuestos si no está).
+### Fase 4 — Calidad de razonamiento del asistente (**parcial**)
+- Catálogo/productos y cotización ya están expuestos en `tool-registry.ts`.
+- El handler de pedidos separa cotización preview de creación explícita; omite
+  preguntas de entrega/fecha/descuento cuando aplican los defaults del ERP.
+- La selección de cliente no usa el teléfono interno para puntuar coincidencias;
+  nombres con solo teléfono se rechazan y el remitente no se guarda como teléfono
+  del cliente/presupuesto.
+- El tool-calling está activo por defecto; `ASSISTANT_TOOLS_ENABLED=false` usa
+  el orquestador anterior.
+- El agente productivo recibe historial con roles, extracción y estado pendiente;
+  ver [`architecture.md`](./architecture.md) §6.
+- Pendiente: piloto DeepSeek según §2 y evaluación con conversaciones reales.
+- Pendiente de seguridad: el loop aún no aplica una política runtime a
+  `tool.write`; no ampliar acciones de escritura hasta validarla.
 
-### Fase 5 — Observabilidad y evaluación
-- Fix de logs duplicados (una traza por turno).
-- Tablero de "silencios" (`none`), `no_match`, `ambiguous`.
-- Arnés de evaluación (`src/lib/bot-llm/eval.ts` + golden set) ampliado con casos reales de `router_logs` y `voucher_extractions`.
+### Fase 5 — Observabilidad y evaluación (**parcial**)
+- `router_logs` y `bot_traces` registran/enriquecen el turno productivo.
+- Se mantienen harness/fixtures de replay; falta una comparación actual A/B y
+  reporte periódico de `none`, `no_match` y `ambiguous`.
 
 ---
 
-## 4. Archivos a tocar
+## 4. Trabajo restante (no repetir cambios ya hechos)
 | Archivo | Cambio |
 |---|---|
-| `supabase/migrations/050_bot_allowed_numbers.sql` | **nueva** — whitelist |
-| `src/app/api/whatsapp/webhook/route.ts` | gate whitelist; `case 'none'`; cancelar global; log único |
-| `src/lib/bot/router.ts` | revisar ramas `none` |
-| `src/lib/bot-assistant/production.ts` | log único; capacidades; prompt |
-| `src/lib/ai/voucher-matching.ts` | `sanitizeClientName`, name-match, umbral |
-| `src/lib/ai/voucher-pipeline.ts` | fase 3 / preguntar cliente |
-| `src/lib/ai/voucher-extraction.ts` | prompt (no filename como nombre) |
-| `src/lib/ai/openrouter.ts` + envs | modelo piloto |
-| `src/lib/bot-assistant/tool-registry.ts` / `prompts.ts` | catálogo, capacidades |
-| `src/lib/bot-llm/eval.ts` + fixtures | golden set real |
+| Env de Preview (`ASSISTANT_MODEL`, `EXTRACTOR_MODEL`) | A/B de DeepSeek vía OpenRouter; dejar Voucher en Gemini |
+| `src/lib/bot-assistant/agent.ts` / tools | Añadir política runtime y pruebas para herramientas de escritura antes de ampliar autonomía |
+| `src/lib/bot-llm/eval.ts` + fixtures/replay | Incorporar casos actuales y medir A/B por calidad, coste y latencia |
+| Dashboard/logs | Resumen actual de silencios, `no_match` y `ambiguous` |
 
 ## 5. Verificación
 - `npm run lint` · `npm run typecheck` · `npm test` · `npm run build`.
@@ -140,5 +154,6 @@ Recomendación: **piloto A/B de visión** con `deepseek-v4.1-flash` para voucher
 - El name-match agresivo puede asignar el pago a la factura equivocada (mantener confirmación ante baja confianza).
 
 ## 7. Pendientes de datos
-- Seed de números autorizados del taller.
-- 3-5 ejemplos reales de vouchers con nombre donde se equivocó (imagen + caption) para el golden set.
+- Confirmar que los números autorizados de producción siguen correctos.
+- Casos actuales de errores de voucher y conversaciones ambiguas para el golden set.
+- Confirmar cambio de envs únicamente en Preview; producción permanece sin cambio hasta aprobar la comparación.

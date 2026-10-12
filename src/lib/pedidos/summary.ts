@@ -6,8 +6,8 @@ function money(n: number): string {
 }
 
 /** Bloque de ítems + TOTAL (sin datos de entrega ni confirmación). */
-function buildItemsBlock(ctx: OrderContext): string[] {
-  const lines: string[] = ['Voy a armar este presupuesto:']
+function buildItemsBlock(ctx: OrderContext, title: string): string[] {
+  const lines: string[] = [title]
   const cotizables = ctx.items.filter(it => !it.faltante)
   cotizables.forEach((it, i) => {
     const cant = it.cantidad > 1 ? `${it.cantidad} x ` : ''
@@ -30,7 +30,9 @@ function buildItemsBlock(ctx: OrderContext): string[] {
 
 function buildDeliveryBlock(ctx: OrderContext): string[] {
   const lines: string[] = []
-  if (ctx.clienteNombre) lines.push(`Cliente: ${ctx.clienteNombre}`)
+  if (ctx.clienteNombre) {
+    lines.push(`${ctx.clienteId === null ? 'Cliente nuevo' : 'Cliente'}: ${ctx.clienteNombre}`)
+  }
   if (ctx.tipoEntrega) lines.push(`Entrega: ${ctx.tipoEntrega}`)
   const fecha = formatFechaEntregaDisplay(ctx.fechaEntrega)
   if (fecha) lines.push(`Fecha de entrega: ${fecha}`)
@@ -48,10 +50,10 @@ function buildDeliveryBlock(ctx: OrderContext): string[] {
  */
 export function buildOrderSummary(
   ctx: OrderContext,
-  opts: { confirm?: boolean; prompt?: string } = {},
+  opts: { confirm?: boolean; prompt?: string; title?: string } = {},
 ): string {
   const confirm = opts.confirm ?? true
-  const lines = buildItemsBlock(ctx)
+  const lines = buildItemsBlock(ctx, opts.title ?? 'Voy a armar este presupuesto:')
 
   const delivery = buildDeliveryBlock(ctx)
   if (delivery.length > 0) {
@@ -95,6 +97,7 @@ const CANCEL_WORDS = new Set([
   'no', 'cancelar', 'cancela', 'cancelalo', 'cancelo', 'cancelalo', 'dejalo', 'deja',
   'olvidalo', 'olvidate', 'anular', 'anula', 'anulalo', 'nada', 'basta',
 ])
+const CANCEL_PHRASE_RE = /\bno\s+lo\s+cre(?:es|as)(?:\s*,?\s*(?:era|es|fue)\s+una\s+prueba)?\b|\b(?:era|es|fue)\s+una\s+prueba\b|\bno\s+lo\s+hagas\b|\bno\s+(?:quiero|necesito)\s+(?:un\s+)?presupuesto\b|\bme\s+arrepent[ií]\b/i
 // Relleno: no aportan significado (se ignoran al clasificar).
 const FILLER_WORDS = new Set([
   'el', 'la', 'los', 'las', 'lo', 'un', 'una', 'unos', 'unas', 'de', 'del',
@@ -107,6 +110,7 @@ const FILLER_WORDS = new Set([
  * Si queda contenido que no es sólo confirmación/cancelación → es una corrección.
  */
 export function classifyOrderReply(text: string): PedidoReply {
+  if (CANCEL_PHRASE_RE.test(text || '')) return 'cancel'
   const tokens = normalizeCmd(text)
     .split(/[^a-z0-9]+/)
     .filter(Boolean)

@@ -8,6 +8,13 @@
  *
  * Al tocar el flujo real, actualizar acá: los ids son el contrato entre la
  * instrumentación y el dibujo.
+ *
+ * 2026-10-12: el pipeline de texto pasa por `src/lib/bot/engine.ts`
+ * (`planTurn`), que ahora orquesta contexto → extractor → clarify → router →
+ * acciones. Los ids y el orden observable (`extract` → `router` → `d_*`) NO
+ * cambian: el motor reproduce la misma decisión y sólo materializa acciones en
+ * `route.ts`. Se agregó el nodo `planner` (Fases 3-5): propone acciones y el
+ * runtime las valida con `reconcilePlans` + policy antes de tocar el router.
  */
 
 export type TopologyNodeKind =
@@ -78,6 +85,13 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
       kind: 'brain',
       description: 'Función pura: estado → dispatched_to',
     },
+    {
+      id: 'planner',
+      label: 'Planner (LLM)',
+      kind: 'brain',
+      description:
+        'Propone acciones; el runtime valida (reconcilePlans + policy). Fase 3 sombra, Fase 4 activo por dominio.',
+    },
 
     // Dispatch: rama elegida.
     { id: 'd_expense', label: '→ Gastos', kind: 'dispatch' },
@@ -113,6 +127,8 @@ export const BOT_TOPOLOGY: { nodes: TopologyNode[]; edges: TopologyEdge[] } = {
     { id: 'e_ctxc_extract', source: 'ctx_clarify', target: 'extract' },
 
     { id: 'e_extract_router', source: 'extract', target: 'router', label: 'intent/confianza' },
+    { id: 'e_extract_planner', source: 'extract', target: 'planner', label: 'sombra / propuesta' },
+    { id: 'e_planner_router', source: 'planner', target: 'router', label: 'reconcilePlans (respeta guardrails)' },
     { id: 'e_extract_clarify', source: 'extract', target: 'h_clarify', label: 'ambiguo' },
     { id: 'e_ctxc_router', source: 'ctx_clarify', target: 'router', label: 'respuesta resuelve intent' },
 

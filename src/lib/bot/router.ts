@@ -5,6 +5,7 @@ import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
 import { looksLikePedido } from '@/lib/bot-llm/fallback'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
+import { isExplicitBudgetCreationRequest, mentionsOrderItems } from '@/lib/pedidos/intent'
 
 export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'pedido' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
 export type DispatchReason =
@@ -34,6 +35,9 @@ export type DispatchReason =
  * respuesta corta posterior reiniciaba el flujo (bug "80000 a julian").
  */
 export const PENDING_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000
+
+const CONVERSATIONAL_QUERY_RE =
+  /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades|tiene alguna factura|facturas de/i
 
 /**
  * Umbrales de la señal Jev para el ruteo de pendientes. Solo se aplican si el
@@ -102,10 +106,6 @@ export function decideDispatch(state: RouterState): RouterDecision {
   // interactivo y del fallback regex para no re-clasificar el título del botón.
   if (clarifyAnsweredIntent) return resolveClarifyIntent(clarifyAnsweredIntent)
   if (interactiveReplyId) return { dispatchedTo: 'interactive', dispatchReason: 'consumed' }
-  // Un campo del pedido (cliente/entrega/fecha/descuento) que estamos
-  // esperando: gana a cualquier intent para que la respuesta corta no se vaya.
-  if (orderAwaiting) return { dispatchedTo: 'pedido', dispatchReason: 'pending_field' }
-
   // Primary dispatch — mirrors webhook route.ts
   if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {
     return { dispatchedTo: 'expense', dispatchReason: 'category_correction' }
@@ -140,6 +140,14 @@ export function decideDispatch(state: RouterState): RouterDecision {
       return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
     }
   }
+  // Las consultas independientes y deudas pueden interrumpir un pedido
+  // pendiente; no deben convertirse en nombre de cliente/corrección.
+  if (intent === 'factura' || (inboundText && CONVERSATIONAL_QUERY_RE.test(inboundText))) {
+    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
+  }
+  // Un dato corto que responde al paso actual del presupuesto se queda en ese
+  // flujo, pero solo después de dejar pasar acciones/consultas nuevas.
+  if (orderAwaiting) return { dispatchedTo: 'pedido', dispatchReason: 'pending_field' }
   if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto' && !jevSupersede) {
     return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }
   }
@@ -171,22 +179,28 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (intent === 'voucher') {
     return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
   }
+  if (!hasPendingOrder && isExplicitBudgetCreationRequest(inboundText)) {
+    return { dispatchedTo: 'pedido', dispatchReason: 'intent' }
+  }
   if (intent === 'pedido') {
+    // Una mención conversacional a "presupuesto" no es por sí sola una orden
+    // para entrar al flujo de creación ni una respuesta de nombre de cliente.
+    if (!mentionsOrderItems(inboundText) && !isExplicitBudgetCreationRequest(inboundText)) {
+      return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
+    }
     return { dispatchedTo: 'pedido', dispatchReason: 'intent' }
   }
   // Fallback regex: lista de medidas o keywords de producto → pedido (aunque
   // el extractor no lo haya etiquetado). Va antes del assistant para no perder
   // pedidos escritos como medidas sueltas.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikePedido(inboundText)) {
+  if (
+    !flowConsumed &&
+    !interactiveReplyId &&
+    inboundText.trim() &&
+    looksLikePedido(inboundText) &&
+    (mentionsOrderItems(inboundText) || isExplicitBudgetCreationRequest(inboundText))
+  ) {
     return { dispatchedTo: 'pedido', dispatchReason: 'fallback_regex' }
-  }
-  // Conversacional / deuda: "cuanto debe", saludos, capacidades → asistente.
-  const conversationalDebtRe = /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades|tiene alguna factura|facturas de/i
-  if (inboundText && conversationalDebtRe.test(inboundText)) {
-    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
-  }
-  if (intent === 'factura') {
-    return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
   }
   if (intent === 'otro') {
     return { dispatchedTo: 'assistant', dispatchReason: 'intent' }

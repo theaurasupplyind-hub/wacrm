@@ -1,12 +1,19 @@
-# Bot Beta — Resumen para agente validador
+# Bot Beta — Resumen histórico (no usar como estado actual)
 
-> ⚠️ **Nota de estado (2026-10):** este resumen quedó desactualizado en lo que
-> refiere a Voice Orders/pedidos: `src/lib/voice-orders/*`, `handleVoiceText`,
-> `processTextOrder`, `createPresupuesto` y `/api/budget-image` **ya no existen**.
-> `BotIntent` no tiene `pedido`. Lo vigente: Flows, Voucher (imagen/texto),
-> Gastos, Asistencia y el asistente (`bot-assistant/`). Ver `docs/bots/architecture.md`.
+> ⚠️ **Este documento quedó superado.** Describe la etapa de asistente aislado
+> en Bot Beta y contiene rutas, capacidades y decisiones de modelo que ya no
+> coinciden con el código. Para el estado vigente consulta
+> [`docs/bots/assistant-agent.md`](docs/bots/assistant-agent.md) y
+> [`docs/bots/architecture.md`](docs/bots/architecture.md). Se conserva debajo
+> como contexto histórico; no implementar sus planes literalmente.
 
-> Estado actual (no plan). Fuentes verificadas en código. Para otro agente que debe validar el bot antes de promoverlo a producción.
+> ⚠️ **Nota histórica (2026-10):** el antiguo módulo `src/lib/voice-orders/*`
+> y sus rutas se retiraron. Esto no significa que haya desaparecido todo pedido:
+> `BotIntent` contempla `pedido` y el webhook mantiene el handler vigente de
+> `src/lib/pedidos/`. Este archivo conserva el resumen de la etapa Beta; ver
+> `docs/bots/assistant-agent.md` para el estado real.
+
+> El contenido histórico que sigue no está verificado como descripción actual.
 
 ---
 
@@ -36,7 +43,7 @@ Capacidades declaradas en `src/lib/bot-assistant/prompts.ts:1` y `docs/bots/arch
 4. **Vouchers** — imagen/PDF comprobante → `extractVoucherData` (Gemini vision) → `matchVoucherByName` → `registrarPago` (dryRun en Beta).
 5. **Consultivo / chitchat** — `cuánto gasté hoy`, `quién faltó ayer`, `precio de bastidor 100x120`, saludos `hola` — responde en rioplatense **anti-alucinación**: solo datos de `toolResults`/`knowledge`; si no hay dato → `no lo encontré` y deriva a `/bot-escalations` (`prompts.ts:5`).
 
-**No conectado al webhook productivo.** Vive solo en `/bot-beta` (dashboard) con teléfono dummy `11999999999` (`src/lib/bot-beta/unified-handler.ts:13`). El webhook real (`src/app/api/whatsapp/webhook/route.ts:1883`) sigue con el pipeline legacy (Flows → voucher → `decideDispatch` → voice/expense/attendance/auto-reply).
+**No conectado al webhook productivo.** Vive solo en `/bot-beta` (dashboard) con teléfono dummy `11999999999` (`src/lib/bot-beta/unified-handler.ts:13`). El webhook real ya no usa un "pipeline legacy" inline: la orquestación de texto vive en el **motor de turno puro** `src/lib/bot/engine.ts` (`planTurn`), y `route.ts` quedó como adapter que materializa acciones (Flows/voucher/automations se mantienen en sus gates). La migración de Bot Beta al motor quedó **fuera de alcance** (2026-10-12).
 
 ---
 
@@ -161,7 +168,7 @@ flowchart TD
 
 Flujo en texto: **usuario → intención (extractBotMessage) → respuesta (generateAssistantReply)** con `toolResults` en medio solo si `shouldCallTools` es true; history de hasta 10 turns alimenta al LLM.
 
-**Diferencia con producción:** en el webhook real (`webhook/route.ts:1025`) el mensaje pasa por `dispatchInboundToFlows → automations → dispatchInboundToAiReply → extractBotMessage → decideDispatch → handleExpense/Attendance/Voice(proceso real) → voucher pendingTexts`. En Beta no hay Flows ni auto-reply; todo es `runAssistant` con history dummy y contexts best-effort del contacto `11999999999`.
+**Diferencia con producción:** en el webhook real el mensaje pasa por `dispatchInboundToFlows → automations →` el **motor de turno** (`extractBotMessage → clarify → decideDispatch → planTurn acciones`; opcionalmente el planner LLM en sombra/activo) `→` handlers reales (expense/attendance/pedido/voucher) `→ voucher pendingTexts`. En Beta no hay Flows ni auto-reply; todo es `runAssistant` con history dummy y contexts best-effort del contacto `11999999999`.
 
 ---
 

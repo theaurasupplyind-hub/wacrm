@@ -55,7 +55,7 @@ function makeDb() {
     },
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return db as any
+  return Object.assign(db as any, { getOrderContext: () => state.order })
 }
 
 type Extra = Record<string, unknown>
@@ -82,7 +82,7 @@ function args(db: unknown, text: string, extra: Extra = {}) {
   } as Parameters<typeof processPedidoMessage>[0]
 }
 
-describe('processPedidoMessage — datos de entrega', () => {
+describe('processPedidoMessage — creación de presupuesto', () => {
   beforeEach(() => {
     sent.texts = []
     sent.buttons = []
@@ -100,30 +100,20 @@ describe('processPedidoMessage — datos de entrega', () => {
     facbal.createClient.mockResolvedValue({ id: 10, nombre: 'X' })
   })
 
-  it('recolecta cliente, entrega, fecha y descuento, y crea con esos datos', async () => {
+  it('pide cliente y confirmación; usa defaults de entrega, fecha y descuento', async () => {
     const db = makeDb()
 
-    // 1. Pedido nuevo → pregunta el cliente (con candidato).
-    await processPedidoMessage(args(db, '2 bastidores 60x40 sin tela'))
+    // 1. Creación explícita → confirma el cliente encontrado.
+    await processPedidoMessage(args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela'))
     expect(sent.buttons.at(-1)?.bodyText).toContain('Juan')
 
-    // 2. Confirmar cliente → pregunta entrega (botones).
+    // 2. Confirmar cliente → presenta el resumen final; no obliga a rellenar
+    // entrega/fecha/descuento que el ERP ya permite dejar en sus defaults.
     await processPedidoMessage(args(db, '', { interactiveReplyId: 'pedido_cli_ok' }))
-    expect(sent.buttons.at(-1)?.buttons.map(b => b.id)).toContain('pedido_entrega_envio')
-
-    // 3. Entrega = Envío → pregunta fecha.
-    await processPedidoMessage(args(db, '', { interactiveReplyId: 'pedido_entrega_envio' }))
-    expect(sent.texts.at(-1)).toMatch(/Fecha de entrega/)
-
-    // 4. Fecha → pregunta descuento.
-    await processPedidoMessage(args(db, 'el viernes'))
-    expect(sent.texts.at(-1)).toMatch(/Descuento/)
-
-    // 5. Descuento 10% → resumen final.
-    await processPedidoMessage(args(db, '10%'))
     expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
+    expect(sent.texts.at(-1)).not.toMatch(/¿Cómo lo entregamos|Fecha de entrega|¿Descuento\?/)
 
-    // 6. Confirmar → crea el presupuesto con todos los datos.
+    // 3. Confirmar → crea el presupuesto con los defaults del ERP.
     const r = await processPedidoMessage(args(db, 'sí'))
     expect(r.createdInvoice).toBeTruthy()
 
@@ -135,28 +125,185 @@ describe('processPedidoMessage — datos de entrega', () => {
       items: { descripcion: string; total: number }[]
     }
     expect(payload.cliente_id).toBe(7)
-    expect(payload.tipo_entrega).toBe('Envio')
-    expect(payload.fecha_entrega).toContain('"desde"')
-    expect(payload.total).toBe(32400)
-    expect(payload.items.find(i => i.descripcion === 'DESCUENTO')?.total).toBe(-3600)
+    expect(payload.tipo_entrega).toBe('Retira')
+    expect(payload.fecha_entrega).toBe('')
+    expect(payload.total).toBe(36000)
+    expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(false)
   })
 
-  it('sin candidatos no pregunta y sigue con la entrega', async () => {
+  it('sin candidatos identifica cliente nuevo en el resumen antes de guardar', async () => {
     const db = makeDb()
     await processPedidoMessage(
-      args(db, '2 bastidores 60x40 sin tela', { findClientsFn: async () => [] }),
+      args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela', { findClientsFn: async () => [] }),
     )
-    // El primer mensaje es la pregunta de entrega (no hay candidato que confirmar).
-    expect(sent.buttons.at(-1)?.buttons.map(b => b.id)).toContain('pedido_entrega_retira')
+    expect(sent.texts.at(-1)).toContain('Cliente nuevo: Juan')
+    expect(sent.texts.at(-1)).toContain('¿Confirmás?')
 
-    // Elegir "retira" y luego saltear fecha y descuento.
-    await processPedidoMessage(args(db, '', { interactiveReplyId: 'pedido_entrega_retira', findClientsFn: async () => [] }))
-    await processPedidoMessage(args(db, 'no', { findClientsFn: async () => [] }))
-    await processPedidoMessage(args(db, 'no', { findClientsFn: async () => [] }))
     const r = await processPedidoMessage(args(db, 'sí', { findClientsFn: async () => [] }))
     expect(r.createdInvoice).toBeTruthy()
     const payload = facbal.createInvoice.mock.calls[0][0] as { tipo_entrega: string; items: { descripcion: string }[] }
     expect(payload.tipo_entrega).toBe('Retira')
     expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(false)
+  })
+
+  it('una consulta cotiza y ofrece crear; no busca clientes ni guarda presupuesto', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+
+    const result = await processPedidoMessage(args(db, 'Quería saber si tienen bastidores de 20x20', {
+      parseFn,
+      findClientsFn,
+    }))
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('¿Querés que la convierta en presupuesto?')
+    expect(sent.texts.at(-1)).not.toContain('Voy a armar este presupuesto')
+    expect(findClientsFn).not.toHaveBeenCalled()
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+    })
+  })
+
+  it('"no lo creas, era una prueba" cierra la cotización sin buscar clientes ni escribir', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+
+    await processPedidoMessage(args(db, 'Quería saber si tienen bastidores de 20x20', {
+      parseFn,
+      findClientsFn,
+    }))
+    const result = await processPedidoMessage(args(db, 'no lo creas, era una prueba', {
+      parseFn,
+      findClientsFn,
+    }))
+
+    expect(result.text).toContain('no guardé ni creé ningún presupuesto')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toEqual({})
+    expect(findClientsFn).not.toHaveBeenCalled()
+    expect(facbal.createClient).not.toHaveBeenCalled()
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('una corrección que empieza con "no" actualiza la cotización, no la cancela', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+
+    await processPedidoMessage(args(db, 'bastidor 20x20', { parseFn }))
+    await processPedidoMessage(args(db, 'No, mejor cambialo a 20x30', { parseFn }))
+
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+    })
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('si el dueño pide crear un presupuesto sin ítems, guarda el contexto del paso y espera productos', async () => {
+    const db = makeDb()
+    const parseFn = async (text: string) => ({
+      cliente: null,
+      items: text.includes('60x40') ? [{ cantidad: 2, texto: 'bastidor sin tela 60x40' }] : [],
+    })
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('¿qué productos y medidas incluyo en el presupuesto?')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingOrderItems: true,
+    })
+
+    await processPedidoMessage(args(db, '2 bastidores 60x40 sin tela', { parseFn, findClientsFn: async () => [] }))
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).not.toMatchObject({
+      awaitingOrderItems: true,
+    })
+  })
+
+  it('al aceptar una cotización pide solo cliente y confirmación; usa defaults del ERP', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+    const findClientsFn = vi.fn(async () => [])
+
+    await processPedidoMessage(args(db, 'Quería saber si tienen bastidores de 20x20', {
+      parseFn,
+      findClientsFn,
+    }))
+    await processPedidoMessage(args(db, 'sí', { parseFn, findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+
+    await processPedidoMessage(args(db, 'Fede', { parseFn, findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('¿Confirmás?')
+    expect(sent.texts.join('\n')).not.toContain('¿Cómo lo entregamos?')
+    expect(sent.texts.join('\n')).not.toContain('¿Fecha de entrega?')
+    expect(sent.texts.join('\n')).not.toContain('¿Descuento?')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+
+    const result = await processPedidoMessage(args(db, 'sí', { parseFn, findClientsFn }))
+    expect(result.createdInvoice).toBeTruthy()
+    expect(facbal.createClient).toHaveBeenCalledWith({ nombre: 'Fede' })
+    expect(facbal.createInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it('no usa el teléfono del remitente como nombre ni como candidato de cliente', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [
+      { id: 1, nombre: 'Cliente 5491100000000', telefono: '5491100000000', score: 1 },
+      { id: 2, nombre: 'Fede', telefono: '5491100000000', score: 0.9 },
+    ])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor sin tela 60x40' }],
+    })
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto de 60x40', {
+      parseFn,
+      findClientsFn,
+    }))
+    await processPedidoMessage(args(db, '5491100000000', { parseFn, findClientsFn }))
+
+    expect(sent.texts.at(-1)).toContain('no lo voy a guardar como cliente')
+    expect(findClientsFn).not.toHaveBeenCalled()
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      clienteNombre: null,
+      awaitingCliente: true,
+    })
+    expect(facbal.createClient).not.toHaveBeenCalled()
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('busca por nombre, no por teléfono, y oculta el teléfono interno en opciones', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [
+      { id: 1, nombre: 'Cliente 5491100000000', telefono: '5491100000000', score: 1 },
+      { id: 2, nombre: 'Fede', telefono: '5491100000000', score: 0.9 },
+    ])
+    const parseFn = async () => ({
+      cliente: 'Fede',
+      items: [{ cantidad: 1, texto: 'bastidor sin tela 60x40' }],
+    })
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto para Fede 60x40', {
+      parseFn,
+      findClientsFn,
+    }))
+
+    expect(findClientsFn).toHaveBeenCalledWith('Fede')
+    expect(sent.buttons.at(-1)?.bodyText).toContain('Fede')
+    expect(sent.buttons.at(-1)?.bodyText).not.toContain('5491100000000')
   })
 })

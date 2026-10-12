@@ -8,9 +8,11 @@
 > ⚠️ **Nota de estado (2026-10):** el pipeline de **Voice Orders / pedidos**
 > (`src/lib/voice-orders/*`, `handleVoiceText`, `processTextOrder`,
 > `createPresupuesto`, `/api/budget-image`, `hasPendingVoice`) **ya no existe en
-> el código**. `BotIntent` no incluye `pedido` y los pedidos/presupuestos por
-> WhatsApp están fuera de alcance. Las secciones 2 y 6 que los describen quedan
-> como referencia histórica. Lo que sí está vivo: Flows, Voucher
+> el código**. Esto se refiere al módulo `src/lib/voice-orders/*` y sus rutas
+> antiguas, no al handler actual de `src/lib/pedidos/`: `BotIntent` sí contempla
+> `pedido` y esa ruta sigue documentada en §6. La sección 2 y `voice-orders.md`
+> quedan como referencia histórica; la sección 6 describe el dispatch vigente.
+> Lo que sí está vivo: Flows, Voucher
 > (imagen/texto), Gastos, Asistencia y el asistente conversacional.
 
 ## Visión General del Ecosistema
@@ -78,13 +80,10 @@
 
 ### Por qué está deshabilitado
 
-El refactor planificado en `archive/refactor-chatbot.md` está incompleto. La
-arquitectura actual (regex + LLM monolítico) iba a ser reemplazada por módulos
-separados (`order-parser`, `pricing-engine`, `cart-state`, `conversation-flow`,
-`llm-responder`, `handoff-rules`) pero la integración no se completó. Además,
-**Voice Orders** ya cubre la mayor parte del flujo de pedidos (ver
-[`voice-orders.md`](./voice-orders.md)), por lo que reactivar este bot es
-redundante hasta que se decida lo contrario.
+El refactor planificado en `archive/refactor-chatbot.md` quedó incompleto. Esta
+implementación monolítica/reglas+LLM es legado y permanece deshabilitada. El
+asistente conversacional y el handler actual de pedidos están separados; no
+reactivar `chatbot.ts` como atajo para modificar esos flujos.
 
 ### Base de datos (Supabase migrations)
 
@@ -96,14 +95,18 @@ redundante hasta que se decida lo contrario.
 
 ---
 
-## 2. Voice Orders / Bot de pedidos (ACTIVO)
+## 2. Voice Orders / Bot de pedidos (RETIRADO)
 
-**Estado:** ✅ Activo — con UI en `/bot-beta`
+**Estado:** ⚠️ Retirado del código vigente (nota 2026-10). El documento
+[`voice-orders.md`](./voice-orders.md) queda como referencia histórica; no
+asumir que sus rutas o capacidades siguen desplegadas.
 
-**Propósito:** Toma pedidos por voz (audio) o texto vía WhatsApp, transcribe, parsea, resuelve precios a través de FacBal API y crea presupuestos/facturas.
+**Propósito histórico:** tomar pedidos por voz o texto vía WhatsApp, resolver
+precios y crear presupuestos/facturas. Esa descripción ya no representa el
+pipeline activo.
 
-> Documento dedicado con estado actual + mejoras pendientes:
-> **[`voice-orders.md`](./voice-orders.md)**
+> El documento [`voice-orders.md`](./voice-orders.md) describe el módulo
+> anterior y se conserva solo como referencia histórica.
 
 ### Base de datos
 
@@ -195,59 +198,102 @@ redundante hasta que se decida lo contrario.
 
 ---
 
-## 6. Orden de Dispatch en Webhook
+## 6. Webhook y asistente conversacional (actual)
 
-```
+```text
 POST /api/whatsapp/webhook
-  │
-  ├── Template lifecycle → handleTemplateWebhookChange()
-  ├── Status updates → handleStatusUpdate()
-  │
-  ├── ⚡ BOT MULTI-TURN (interactive replies) → interceptado ANTES de Flows
-  │     Tap a botones [✅]/[✏️]/[❌] de gastos (stage=confirming) o
-  │     asistencia (awaitingCorrection) → se marca como consumido y el
-  │     flow runner / automaciones / AI reply no lo ven
-  │
-  ├── 🥇 FLOWS ENGINE → dispatchInboundToFlows()
-  │     Si consume → suprime automatizaciones + AI reply + extractor
-  │
-  ├── 🥈 AUTOMATIONS → runAutomationsForTrigger()
-  │
-  ├── 🥉 AI AUTO-REPLY → dispatchInboundToAiReply()
-  │     Solo si NO fue consumido por flow
-  │
-  ├── VOUCHER → processVoucherMessage()
-  │     Solo imágenes/documentos de pago de clientes (fire-and-forget).
-  │     Las respuestas de texto a comprobantes pendientes y los pendingTexts
-  │     se manejan en el bloque voucher del webhook, NO vía el extractor.
-  │
-  ├── EXTRACTOR UNIFICADO (LLM) → extractBotMessage()
-  │     Un solo call LLM por texto devuelve intent + campos + faltan_campos
-  │     + dudoso (src/lib/bot-llm/). Recibe el contexto multi-turn de los
-  │     bots para resolver respuestas cortas. Ante fallo/timeout/JSON
-  │     inválido cae a fallbackExtract() (regex, confianza baja).
-  │
-  │     Dispatch por intent (un solo handler):
-  │       · hasPendingExpense/hasPendingAttendance → handler del bot pendiente
-  │       · gasto → handleExpenseMessage(extraction)
-  │       · asistencia_* → handleAttendanceMessage(extraction)
-  │       · voucher → se consume sin handler (grieta corregida: ya NO lo
-  │         captura expense ni voice)
-  │       · pedido/factura (confianza ≠ baja) → handleVoiceText()
-  │       · otro / confianza baja → gates regex de seguridad (igual que antes)
-  │
-  ├── VOICE AUDIO → handleVoiceAudio()
-  │     Solo audio de pedidos (fire-and-forget)
-  │
-  ├── VOICE TEXT → handleVoiceText()
-  │     Solo texto de pedidos no consumido por flow (fire-and-forget)
-  │
-  └── WEBHOOK FAN-OUT → dispatchWebhookEvent()
+  ├─ Lifecycle/status de Meta; persistir mensaje y resolver remitente/cuenta
+  ├─ Gate bot_allowed_numbers para las funciones internas
+  ├─ Confirmaciones interactivas y pendientes (gastos/asistencia/voucher/pedido)
+  ├─ Imágenes/PDF de remitentes autorizados → pipeline de voucher
+  ├─ Audio → transcripción; luego comparte el flujo de texto
+  ├─ Comandos cancelar/reiniciar
+  ├─ extractBotMessage() → UnifiedExtraction + contexto pendiente
+  └─ MOTOR DE TURNO (src/lib/bot/engine.ts → planTurn, función pura)
+       ├─ clarify (expired/resolve/cancel/supersede/reask/ask)
+       ├─ decideDispatch() → dominio
+       ├─ Planner LLM (opcional; ver Fases 3-5 abajo)
+       │    ├─ shadow: sólo registra en router_logs/bot_traces (no cambia nada)
+       │    └─ on + ASSISTANT_PLANNER_DOMAINS: conduce el turno; `reconcilePlans`
+       │         aplica guardrails (vouchers congelados, pendientes, policy)
+       └─ acciones por dominio → el adapter las materializa en bgTasks:
+            ├─ gasto/multi_expense → handler de gastos
+            ├─ asistencia_*       → handler de asistencia
+            ├─ voucher            → flujo de voucher (pass-through, congelado)
+            ├─ pedido             → cotización preview o creación explícita
+            └─ factura/consulta/conversación → asistente
+  ├─ Assistant branch → runAssistantForWebhook() (fire-and-forget)
+  │    └─ historial + KB + estado/extracción → loop de tool-calling
+  │         si no genera texto o falla → fallback a AI Auto-Reply
+  ├─ Fallback de respuesta / Flows fallback (si FLOWS_ENABLED=true)
+  ├─ Automations
+  └─ dispatchWebhookEvent()
 ```
 
-> **Implementado (2026-08):** router unificado por LLM con confianza de 3
-> niveles (`alta`/`media`/`baja`) y extracción estructurada por bot. Ver
-> [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md).
+**La orquestación de texto está centralizada en el motor de turno** (`src/lib/bot/engine.ts`): contextos → extracción → clarify → router → acciones. `route.ts` quedó como **adapter delgado** que hace el I/O (aplica `clear_context`/`save_clarify`, envía y dispara los handlers dentro de los `bgTasks` que ve `after()`).
+
+El **planner LLM es opt-in** y default `off`: no reemplaza al router determinístico salvo que se habilite por dominio. Los handlers siguen siendo la autoridad de negocio (validaciones, confirmaciones y efectos de gastos, asistencia, vouchers y pedidos).
+
+### Motor de turno y planner (Fases 1-5)
+
+- **Motor puro** (`src/lib/bot/engine.ts`): `planTurn(state) → TurnPlan { dispatchedTo, dispatchReason, extraction, actions }`. Sin I/O ni Supabase.
+- **Policy** (`src/lib/bot/policy.ts`): tope de escrituras por turno (`maxWritesPerTurn = 1`), el texto de toda escritura es el del usuario (nunca el del modelo) y dedupe dentro del turno.
+- **Planner** (`src/lib/bot/planner.ts`): reusa `buildAgentMessages` + `agentToolDefinitions`; propone `TurnAction`s y **nunca ejecuta**.
+- **Reconciliación** (`reconcilePlans`): decide determinístico vs planner con guardrails — planner caído, clarify pendiente o **vouchers** → gana el determinístico; dominio no habilitado → determinístico; pendiente multi-turno con otro dominio → determinístico; escrituras del planner requieren `ASSISTANT_PLANNER_WRITES=true`.
+- **Vouchers congelados**: nunca entran al planner.
+
+##### Rollout por env
+
+| Env | Uso | Default |
+|---|---|---|
+| `ASSISTANT_AGENT_PLANNER` | `off` \| `shadow` \| `on` | `off` |
+| `ASSISTANT_PLANNER_DOMAINS` | Dominios que el planner conduce (csv: `assistant,pedido,expense,attendance`) | vacío |
+| `ASSISTANT_PLANNER_WRITES` | Habilita escrituras del planner (`true`/`false`) | `false` |
+| `PLANNER_MODEL` | Modelo del planner | cae a `ASSISTANT_MODEL` |
+
+Sugerido: `shadow` (mide) → `on` + `assistant` (lectura) → `+pedido` → `+expense` → `+attendance` → `ASSISTANT_PLANNER_WRITES=true`. Ver `planner_shadow` en `router_logs.debug_info` para coincidencia y falsos positivos.
+
+
+El flujo de pedido trata una pregunta de disponibilidad/precio como cotización
+de solo lectura y ofrece convertirla en presupuesto. Una orden explícita de
+creación inicia el flujo formal, con confirmación antes de escribir. Usa los
+defaults existentes (`Retira`, sin fecha, sin descuento) y no usa ni guarda el
+teléfono interno del remitente como teléfono/nombre del cliente. `cancelar` y
+`reiniciar` limpian también `order_context`.
+
+### Contexto del agente
+
+- `buildConversationContext()` carga mensajes de texto recientes desde
+  `messages` (20 por defecto; configurable con `AI_CONTEXT_MESSAGE_LIMIT`).
+- `buildAgentMessages()` conserva los roles `user`/`assistant`, limita el
+  historial a 20 mensajes incluido el actual y evita duplicar el mensaje
+  entrante.
+- El webhook pasa `UnifiedExtraction` y `buildBotContextText()` como pistas; el
+  texto original y las respuestas de las herramientas son la fuente de verdad.
+- Los estados pendientes de gastos, asistencia, vouchers, pedidos y clarify
+  siguen en contextos separados. Aún no existe una memoria resumida/unificada
+  entre conversaciones.
+
+### Herramientas y modelo
+
+El registro vive en `src/lib/bot-assistant/tool-registry.ts`: consultar
+facturas/gastos/proveedores/empleados/categorías/productos, cotizar pedidos y
+registrar gastos/asistencia. El agente selecciona herramientas por OpenRouter;
+los handlers existentes ejecutan las operaciones. La mejora de contexto no
+añadió capacidades de negocio.
+
+| Env | Uso | Default actual |
+|---|---|---|
+| `OPENROUTER_API_KEY` | API del extractor y agente | — |
+| `EXTRACTOR_MODEL` | Extracción/ruteo | `google/gemini-2.5-flash-lite` |
+| `ASSISTANT_MODEL` | Agente y redacción | default de `openrouter.ts`: `google/gemini-2.5-flash-lite` |
+| `ASSISTANT_TOOLS_ENABLED` | Desactiva el loop si vale `false` | Habilitado si no vale `false` |
+| `VOUCHER_AI_MODEL` | Extracción multimodal de vouchers/gastos | `google/gemini-2.5-flash` |
+
+**Piloto pendiente:** probar `deepseek/deepseek-v4.1-flash` por OpenRouter en
+`ASSISTANT_MODEL` y `EXTRACTOR_MODEL`; mantener `VOUCHER_AI_MODEL` en Gemini
+hasta evaluar el conjunto de comprobantes. No consta aplicado en Vercel ni
+validado en producción.
 
 
 ---
@@ -258,7 +304,11 @@ POST /api/whatsapp/webhook
 **Auth:** `X-API-Key` header (desde `FACBAL_API_KEY` env var)
 **Cliente:** `src/lib/facbal/client.ts`
 
-### Endpoints consumidos
+### Endpoints del backend
+
+La tabla conserva integraciones históricas de pedidos; para las herramientas
+que el agente ofrece hoy, la fuente de verdad es `src/lib/bot-assistant/tool-registry.ts`
+y el cliente `src/lib/facbal/client.ts`.
 
 | Endpoint | Usado por |
 |----------|-----------|
@@ -309,18 +359,19 @@ POST /api/whatsapp/webhook
 
 ---
 
-## 9. Resumen de IA Usada
+## 9. Resumen de IA (estado actual)
 
 | Sistema | Proveedor | Modelo | Propósito |
 |---------|-----------|--------|-----------|
-| Chatbot (disabled) | OpenRouter | `google/gemini-2.5-flash-lite` | Detección de intención + generación de respuesta |
-| Voice Orders | OpenRouter | `openai/whisper-1` | Transcripción de audio |
-| Voice Orders | OpenRouter | `google/gemini-2.5-flash-lite` | Parseo de pedidos |
-| Voucher | OpenRouter | `google/gemini-2.5-flash` | Extracción de datos de comprobantes (visión) |
-| Expense Bot | OpenRouter | `openai/whisper-1` | Transcripción de audio de gastos |
-| Expense Bot | OpenRouter | `google/gemini-2.5-flash-lite` | Parseo de gastos por texto |
-| Expense Bot | OpenRouter | `google/gemini-2.5-flash` | Extracción de datos de comprobantes de gasto (visión) |
+| Extractor/ruteo del bot interno | OpenRouter (`EXTRACTOR_MODEL`) | `google/gemini-2.5-flash-lite` por defecto | Intent + campos estructurados |
+| Agente conversacional | OpenRouter (`ASSISTANT_MODEL`) | `google/gemini-2.5-flash-lite` por defecto | Selección de herramientas + respuesta |
+| Voucher / extracción multimodal de gasto | OpenRouter (`VOUCHER_AI_MODEL`) | `google/gemini-2.5-flash` | Imagen/PDF |
+| Transcripción de audio | OpenRouter | `openai/whisper-1` | Transcripción cuando aplica |
 | AI Auto-Reply | OpenAI/Anthropic | Configurable por cuenta | Respuestas automáticas |
+
+> DeepSeek V4.1 Flash es un piloto propuesto para agente y extractor, no un
+> modelo confirmado como desplegado. El chatbot legado de `chatbot.ts` sigue
+> deshabilitado y no representa al asistente productivo.
 
 ---
 
@@ -335,7 +386,8 @@ POST /api/whatsapp/webhook
 1. **No se borran datos existentes.** Se usan tablas nuevas (`expense_categories`, `expenses` en backend_gal) y se migró el histórico desde `movimientos_proveedor` y `pagos_empleados` sin eliminarlos.
 2. **Tablas de proveedores y empleados se mantienen.** `proveedores` y `empleados` siguen siendo la fuente de verdad de esas entidades. `movimientos_proveedor` y `pagos_empleados` se vinculan con `expenses` mediante `expense_id`.
 3. **Categorías dinámicas.** El bot puede crear categorías automáticamente si no existen y avisar al usuario.
-4. **Disponible para todos los números.** No hay restricción de autorización por número.
+4. **Acceso por número autorizado.** El bot interno se limita a números activos
+   en `bot_allowed_numbers`; los demás contactos siguen por Flows/AI Auto-Reply.
 5. **Reutiliza infraestructura existente.** Transcribe audio con Whisper (mismo modelo de Voice Orders) y lee comprobantes con Gemini Vision (mismo modelo de Voucher).
 
 ### Parser de montos

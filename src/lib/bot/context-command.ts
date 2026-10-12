@@ -16,12 +16,13 @@ import { clearVoucherContext } from '@/lib/ai/voucher-context'
 import { clearExpenseContext } from '@/lib/expenses/context'
 import { clearAttendanceContext } from '@/lib/attendance/context'
 import { clearClarifyContext } from '@/lib/bot-llm/clarify-context'
+import { clearOrderContext } from '@/lib/pedidos/context'
 
 export type ContextCommand = 'cancel_active' | 'reset_all' | null
 
 const RESET_RE = /^(reiniciar|reinicia|reinicio|empezar de nuevo|empezar de cero|arrancar de nuevo|arrancar de cero|borrar todo|borra todo|resetear|reset|olvida todo|olvid[aá]te de todo|salir|chau bot|jesusdanielllavesecreta)[.!]*$/i
 
-const CANCEL_RE = /^(cancelar|cancela|cancelo|olvidalo|olv[ií]dalo|mejor no|despu[eé]s|todav[ií]a no|nada|ninguno|ninguna|saltar|saltear)[.!]*$/i
+const CANCEL_RE = /^(cancelar|cancela|cancelo|olvidalo|olv[ií]dalo|mejor no|despu[eé]s|todav[ií]a no|nada|ninguno|ninguna|saltar|saltear|no\s+lo\s+cre(?:es|as)(?:\s*,?\s*(?:era|es|fue)\s+una\s+prueba)?|(?:era|es|fue)\s+una\s+prueba|no\s+lo\s+hagas|no\s+(?:quiero|necesito)\s+(?:un\s+)?presupuesto|me\s+arrepent[ií])[.!]*$/i
 
 export function classifyContextCommand(text: string): ContextCommand {
   const t = (text || '').trim()
@@ -36,6 +37,7 @@ export interface ActiveContexts {
   attendance?: boolean
   voucher?: boolean
   clarify?: boolean
+  order?: boolean
 }
 
 export interface ContextCommandResult {
@@ -59,6 +61,7 @@ export async function handleContextCommand(args: {
   if (active.voucher) cleared.push('un comprobante pendiente')
   if (active.expense) cleared.push('un gasto a medio cargar')
   if (active.attendance) cleared.push('una asistencia pendiente')
+  if (active.order) cleared.push('un presupuesto pendiente')
   if (active.clarify) cleared.push('una pregunta pendiente')
 
   await Promise.all([
@@ -66,6 +69,7 @@ export async function handleContextCommand(args: {
     clearExpenseContext(db, conversationId),
     clearAttendanceContext(db, conversationId),
     clearClarifyContext(db, conversationId),
+    clearOrderContext(db, conversationId),
   ])
 
   if (command === 'reset_all') {

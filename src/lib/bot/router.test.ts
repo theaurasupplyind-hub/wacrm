@@ -107,6 +107,33 @@ describe('decideDispatch pedido', () => {
     expect(r.dispatchReason).toBe('intent')
   })
 
+  it('la mención conversacional de un presupuesto sin productos no inicia el flujo', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Estabas creando un presupuesto',
+      extraction: extraction({ intent: 'pedido', confianza: 'alta' }),
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('la mención conversacional tampoco activa el fallback pedido cuando intent=otro', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Estabas creando un presupuesto',
+      extraction: extraction({ intent: 'otro', confianza: 'alta' }),
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('una petición explícita de crear presupuesto inicia el handler aunque falten ítems', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'Armame un presupuesto',
+      extraction: extraction({ intent: 'otro', confianza: 'media' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+  })
+
   it('pedido pendiente + respuesta corta → pedido (pending_multiturn)', () => {
     const r = decideDispatch({
       ...base,

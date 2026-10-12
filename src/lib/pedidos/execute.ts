@@ -6,6 +6,7 @@ import {
   type InvoiceCreatedResult,
 } from '@/lib/facbal/client'
 import type { DescuentoState, PedidoItem, TipoEntrega } from './types'
+import { isPhoneLikeClientName } from './client-identity'
 
 export interface ExecutePedidoResult {
   invoice: InvoiceCreatedResult
@@ -43,8 +44,8 @@ export function pedidoItemsNeto(items: PedidoItem[]): number {
 export async function executePedido(args: {
   clienteNombre: string | null
   clienteId?: number | null
+  clienteTelefono?: string | null
   items: PedidoItem[]
-  senderPhone?: string | null
   fecha?: string
   tipoEntrega?: TipoEntrega
   fechaEntrega?: string
@@ -56,22 +57,24 @@ export async function executePedido(args: {
   }
 
   const nombreIngresado = (args.clienteNombre || '').trim()
+  if (isPhoneLikeClientName(nombreIngresado)) {
+    throw new Error('El teléfono del remitente no puede usarse como nombre de cliente.')
+  }
   let clienteId: number | null = args.clienteId ?? null
   let clienteNombre = nombreIngresado || 'Consumidor Final'
+  let clienteTelefono = args.clienteTelefono ?? null
 
   if (clienteId != null) {
     // Cliente ya elegido/confirmado por el flujo: no re-buscamos.
   } else if (nombreIngresado) {
     try {
-      const existing = await searchClients(nombreIngresado, args.senderPhone || undefined)
+      const existing = await searchClients(nombreIngresado)
       if (existing) {
         clienteId = existing.id
         clienteNombre = existing.nombre
+        clienteTelefono = existing.telefono ?? clienteTelefono
       } else {
-        const created = await createClient({
-          nombre: nombreIngresado,
-          telefono: args.senderPhone || undefined,
-        })
+        const created = await createClient({ nombre: nombreIngresado })
         clienteId = created.id
         clienteNombre = created.nombre
       }
@@ -112,7 +115,7 @@ export async function executePedido(args: {
     fecha: args.fecha || todayDDMMYYYY(),
     cliente_id: clienteId,
     cliente_nombre: clienteNombre,
-    cliente_telefono: args.senderPhone || undefined,
+    cliente_telefono: clienteTelefono || undefined,
     items: itemsPayload,
     total,
     envio: 0,

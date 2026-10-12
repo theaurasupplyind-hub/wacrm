@@ -8,14 +8,13 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
-import { processVoucherMessage, processVoucherText, isVoucherClarificationReply, VOUCHER_CONFIRM_ID, VOUCHER_CANCEL_ID } from '@/lib/ai/voucher-pipeline'
+import { processVoucherMessage, processVoucherText, VOUCHER_CONFIRM_ID, VOUCHER_CANCEL_ID } from '@/lib/ai/voucher-pipeline'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
 import { transcribeAudio, type TranscribeLog } from '@/lib/audio/transcribe'
-import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
-import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
-import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, clearExpenseContext, isCategoryCorrectionCommand } from '@/lib/expenses'
+import type { UnifiedExtraction } from '@/lib/bot-llm/types'
+import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, clearExpenseContext } from '@/lib/expenses'
 import {
   processAttendanceMessage,
   processAttendanceConfirmReply,
@@ -23,16 +22,19 @@ import {
   loadAttendanceContext,
   clearAttendanceContext,
 } from '@/lib/attendance'
-import { loadVoucherContext, pushPendingText } from '@/lib/ai/voucher-context'
+import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
-import { decideDispatch, PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
+import { PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
+import { planTurn, reconcilePlans } from '@/lib/bot/engine'
+import { getPlannerDomains, plannerWritesEnabled } from '@/lib/bot/policy'
+import { getPlannerMode, runPlanner, runPlannerShadow, compareShadow, recordPlannerShadow } from '@/lib/bot/planner'
+import type { TurnAction } from '@/lib/bot/actions'
 import { isPhoneAllowed } from '@/lib/bot/whitelist'
 import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
-import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
-import { loadClarifyContext, saveClarifyContext, clearClarifyContext, resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
+import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import { processPedidoMessage } from '@/lib/pedidos'
-import { loadOrderContext, isOrderContextActive } from '@/lib/pedidos/context'
+import { loadOrderContext, isOrderContextActive, clearOrderContext } from '@/lib/pedidos/context'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import {
@@ -1000,7 +1002,9 @@ async function processMessage(
   const orderAwaiting =
     hasPendingOrder &&
     !!orderCtx &&
-    (!!orderCtx.awaitingCliente ||
+    (!!orderCtx.awaitingOrderItems ||
+      !!orderCtx.awaitingQuoteApproval ||
+      !!orderCtx.awaitingCliente ||
       !!orderCtx.awaitingClienteChoice ||
       !!orderCtx.awaitingEntrega ||
       !!orderCtx.awaitingFecha ||
@@ -1329,6 +1333,7 @@ async function processMessage(
         attendance: hasPendingAttendance,
         voucher: hasPendingVoucher,
         clarify: !!clarifyLoad?.state,
+        order: hasPendingOrder,
       },
     })
     if (cmd.handled) {
@@ -1403,15 +1408,10 @@ async function processMessage(
   }
 
   // ============================================================
-  // CLARIFY (bot conversacional): preguntar ante ambigüedad y resolver.
+  // CLARIFY (bot conversacional): helpers de envío. La DECISIÓN de preguntar/
+  // resolver la toma `engine.planTurn`; acá sólo quedan los envíos.
   // Regla dura: ningún camino termina en silencio, siempre hay mensaje.
   // ============================================================
-  let clarifyHandled = false
-  const clarifyTo = 'clarify'
-  let clarifyReason = 'clarify_ask'
-  let clarifyResolved = false
-  let clarifySuperseded = false
-  let clarifyAnsweredIntent: BotIntent | null = null
   const clarifySendCtx = {
     accountId, userId: configOwnerUserId,
     conversationId: conversation.id, contactId: contactRecord.id,
@@ -1450,117 +1450,114 @@ async function processMessage(
     }
   }
 
-  const strongNewIntent = !!extraction &&
-    (extraction.confianza === 'alta' || extraction.confianza === 'media') &&
-    (extraction.intent === 'gasto' ||
-      extraction.intent === 'multi_expense' ||
-      extraction.intent === 'voucher' ||
-      extraction.intent === 'factura' ||
-      extraction.intent === 'asistencia_llegada' ||
-      extraction.intent === 'asistencia_salida' ||
-      extraction.intent === 'asistencia_estado')
+  // ── MOTOR DE TURNOS (puro) ──
+  // `engine.planTurn` decide clarify + dispatch + pipeline de texto + fallback
+  // y devuelve acciones. Acá SÓLO se materializa el I/O. Context-command,
+  // voucher-media, media-gasto y confirms interactivos son gates pre-turno y
+  // quedan arriba/afuera (ver docs/bots/plan-unificacion-motor-bot.md §5).
+  const voucherPendingCandidates = voucherCtx.pending.flatMap((p) => p.candidates)
+  const captionIsForcedVoucher =
+    (message.type === 'image' || message.type === 'document') &&
+    !!(message.image?.caption?.trim() || message.document?.caption?.trim()) &&
+    !/^[a-zA-Z]\s*$/.test((message.image?.caption || message.document?.caption || '').trim()) &&
+    !/^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
 
-  if (botAllowed && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
-    if (clarifyLoad?.expired) {
-      await clearClarifyContext(supabaseAdmin(), conversation.id)
-      bgTasks.push(
-        sendClarifyText(
-          'Tu respuesta llegó tarde y ya había descartado la pregunta (duran 5 minutos). Mandame de nuevo tu mensaje y lo procesamos.',
-        ).then(() => {}),
+  let plan = planTurn({
+    botAllowed,
+    inboundText,
+    interactiveReplyId,
+    flowConsumed,
+    mediaConsumedByVoucher,
+    messageType: message.type,
+    extraction,
+    clarify: clarifyLoad,
+    hasPendingExpense,
+    hasPendingAttendance,
+    hasPendingVoucher,
+    hasPendingOrder,
+    orderAwaiting,
+    voucherCandidates: voucherPendingCandidates,
+    captionIsForcedVoucher,
+  }, { policy: { maxWritesPerTurn: 1, originalText: inboundText } })
+
+  // ── Planner ACTIVO por dominio (Fase 4) ──
+  // `on` + dominios habilitados (`ASSISTANT_PLANNER_DOMAINS`): el planner puede
+  // CONDUCIR el turno. Vouchers, clarify pendiente y pendientes multi-turno
+  // quedan protegidos por `reconcilePlans`. Las escrituras siguen confirmándose
+  // dentro de cada handler. En `shadow` sólo se registra (Fase 3).
+  const detPlan = plan
+  const plannerMode = getPlannerMode()
+  let plannerSource: 'deterministic' | 'planner' = 'deterministic'
+  let plannerReason = 'mode_off'
+  const plannerEligible = plannerMode !== 'off' && botAllowed && !flowConsumed && !!inboundText.trim()
+  if (plannerEligible) {
+    const allowedDomains = getPlannerDomains()
+    if (plannerMode === 'on' && allowedDomains.size > 0) {
+      const plannerResult = await runPlanner({
+        text: inboundText,
+        extraction: detPlan.extraction,
+        conversationContext: contextText,
+      })
+      const recon = reconcilePlans({
+        deterministic: detPlan,
+        plannerActions: plannerResult.proposal?.actions ?? null,
+        plannerDomains: plannerResult.proposal?.domains ?? [],
+        plannerError: plannerResult.error ?? null,
+        allowedDomains,
+        hasBlockingPending: hasPendingExpense || hasPendingAttendance || hasPendingOrder,
+        allowsWrites: plannerWritesEnabled(),
+        originalText: inboundText,
+        seenWriteKeys: new Set<string>(),
+      })
+      plan = recon.plan
+      plannerSource = recon.source
+      plannerReason = recon.reason
+      console.log(
+        '[planner] source=%s reason=%s det=%s final=%s lat=%dms',
+        recon.source, recon.reason, detPlan.dispatchedTo, plan.dispatchedTo, plannerResult.latencyMs,
       )
-      clarifyHandled = true
-      clarifyReason = 'clarify_expired'
-      console.log('[clarify] expired -> conversation=%s', conversation.id)
-    } else if (clarifyLoad && !clarifyLoad.expired) {
-      const clarifyState = clarifyLoad.state
-      const chosen = matchClarifyOption(inboundText, interactiveReplyId, clarifyState.options)
-      if (chosen) {
-        await clearClarifyContext(supabaseAdmin(), conversation.id)
-        // El extractor no corre en replies interactivos, así que la extracción
-        // resuelta se sintetiza con el intent elegido + los campos originales.
-        extraction = resolveClarifyExtraction(
-          extraction,
-          clarifyState.origExtra,
-          chosen.intent,
-          inboundText,
-        )
-        clarifyAnsweredIntent = chosen.intent
-        clarifyResolved = true
-        console.log('[clarify] resolved -> intent=%s conversation=%s', chosen.intent, conversation.id)
-      } else if (/^cancelar$/i.test(inboundText.trim())) {
-        await clearClarifyContext(supabaseAdmin(), conversation.id)
-        bgTasks.push(
-          sendClarifyText('Listo, dejamos eso de lado. ¿En qué te ayudo?').then(() => {}),
-        )
-        clarifyHandled = true
-        clarifyReason = 'clarify_cancelled'
-      } else if (strongNewIntent) {
-        await clearClarifyContext(supabaseAdmin(), conversation.id)
-        clarifyResolved = true
-        clarifySuperseded = true
-        console.log('[clarify] superseded by new %s order -> conversation=%s', extraction?.intent, conversation.id)
-      } else if (!clarifyState.renotified) {
-        await saveClarifyContext(supabaseAdmin(), conversation.id, { ...clarifyState, renotified: true })
-        const opts = clarifyState.options
-        bgTasks.push(
-          sendClarifyQuestion(
-            `No entendí tu respuesta. ${clarifyState.question} Respondé con la letra (A, B...) o escribí "cancelar".`,
-            opts,
-          ).then(() => {}),
-        )
-        clarifyHandled = true
-        clarifyReason = 'clarify_reask'
-      } else {
-        await clearClarifyContext(supabaseAdmin(), conversation.id)
-        bgTasks.push(
-          sendClarifyText(
-            'Sigo sin entenderte. Probá con algo concreto, por ejemplo: "gasté 5000 en luz", "llegó Juan 8:30" o "Marlon pagó 200000".',
-          ).then(() => {}),
-        )
-        clarifyHandled = true
-        clarifyReason = 'clarify_cancelled'
-      }
-    } else if (!clarifyLoad && extraction && !interactiveReplyId) {
-      const ambiguity = detectAmbiguity(extraction, inboundText)
-      // La aclaración genérica no debe robar respuestas del pending de
-      // voucher ("la otra", "A y B"): si el texto matchea sus candidatas,
-      // lo resuelve el voucher (Fix 5). La pregunta pago explícita sí pasa.
-      const voucherStealsReply = !!ambiguity &&
-        ambiguity.kind === 'baja_confianza' &&
-        hasPendingVoucher &&
-        isVoucherClarificationReply(
-          inboundText,
-          voucherCtx.pending.flatMap((p) => p.candidates),
-        )
-      if (ambiguity && !voucherStealsReply) {
-        await saveClarifyContext(supabaseAdmin(), conversation.id, {
-          question: ambiguity.question,
-          options: ambiguity.options,
-          originalIntent: extraction.intent,
-          origExtra: {
-            proveedor: extraction.proveedor ?? ambiguity.subject ?? null,
-            monto: extraction.monto,
-            metodo_pago: extraction.metodo_pago,
-            destino: extraction.destino,
-            empleado: extraction.empleado,
-            hora: extraction.hora,
-            categoria: extraction.categoria,
-            fecha: extraction.fecha,
-          },
+      bgTasks.push(
+        recordPlannerShadow({
+          messageId: message.id,
+          accountId,
+          conversationId: conversation.id,
+          contactId: contactRecord.id,
+          source: message.type,
+          comparison: compareShadow({
+            deterministicDomain: detPlan.dispatchedTo,
+            deterministicReason: detPlan.dispatchReason,
+            result: plannerResult,
+          }),
+          proposal: plannerResult.proposal?.actions ?? null,
+          drive: { source: plannerSource, reason: plannerReason },
+        }).catch((err) => console.warn('[planner] record failed:', err instanceof Error ? err.message : String(err))),
+      )
+    } else if (plannerMode === 'shadow') {
+      bgTasks.push(
+        runPlannerShadow({
+          messageId: message.id,
+          accountId,
+          conversationId: conversation.id,
+          contactId: contactRecord.id,
+          source: message.type,
+          text: inboundText,
+          extraction: detPlan.extraction,
+          conversationContext: contextText,
+          deterministicDomain: detPlan.dispatchedTo,
+          deterministicReason: detPlan.dispatchReason,
         })
-        bgTasks.push(
-          (async () => {
-            const ok = await sendClarifyQuestion(ambiguity.question, ambiguity.options)
-            if (!ok) {
-              await clearClarifyContext(supabaseAdmin(), conversation.id)
-            }
-          })(),
-        )
-        clarifyHandled = true
-        clarifyReason = 'clarify_ask'
-        console.log('[clarify] asked kind=%s -> conversation=%s', ambiguity.kind, conversation.id)
-      }
+          .then(() => {})
+          .catch((err) => console.warn('[planner-shadow] failed:', err instanceof Error ? err.message : String(err))),
+      )
     }
+  }
+
+  const dispatchedTo: string = plan.dispatchedTo
+  const dispatchReason: string = plan.dispatchReason
+  const responded: boolean = plan.responded
+  const clarifyHandled: boolean = plan.clarifyHandled
+  if (dispatchedTo === 'clarify') {
+    console.log('[clarify] %s -> conversation=%s', dispatchReason, conversation.id)
   }
 
   const pushExpenseTask = (ex?: UnifiedExtraction) => {
@@ -1612,98 +1609,96 @@ async function processMessage(
     )
   }
 
-  // Primary dispatch — now via shared router. Keep logging same as before.
-  // Si clarify ya respondió (ask/reask/expired/cancel), no se despacha nada más.
-  // Si clarify resolvió, se despacha con la extracción corregida.
-  const routerDecision = !botAllowed
-    ? { dispatchedTo: 'none' as const, dispatchReason: 'none' as const }
-    : clarifyHandled
-    ? {
-        dispatchedTo: clarifyTo as 'clarify',
-        dispatchReason: clarifyReason as 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
-      }
-    : decideDispatch({
-        hasPendingExpense,
-        hasPendingAttendance,
-        hasPendingVoucher,
-        hasPendingOrder,
-        orderAwaiting,
-        flowConsumed,
-        interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,
-        inboundText,
-        extraction,
-        mediaConsumedByVoucher,
-        jevPending: buildJevPending(extraction),
-        clarifyAnsweredIntent,
-      })
-  const dispatchedTo: string = routerDecision.dispatchedTo
-  let dispatchReason: string = routerDecision.dispatchReason
-  if (!clarifyHandled && clarifyResolved) {
-    dispatchReason = clarifySuperseded ? 'clarify_superseded' : 'clarify_resolve'
+  const executeAction = async (action: TurnAction): Promise<void> => {
+    switch (action.kind) {
+      case 'clear_context':
+        switch (action.domain) {
+          case 'expense': await clearExpenseContext(supabaseAdmin(), conversation.id); break
+          case 'attendance': await clearAttendanceContext(supabaseAdmin(), conversation.id); break
+          case 'voucher': await clearVoucherContext(supabaseAdmin(), conversation.id); break
+          case 'clarify': await clearClarifyContext(supabaseAdmin(), conversation.id); break
+          case 'order': await clearOrderContext(supabaseAdmin(), conversation.id); break
+        }
+        break
+      case 'save_clarify':
+        await saveClarifyContext(supabaseAdmin(), conversation.id, action.state)
+        break
+      case 'reply_text':
+        bgTasks.push(sendClarifyText(action.text))
+        break
+      case 'reply_buttons':
+        bgTasks.push(
+          (async () => {
+            const ok = await sendClarifyQuestion(action.body, action.options)
+            if (!ok && action.clearOnFailure) {
+              await clearClarifyContext(supabaseAdmin(), conversation.id)
+            }
+          })(),
+        )
+        break
+      case 'run_expense':
+        pushExpenseTask(action.extraction ?? undefined)
+        break
+      case 'run_attendance':
+        pushAttendanceTask(action.extraction ?? undefined)
+        break
+      case 'run_order':
+        pushPedidoTask()
+        break
+      case 'run_assistant':
+        bgTasks.push(
+          runAssistantForWebhook({
+            accountId,
+            conversationId: conversation.id,
+            contactId: contactRecord.id,
+            userId: configOwnerUserId,
+            text: action.text,
+            phone: message.from,
+            messageId: message.id,
+            extraction: action.extraction,
+            conversationContext: contextText,
+          }).catch((err) => console.error('[assistant] dispatch error:', err)),
+        )
+        break
+      case 'run_voucher_text':
+        bgTasks.push(
+          processVoucherText({
+            messageId: message.id,
+            contactId: contactRecord.id,
+            conversationId: conversation.id,
+            accountId,
+            userId: configOwnerUserId,
+            clientName: action.clientName,
+            destName: action.destName,
+            metodoPago: action.metodoPago,
+            monto: action.monto,
+            fecha: action.fecha,
+          }).catch((err) => console.error('[voucher-text] error:', err)),
+        )
+        break
+      case 'run_voucher_message_text':
+        bgTasks.push(
+          processVoucherMessage({
+            message: { id: message.id, from: message.from, type: 'text', text: action.text },
+            accessToken, accountId, userId: configOwnerUserId,
+            contactId: contactRecord.id, conversationId: conversation.id,
+          }).catch((err) => console.error('[voucher] Text context error:', err)),
+        )
+        break
+      case 'store_voucher_pending_text':
+        bgTasks.push(
+          pushPendingText(supabaseAdmin(), conversation.id, action.text).catch((err) =>
+            console.error('[voucher] pushPendingText error:', err),
+          ),
+        )
+        break
+      case 'none':
+        break
+    }
   }
 
-  // Marca si algún handler va a responder; si al final nadie respondió y el
-  // mensaje era texto, mandamos el fallback conversacional "no entendí".
-  let responded = false
-
-  switch (dispatchedTo) {
-    case 'clarify':
-      console.log('[clarify] %s -> conversation=%s', dispatchReason, conversation.id)
-      responded = true
-      break
-    case 'expense':
-      console.log('[%s] dispatch -> conversation=%s', dispatchReason === 'pending_multiturn' ? 'expense' : dispatchReason === 'category_correction' ? 'expense' : 'expense', conversation.id)
-      pushExpenseTask(extraction ?? undefined)
-      responded = true
-      break
-    case 'attendance':
-      console.log('[attendance] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-      pushAttendanceTask(extraction ?? undefined)
-      responded = true
-      break
-    case 'voucher':
-      console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
-      break
-    case 'pedido':
-      console.log('[pedido] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-      pushPedidoTask()
-      responded = true
-      break
-    case 'assistant':
-      if (!hasPendingVoucher) {
-        const captionIsForcedVoucher = (message.type === 'image' || message.type === 'document')
-          && !!(message.image?.caption?.trim() || message.document?.caption?.trim())
-          && !/^[a-zA-Z]\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
-          && !/^[a-zA-Z](\s*,\s*[a-zA-Z])+\s*$/.test((message.image?.caption || message.document?.caption || '').trim())
-        if (captionIsForcedVoucher) {
-          console.log('[assistant] suppressed — image caption handled by voucher forcedCaption=%s', (message.image?.caption || message.document?.caption || '').trim().slice(0,60))
-          responded = true
-        } else {
-          console.log('[assistant] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
-          bgTasks.push(
-            runAssistantForWebhook({
-              accountId,
-              conversationId: conversation.id,
-              contactId: contactRecord.id,
-              userId: configOwnerUserId,
-              text: inboundText,
-              phone: message.from,
-              messageId: message.id,
-              extraction,
-              conversationContext: contextText,
-            }).catch((err) => console.error('[assistant] dispatch error:', err)),
-          )
-          responded = true
-        }
-      }
-      break
-    case 'flow':
-    case 'interactive':
-      responded = true
-      break
-    case 'none':
-    default:
-      break
+  for (const action of plan.actions) {
+    await executeAction(action)
   }
 
   // Auditoría: registrar la decisión del router en router_logs. Se hace
@@ -1720,17 +1715,11 @@ async function processMessage(
     flowConsumed,
     interactive: !!interactiveReplyId && !clarifyTapConsumed,
     hadContext: !!contextText,
-    extraction,
+    extraction: plan.extraction,
     dispatchedTo,
     dispatchReason,
     contextText,
-    contextFlags: {
-      expense: hasPendingExpense,
-      attendance: hasPendingAttendance,
-      voucher: hasPendingVoucher,
-      clarify: !!clarifyLoad?.state,
-      order: hasPendingOrder,
-    },
+    contextFlags: plan.contextFlags,
     interactiveReplyId,
     mediaConsumedByVoucher,
     whitelistAllowed: botAllowed,
@@ -1755,7 +1744,7 @@ async function processMessage(
         voucher: hasPendingVoucher,
         clarify: !!clarifyLoad?.state,
       },
-      extraction,
+      extraction: plan.extraction,
       contextText,
       dispatchedTo,
       dispatchReason,
@@ -1765,156 +1754,6 @@ async function processMessage(
       includeTerminal: dispatchedTo !== 'expense',
     }),
   )
-
-  // (El reset de contexto se maneja arriba como "context-command".)
-  if (botAllowed && !clarifyHandled) {
-    // ── VOUCHER POR TEXTO (sin imagen): efectivo o transferencia — dryRun ──
-    // Sin monto ("Jo pago en efectivo", "Jo pago en transferencia a Jorge"):
-    // se busca por nombre y se paga el total (1 factura) o se pregunta
-    // cuál (N facturas).
-    const montoVoucherText = extraction?.monto ?? null
-    const metodoVoucherText =
-      extraction?.metodo_pago === 'efectivo' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('efectivo'))
-        ? 'Efectivo' as const
-        : extraction?.metodo_pago === 'transferencia' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('transferencia'))
-          ? 'Transferencia' as const
-          : null
-    const isVoucherText =
-      !hasPendingVoucher &&
-      !flowConsumed &&
-      (!interactiveReplyId || clarifyResolved) &&
-      inboundText.trim() &&
-      extraction?.intent === 'voucher' &&
-      (montoVoucherText == null || montoVoucherText > 0) &&
-      !!extraction.proveedor &&
-      metodoVoucherText != null
-
-    if (isVoucherText) {
-      console.log('[voucher-text] dispatch metodo=%s client=%s destino=%s monto=%s -> conversation=%s', metodoVoucherText, extraction!.proveedor, extraction!.destino, montoVoucherText, conversation.id)
-      bgTasks.push(
-        processVoucherText({
-          messageId: message.id,
-          contactId: contactRecord.id,
-          conversationId: conversation.id,
-          accountId,
-          userId: configOwnerUserId,
-          clientName: extraction!.proveedor!,
-          destName: extraction!.destino ?? null,
-          metodoPago: metodoVoucherText,
-          monto: montoVoucherText,
-          fecha: extraction!.fecha ?? null,
-        }).catch((err) => console.error('[voucher-text] error:', err)),
-      )
-      responded = true
-    } else if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
-      // ── VOUCHER CONTEXT: solo consume el texto si parece respuesta a la
-      // aclaración (letra, número, "sí", factura, nombre). Una orden nueva
-      // con intent fuerte (gasto, asistencia, factura) la maneja su
-      // propio flujo (ya despachado arriba); si el voucher la consumiera,
-      // la orden se pierde y el usuario recibe un "No entendimos..." pegado.
-      const firstPendingCands = voucherCtx.pending.flatMap((p) => p.candidates)
-      const looksLikeReply = isVoucherClarificationReply(inboundText, firstPendingCands)
-      const strongNewIntent =
-        (extraction?.confianza === 'alta' || extraction?.confianza === 'media') &&
-        (extraction?.intent === 'gasto' ||
-          extraction?.intent === 'multi_expense' ||
-          extraction?.intent === 'factura' ||
-          extraction?.intent === 'asistencia_llegada' ||
-          extraction?.intent === 'asistencia_salida' ||
-          extraction?.intent === 'asistencia_estado')
-      if (looksLikeReply || !strongNewIntent) {
-        console.log('[voucher] text dispatch reply=%s -> conversation=%s', looksLikeReply, conversation.id)
-        bgTasks.push(
-          processVoucherMessage({
-            message: { id: message.id, from: message.from, type: 'text', text: inboundText },
-            accessToken, accountId, userId: configOwnerUserId,
-            contactId: contactRecord.id, conversationId: conversation.id,
-          }).catch((err) => console.error('[voucher] Text context error:', err))
-        )
-        responded = true
-      } else {
-        console.log('[voucher] text skipped (new %s order, pending kept) -> conversation=%s', extraction?.intent, conversation.id)
-      }
-    } else if (!flowConsumed && !interactiveReplyId && inboundText.trim() && !hasPendingVoucher) {
-      // Solo guardamos textos que PODRÍAN ser nombre/monto/letra de un voucher
-      // (cortos, no pregunta, no orden fuerte). Antes se guardaba cualquier
-      // texto y el próximo voucher lo consumía como respuesta (contexto cruzado).
-      const strongOrder =
-        (extraction?.confianza === 'alta' || extraction?.confianza === 'media') &&
-        (extraction?.intent === 'gasto' ||
-          extraction?.intent === 'multi_expense' ||
-          extraction?.intent === 'factura' ||
-          extraction?.intent === 'voucher' ||
-          extraction?.intent === 'asistencia_llegada' ||
-          extraction?.intent === 'asistencia_salida' ||
-          extraction?.intent === 'asistencia_estado')
-      const couldBeVoucherRef =
-        inboundText.trim().length <= 40 &&
-        !/[?¿]/.test(inboundText) &&
-        !strongOrder
-      if (couldBeVoucherRef) {
-        console.log('[voucher] storing pending text -> conversation=%s', conversation.id)
-        bgTasks.push(
-          pushPendingText(supabaseAdmin(), conversation.id, inboundText).catch((err) =>
-            console.error('[voucher] pushPendingText error:', err),
-          )
-        )
-      }
-    }
-  }
-
-  // Aclaración resuelta a voucher pero sin datos suficientes para matchear
-  // (sin cliente): nunca terminar en silencio.
-  if (clarifyResolved && !responded && extraction?.intent === 'voucher') {
-    console.log('[clarify] resolved voucher without client -> conversation=%s', conversation.id)
-    bgTasks.push(
-      sendClarifyText(
-        'No pude registrar el pago. Pasame el nombre del cliente y el monto, por ejemplo: "Marlon pagó 65000 en efectivo".',
-      ).then(() => {}),
-    )
-    responded = true
-  }
-
-  // ── Fallback conversacional ──
-  // Garantiza que ningún mensaje de un número autorizado quede sin respuesta.
-  const hasUsableText = inboundText.trim().length > 0
-  if (
-    botAllowed &&
-    !responded &&
-    !clarifyHandled &&
-    !flowConsumed &&
-    !interactiveReplyId &&
-    hasUsableText &&
-    message.type === 'text'
-  ) {
-    console.log('[webhook] fallback no-entendi -> conversation=%s', conversation.id)
-    bgTasks.push(
-      engineSendText({
-        accountId, userId: configOwnerUserId,
-        conversationId: conversation.id, contactId: contactRecord.id,
-        text: 'No te entendí 🤔 ¿me repetís? Puedo registrar gastos, pagos/comprobantes o asistencias, y consultar saldos de clientes.',
-      }).then(() => {}).catch((err) => console.error('[webhook] fallback reply error:', err)),
-    )
-  } else if (
-    botAllowed &&
-    !responded &&
-    !clarifyHandled &&
-    !flowConsumed &&
-    !interactiveReplyId &&
-    !hasUsableText &&
-    !mediaConsumedByVoucher
-  ) {
-    // Media que no es voucher/gasto ni trae texto (sticker, video sin caption,
-    // tipo no soportado): nunca quedar mudo.
-    console.log('[webhook] fallback media-no-leida type=%s -> conversation=%s', message.type, conversation.id)
-    bgTasks.push(
-      engineSendText({
-        accountId, userId: configOwnerUserId,
-        conversationId: conversation.id, contactId: contactRecord.id,
-        text: 'No pude leer eso 🤔 Mandame el detalle por texto (ej: "gasté 5000 en luz") o una foto del comprobante.',
-      }).then(() => {}).catch((err) => console.error('[webhook] fallback media reply error:', err)),
-    )
-  }
 
   // ── Flows fallback (después del bot) ──
   // Flows está deshabilitado por defecto (poner FLOWS_ENABLED=true para

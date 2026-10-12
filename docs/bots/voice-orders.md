@@ -1,8 +1,11 @@
 # Voice Orders / Bot de pedidos
 
-> **Estado:** ✅ Activo — con UI en `/bot-beta`
-> Arquitectura general: [`architecture.md`](./architecture.md) §2
-> Este documento es la fuente viva del módulo (estado actual + mejoras pendientes).
+> **Estado:** ⚠️ Retirado del código vigente (referencia de 2026-10).
+> Este documento describe el pipeline anterior; no asumir que sus rutas,
+> herramientas o soporte de pedidos siguen desplegados. Ver la arquitectura
+> actual en [`architecture.md`](./architecture.md).
+> Arquitectura vigente: [`architecture.md`](./architecture.md) §6
+> Este documento conserva detalles del pipeline retirado; no es fuente de estado actual.
 
 **Propósito:** Toma pedidos por voz (audio) o texto vía WhatsApp, transcribe,
 parsea, resuelve precios a través de FacBal API y crea presupuestos/facturas.
