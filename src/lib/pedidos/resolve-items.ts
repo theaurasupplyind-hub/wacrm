@@ -2,7 +2,7 @@
 // bloquea con preguntas, elige el mejor candidato y anota los supuestos.
 // Usa el motor portado en `@/lib/precios`.
 
-import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim } from '@/lib/precios'
+import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim, parseQuery, ruleMatchScore } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule, Producto, PriceSuggestion } from '@/lib/precios'
 import type { ParsedOrderItem, PedidoItem } from './types'
 
@@ -94,8 +94,17 @@ export function resolveItems(args: {
 
     // 1. Regla matchea → precio de regla (primera, orden estable).
     if (ruleSugs.length > 0) {
-      const chosen = ruleSugs[0]
-      const rule = rulesByName.get(chosen.description) ?? null
+      // Con varias reglas, elegir la de MAYOR score de match (no la primera por
+      // orden): el motor agrega reglas espurias por el fallback de grosor.
+      const parsed = parseQuery(texto)
+      const ranked = ruleSugs
+        .map(s => {
+          const r = rulesByName.get(s.description) ?? null
+          return { s, rule: r, score: r ? ruleMatchScore(parsed, r).score : 0 }
+        })
+        .sort((a, b) => b.score - a.score)
+      const chosen = ranked[0].s
+      const rule = ranked[0].rule
       resolved.push({
         cantidad,
         categoria: rule?.baseCategoria || DEFAULT_CATEGORIA,
@@ -107,8 +116,8 @@ export function resolveItems(args: {
         regla_aplicada: chosen.description,
         asumido: null,
       })
-      if (ruleSugs.length > 1) {
-        const alt = ruleSugs.slice(1).map(s => s.description).join(', ')
+      if (ranked.length > 1) {
+        const alt = ranked.slice(1).map(r => r.s.description).join(', ')
         notaSupuestos.push(`${etiqueta(cantidad, texto)}: asumí la regla "${chosen.description}"; también aplicaba: ${alt}`)
       }
       total += chosen.price * cantidad

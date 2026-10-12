@@ -9,6 +9,7 @@ import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import {
   Bell,
+  BookMarked,
   Bot,
   Bug,
   Crown,
@@ -104,6 +105,7 @@ const navItems: NavItem[] = [
   { href: "/agents", label: "AI Agents", icon: Bot },
   { href: "/voucher-debug", label: "Voucher Debug", icon: Bug },
   { href: "/bot-debug", label: "Bot Debug", icon: FlaskConical },
+  { href: "/glosario", label: "Glosario", icon: BookMarked },
   { href: "/bot-flow", label: "Bot Flow", icon: Network, beta: true },
   { href: "/bot-beta", label: "Bot Beta", icon: FlaskConical, beta: true },
 ];

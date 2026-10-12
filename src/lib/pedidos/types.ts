@@ -39,5 +39,11 @@ export interface OrderContext {
   notaSupuestos: string[]
   /** True cuando el usuario confirmó pero falta el nombre del cliente. */
   awaitingCliente?: boolean
+  /**
+   * True mientras esperamos que el usuario explique un término desconocido
+   * (glosario). Guarda los términos y el texto original del pedido para
+   * re-resolver cuando responda.
+   */
+  awaitingGlossary?: { terms: string[]; orderText: string } | null
   updatedAt?: number | null
 }

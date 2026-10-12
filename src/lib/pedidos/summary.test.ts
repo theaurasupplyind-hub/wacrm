@@ -5,23 +5,25 @@ import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalog
 import type { OrderContext } from './types'
 
 describe('classifyOrderReply', () => {
-  it('detecta confirmaciones', () => {
-    for (const t of ['sí', 'si', 'dale', 'confirmar', 'ok', 'listo']) {
+  it('detecta confirmaciones (incluye frases compuestas)', () => {
+    for (const t of ['sí', 'si', 'dale', 'confirmar', 'ok', 'listo', 'si confirmo', 'ok listo, confirmo', 'dale confirmá', 'confirmo el pedido', 'de acuerdo']) {
       expect(classifyOrderReply(t)).toBe('confirm')
     }
   })
   it('detecta cancelaciones', () => {
-    for (const t of ['no', 'cancelar', 'dejalo', 'anular']) {
+    for (const t of ['no', 'cancelar', 'dejalo', 'anular', 'no, nada', 'no gracias']) {
       expect(classifyOrderReply(t)).toBe('cancel')
     }
   })
-  it('el resto es corrección', () => {
-    expect(classifyOrderReply('el 2 sin tela')).toBe('other')
+  it('el resto es corrección (aunque empiece con si/no)', () => {
+    for (const t of ['el 2 sin tela', 'si, el 2 sin tela', 'no, sacá el 3']) {
+      expect(classifyOrderReply(t)).toBe('other')
+    }
   })
 })
 
 describe('buildOrderSummary', () => {
-  it('lista ítems, total y faltantes', () => {
+  it('lista ítems, total y faltantes; NO muestra los supuestos (van a la traza)', () => {
     const ctx: OrderContext = {
       stage: 'confirming',
       items: [
@@ -31,7 +33,7 @@ describe('buildOrderSummary', () => {
       clienteNombre: 'Juan',
       total: 90000,
       faltantes: ['acrilico 94x81'],
-      notaSupuestos: [],
+      notaSupuestos: ['"67x92 sin tela": asumí la regla "Sin Tela"; también aplicaba: Cambio de Tela'],
     }
     const text = buildOrderSummary(ctx)
     expect(text).toContain('TOTAL')
@@ -39,6 +41,9 @@ describe('buildOrderSummary', () => {
     expect(text).toContain('acrilico 94x81')
     expect(text).toContain('Juan')
     expect(text).toContain('¿Confirmás?')
+    // El "Asumí" no debe aparecer en el chat (queda en order_context / traza).
+    expect(text).not.toContain('Asumí')
+    expect(text).not.toContain('Cambio de Tela')
   })
 })
 
