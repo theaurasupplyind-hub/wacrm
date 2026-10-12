@@ -3,7 +3,8 @@
 // regex si el LLM falla.
 
 import { callOpenRouter } from '@/lib/ai/openrouter'
-import type { OrderContext, ParsedOrder, ParsedOrderItem } from './types'
+import { parseDeliveryDate, serializeFechaEntrega } from './dates'
+import type { OrderContext, ParsedOrder, ParsedOrderItem, TipoEntrega } from './types'
 
 const ORDER_MODEL = 'google/gemini-2.5-flash-lite'
 
@@ -11,7 +12,9 @@ const SYSTEM_PROMPT = `Sos un extractor de pedidos de una fábrica de bastidores
 
 {
   "cliente": string|null,
-  "items": [ { "cantidad": number, "texto": string } ]
+  "items": [ { "cantidad": number, "texto": string } ],
+  "tipo_entrega": "Retira"|"Envio"|"Retiro y Envio"|null,
+  "fecha_entrega": string|null
 }
 
 Reglas:
@@ -23,14 +26,16 @@ Reglas:
 - Medidas sin categoría quedan tal cual (la categoría por defecto se resuelve después).
 - NO inventes precios ni medidas.
 - cliente: sólo el nombre si aparece explícito ("para Juan", "a Joaquín", "hacele a Matías"); si no, null.
+- tipo_entrega: sólo si el usuario lo dice ("retira", "envío", "lo paso a buscar", "te lo mando") → "Retira" | "Envio" | "Retiro y Envio"; si no, null.
+- fecha_entrega: sólo si el usuario menciona una fecha de entrega, devolvé el texto tal cual lo dijo (ej: "el viernes", "15/11", "la semana que viene"); si no, null. NO la confundas con medidas.
 - Si te paso "pedido_actual" y el mensaje es una CORRECCIÓN, devolvé la lista COMPLETA actualizada (incluyendo los ítems sin cambios). Si es un pedido nuevo, ignorá "pedido_actual".
 
 Ejemplos:
-"embastame una pintura 94x81" → {"cliente":null,"items":[{"cantidad":1,"texto":"pintura 94x81"}]}
-"5 bastidores 60x40, 3 de 60x70 y uno de 90x10" → {"cliente":null,"items":[{"cantidad":5,"texto":"bastidor 60x40"},{"cantidad":3,"texto":"bastidor 60x70"},{"cantidad":1,"texto":"bastidor 90x10"}]}
-"56 x 78, 89 x 67, 67 x 56 sin tela" → {"cliente":null,"items":[{"cantidad":1,"texto":"56x78 sin tela"},{"cantidad":1,"texto":"89x67 sin tela"},{"cantidad":1,"texto":"67x56 sin tela"}]}
-"hacele a Matías 2 de 60x40 sin tela" → {"cliente":"Matías","items":[{"cantidad":2,"texto":"60x40 sin tela"}]}
-"en vez de 60x40 poné 60x50" (pedido_actual: 60x40) → {"cliente":null,"items":[{"cantidad":1,"texto":"60x50"}]}`
+"embastame una pintura 94x81" → {"cliente":null,"items":[{"cantidad":1,"texto":"pintura 94x81"}],"tipo_entrega":null,"fecha_entrega":null}
+"5 bastidores 60x40, 3 de 60x70 y uno de 90x10" → {"cliente":null,"items":[{"cantidad":5,"texto":"bastidor 60x40"},{"cantidad":3,"texto":"bastidor 60x70"},{"cantidad":1,"texto":"bastidor 90x10"}],"tipo_entrega":null,"fecha_entrega":null}
+"56 x 78, 89 x 67, 67 x 56 sin tela" → {"cliente":null,"items":[{"cantidad":1,"texto":"56x78 sin tela"},{"cantidad":1,"texto":"89x67 sin tela"},{"cantidad":1,"texto":"67x56 sin tela"}],"tipo_entrega":null,"fecha_entrega":null}
+"hacele a Matías 2 de 60x40 sin tela" → {"cliente":"Matías","items":[{"cantidad":2,"texto":"60x40 sin tela"}],"tipo_entrega":null,"fecha_entrega":null}
+"en vez de 60x40 poné 60x50" (pedido_actual: 60x40) → {"cliente":null,"items":[{"cantidad":1,"texto":"60x50"}],"tipo_entrega":null,"fecha_entrega":null}`
 
 function buildUserMessage(text: string, context?: OrderContext | null): string {
   if (context && context.items && context.items.length > 0) {
@@ -59,7 +64,12 @@ function parseCantidad(value: unknown): number {
 }
 
 function parseOrderJson(raw: string): ParsedOrder {
-  const parsed = JSON.parse(raw) as { cliente?: unknown; items?: unknown }
+  const parsed = JSON.parse(raw) as {
+    cliente?: unknown
+    items?: unknown
+    tipo_entrega?: unknown
+    fecha_entrega?: unknown
+  }
   const cliente = typeof parsed.cliente === 'string' && parsed.cliente.trim() ? parsed.cliente.trim() : null
   const rawItems = Array.isArray(parsed.items) ? parsed.items : []
   const items: ParsedOrderItem[] = []
@@ -70,7 +80,22 @@ function parseOrderJson(raw: string): ParsedOrder {
     if (!texto) continue
     items.push({ cantidad: parseCantidad(obj.cantidad), texto })
   }
-  return { cliente, items }
+
+  const tipoRaw = typeof parsed.tipo_entrega === 'string' ? parsed.tipo_entrega.trim() : ''
+  const tipoEntrega: TipoEntrega | null =
+    tipoRaw === 'Retira' || tipoRaw === 'Envio' || tipoRaw === 'Retiro y Envio'
+      ? tipoRaw
+      : null
+
+  const fechaTexto = typeof parsed.fecha_entrega === 'string' ? parsed.fecha_entrega.trim() : ''
+  const fecha = fechaTexto ? parseDeliveryDate(fechaTexto) : null
+
+  return {
+    cliente,
+    items,
+    tipoEntrega,
+    fechaEntrega: fecha ? serializeFechaEntrega(fecha) : null,
+  }
 }
 
 // ── Fallback regex ──

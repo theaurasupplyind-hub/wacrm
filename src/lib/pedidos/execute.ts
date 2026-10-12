@@ -5,7 +5,7 @@ import {
   nextInvoiceNumber,
   type InvoiceCreatedResult,
 } from '@/lib/facbal/client'
-import type { PedidoItem } from './types'
+import type { DescuentoState, PedidoItem, TipoEntrega } from './types'
 
 export interface ExecutePedidoResult {
   invoice: InvoiceCreatedResult
@@ -27,16 +27,28 @@ function cotizables(items: PedidoItem[]): PedidoItem[] {
   return items.filter(it => !it.faltante && it.precio_unitario != null)
 }
 
+/** Suma de los ítems cotizables (sin descuento). */
+export function pedidoItemsNeto(items: PedidoItem[]): number {
+  return cotizables(items).reduce((sum, it) => sum + it.cantidad * (it.precio_unitario ?? 0), 0)
+}
+
 /**
  * Crea el PRESUPUESTO en backend_gal. Defaults de galv2: envio=0,
  * tipo_entrega='Retira', estado_kanban='PEDIDO', user_id=0, tipo='PRESUPUESTO'.
- * El cliente se busca por nombre; si no existe se crea.
+ *
+ * Si el flujo ya resolvió el cliente (`clienteId`), se usa directo; si no, se
+ * busca por nombre y se crea cuando no existe. El descuento se manda como un
+ * ítem `DESCUENTO` negativo (igual que galv2).
  */
 export async function executePedido(args: {
   clienteNombre: string | null
+  clienteId?: number | null
   items: PedidoItem[]
   senderPhone?: string | null
   fecha?: string
+  tipoEntrega?: TipoEntrega
+  fechaEntrega?: string
+  descuento?: DescuentoState | null
 }): Promise<ExecutePedidoResult> {
   const validos = cotizables(args.items)
   if (validos.length === 0) {
@@ -44,10 +56,12 @@ export async function executePedido(args: {
   }
 
   const nombreIngresado = (args.clienteNombre || '').trim()
-  let clienteId: number | null = null
+  let clienteId: number | null = args.clienteId ?? null
   let clienteNombre = nombreIngresado || 'Consumidor Final'
 
-  if (nombreIngresado) {
+  if (clienteId != null) {
+    // Cliente ya elegido/confirmado por el flujo: no re-buscamos.
+  } else if (nombreIngresado) {
     try {
       const existing = await searchClients(nombreIngresado, args.senderPhone || undefined)
       if (existing) {
@@ -78,7 +92,19 @@ export async function executePedido(args: {
       total: it.cantidad * precio,
     }
   })
-  const total = itemsPayload.reduce((sum, it) => sum + it.total, 0)
+
+  const neto = itemsPayload.reduce((sum, it) => sum + it.total, 0)
+  let total = neto
+  if (args.descuento && args.descuento.amount > 0) {
+    const amount = Math.min(Math.round(args.descuento.amount), Math.round(neto))
+    itemsPayload.push({
+      cantidad: 1,
+      descripcion: 'DESCUENTO',
+      precio_unitario: -amount,
+      total: -amount,
+    })
+    total = neto - amount
+  }
 
   const invoice = await createInvoice({
     numero_factura: nextNum,
@@ -92,7 +118,8 @@ export async function executePedido(args: {
     envio: 0,
     tipo: 'PRESUPUESTO',
     user_id: 0,
-    tipo_entrega: 'Retira',
+    tipo_entrega: args.tipoEntrega || 'Retira',
+    fecha_entrega: args.fechaEntrega || '',
     estado_kanban: 'PEDIDO',
   })
 

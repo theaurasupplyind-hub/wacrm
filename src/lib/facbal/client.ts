@@ -534,6 +534,13 @@ export interface FacbalClient {
   estudiante: string | null
   lat: number | null
   lng: number | null
+  /** Último tipo de entrega elegido (galv2 lo restaura al elegir el cliente). */
+  ultimo_tipo_entrega?: string | null
+}
+
+export interface ClientMatch {
+  client: FacbalClient
+  score: number
 }
 
 function normalizeText(s: string): string {
@@ -556,6 +563,25 @@ export async function searchClients(
   nombre: string,
   telefono?: string,
 ): Promise<FacbalClient | null> {
+  const matches = await findClientMatches(nombre, telefono, { limit: 1, minScore: 0.3 })
+  return matches[0]?.client ?? null
+}
+
+/**
+ * Devuelve hasta `limit` clientes candidatos ordenados por score, con un piso
+ * `minScore`. Se usa para *confirmar* con el usuario antes de vincular (evita
+ * duplicados): el bot muestra el/los candidatos y el usuario elige.
+ */
+export async function findClientMatches(
+  nombre: string,
+  telefono?: string,
+  opts: { limit?: number; minScore?: number } = {},
+): Promise<ClientMatch[]> {
+  const limit = opts.limit ?? 5
+  const minScore = opts.minScore ?? 0.45
+  const nombreTrim = (nombre || '').trim()
+  if (!nombreTrim && !telefono) return []
+
   const url = `${apiUrl()}/clients`
   const res = await fetch(url, {
     headers: { ...apiKeyHeader() },
@@ -568,24 +594,23 @@ export async function searchClients(
     )
   }
   const data = await res.json() as FacbalClient[]
-  if (!Array.isArray(data)) return null
+  if (!Array.isArray(data)) return []
 
-  // Score all clients
+  const cleanPhone = (telefono || '').replace(/\D/g, '')
   const scored = data.map(c => {
-    let score = similarity(c.nombre, nombre)
-    // Bonus for phone match
-    if (telefono && c.telefono) {
-      const cleanPhone = telefono.replace(/\D/g, '')
-      const cleanCP = c.telefono.replace(/\D/g, '')
-      if (cleanCP.includes(cleanPhone) || cleanPhone.includes(cleanCP)) {
-        score += 0.3
-      }
+    let score = nombreTrim ? similarity(c.nombre, nombreTrim) : 0
+    // Bonus fuerte si el teléfono coincide (mismo número = mismo cliente).
+    if (cleanPhone && c.telefono) {
+      const cp = c.telefono.replace(/\D/g, '')
+      if (cp && (cp.includes(cleanPhone) || cleanPhone.includes(cp))) score += 0.5
     }
     return { client: c, score }
   })
 
-  scored.sort((a, b) => b.score - a.score)
-  return scored.length > 0 && scored[0].score > 0.3 ? scored[0].client : null
+  return scored
+    .filter(m => m.score > minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
 }
 
 export async function createClient(data: {

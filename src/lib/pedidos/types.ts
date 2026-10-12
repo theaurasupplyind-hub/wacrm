@@ -7,10 +7,36 @@ export interface ParsedOrderItem {
   texto: string
 }
 
+/** Tipo de entrega (mismos valores que galv2 / backend_gal). */
+export type TipoEntrega = 'Retira' | 'Envio' | 'Retiro y Envio'
+
+/** Descuento tal como lo devuelve el parseo (sin monto calculado todavía). */
+export interface ParsedDescuento {
+  mode: 'amount' | 'percent'
+  value: number
+}
+
+/** Descuento ya resuelto: `amount` es el monto final a restar. */
+export interface DescuentoState extends ParsedDescuento {
+  amount: number
+}
+
+/** Cliente candidato del catálogo (para confirmar antes de vincular). */
+export interface ClienteCandidato {
+  id: number
+  nombre: string
+  telefono: string | null
+  score: number
+}
+
 /** Resultado del parseo de un pedido (antes de resolver precios). */
 export interface ParsedOrder {
   cliente: string | null
   items: ParsedOrderItem[]
+  /** Datos de entrega/descuento si el usuario los mencionó en el mensaje. */
+  tipoEntrega?: TipoEntrega | null
+  fechaEntrega?: string | null
+  descuento?: ParsedDescuento | null
 }
 
 /** Ítem ya resuelto con precio (o marcado como faltante). */
@@ -34,11 +60,34 @@ export interface OrderContext {
   stage: 'confirming'
   items: PedidoItem[]
   clienteNombre: string | null
+  /**
+   * Cliente vinculado. `undefined` = todavía no se resolvió (hay que buscar
+   * candidatos); `null` = confirmado como cliente nuevo (se crea al ejecutar).
+   */
+  clienteId?: number | null
+  /** Candidatos del catálogo cuando el nombre es ambiguo (para elegir). */
+  clienteCandidatos?: ClienteCandidato[]
+  tipoEntrega?: TipoEntrega
+  /** JSON `{"desde","hasta","extras"}` (D/M/AAAA) o '' si no hay fecha. */
+  fechaEntrega?: string
+  /**
+   * `undefined` = todavía no se preguntó; `null` = sin descuento; objeto = hay
+   * descuento.
+   */
+  descuento?: DescuentoState | null
   total: number
   faltantes: string[]
   notaSupuestos: string[]
   /** True cuando el usuario confirmó pero falta el nombre del cliente. */
   awaitingCliente?: boolean
+  /** True cuando mostramos candidatos de cliente y esperamos la elección. */
+  awaitingClienteChoice?: boolean
+  /** True cuando esperamos el tipo de entrega (Retira/Envío/Ret+Env). */
+  awaitingEntrega?: boolean
+  /** True cuando esperamos la fecha de entrega. */
+  awaitingFecha?: boolean
+  /** True cuando esperamos el descuento (monto, % o "no"). */
+  awaitingDescuento?: boolean
   /**
    * True mientras esperamos que el usuario explique un término desconocido
    * (glosario). Guarda los términos y el texto original del pedido para

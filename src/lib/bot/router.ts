@@ -10,6 +10,7 @@ export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'pedido' | 'fl
 export type DispatchReason =
   | 'pending_multiturn'
   | 'pending_expired'
+  | 'pending_field'
   | 'category_correction'
   | 'clarify_resolve'
   | 'clarify_superseded'
@@ -48,6 +49,12 @@ export interface RouterState {
   hasPendingVoucher: boolean
   /** Hay un pedido en `order_context` esperando confirmación/corrección. */
   hasPendingOrder?: boolean
+  /**
+   * El pedido pendiente está esperando un dato puntual (nombre de cliente,
+   * tipo de entrega, fecha o descuento). Fuerza el ruteo a `pedido` para que la
+   * respuesta corta ("envío", "10%", "no") no se la lleve otro dominio.
+   */
+  orderAwaiting?: boolean
   flowConsumed: boolean
   interactiveReplyId: string | null
   inboundText: string
@@ -85,7 +92,7 @@ function resolveClarifyIntent(intent: BotIntent): RouterDecision {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, orderAwaiting, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -95,6 +102,9 @@ export function decideDispatch(state: RouterState): RouterDecision {
   // interactivo y del fallback regex para no re-clasificar el título del botón.
   if (clarifyAnsweredIntent) return resolveClarifyIntent(clarifyAnsweredIntent)
   if (interactiveReplyId) return { dispatchedTo: 'interactive', dispatchReason: 'consumed' }
+  // Un campo del pedido (cliente/entrega/fecha/descuento) que estamos
+  // esperando: gana a cualquier intent para que la respuesta corta no se vaya.
+  if (orderAwaiting) return { dispatchedTo: 'pedido', dispatchReason: 'pending_field' }
 
   // Primary dispatch — mirrors webhook route.ts
   if (!flowConsumed && !interactiveReplyId && isCategoryCorrectionCommand(inboundText)) {

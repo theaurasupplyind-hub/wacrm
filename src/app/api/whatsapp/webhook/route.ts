@@ -995,6 +995,16 @@ async function processMessage(
   // Cargar estado de pedido (order_context) para el flujo de presupuestos.
   const orderCtx = await loadOrderContext(supabaseAdmin(), conversation.id)
   const hasPendingOrder = isOrderContextActive(orderCtx)
+  // El pedido está esperando un dato puntual (cliente/entrega/fecha/descuento):
+  // la respuesta corta debe ir al pedido y no a otro dominio.
+  const orderAwaiting =
+    hasPendingOrder &&
+    !!orderCtx &&
+    (!!orderCtx.awaitingCliente ||
+      !!orderCtx.awaitingClienteChoice ||
+      !!orderCtx.awaitingEntrega ||
+      !!orderCtx.awaitingFecha ||
+      !!orderCtx.awaitingDescuento)
 
   // Aclaración pendiente (bot conversacional). La resolución corre después
   // del extractor; los ids de botón se separan ya para que expense/attendance
@@ -1189,6 +1199,31 @@ async function processMessage(
             })
           } catch (err) {
             console.error('[attendance] Confirm reply error:', err)
+          }
+        })()
+      )
+    } else if (hasPendingOrder && interactiveReplyId.startsWith('pedido_')) {
+      // Botones del flujo de pedidos (cliente / tipo de entrega): el contexto
+      // los resuelve. Se consumen acá para que ningún otro dominio se los lleve.
+      interactiveConsumed = true
+      bgTasks.push(
+        (async () => {
+          try {
+            await processPedidoMessage({
+              db: supabaseAdmin(),
+              text: contentText ?? '',
+              interactiveReplyId,
+              accountId,
+              userId: configOwnerUserId,
+              conversationId: conversation.id,
+              contactId: contactRecord.id,
+              senderPhone: message.from,
+              senderName: contactName,
+              accessToken,
+              messageId: message.id,
+            })
+          } catch (err) {
+            console.error('[pedido] Button error:', err)
           }
         })()
       )
@@ -1592,6 +1627,7 @@ async function processMessage(
         hasPendingAttendance,
         hasPendingVoucher,
         hasPendingOrder,
+        orderAwaiting,
         flowConsumed,
         interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,
         inboundText,

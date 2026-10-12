@@ -1,11 +1,12 @@
-import type { OrderContext } from './types'
+import type { DescuentoState, OrderContext, TipoEntrega } from './types'
+import { formatFechaEntregaDisplay } from './dates'
 
 function money(n: number): string {
   return `$${n.toLocaleString('es-AR')}`
 }
 
-/** Arma el resumen del pedido que se le muestra al usuario (asumir y corregir). */
-export function buildOrderSummary(ctx: OrderContext): string {
+/** Bloque de ítems + TOTAL (sin datos de entrega ni confirmación). */
+function buildItemsBlock(ctx: OrderContext): string[] {
   const lines: string[] = ['Voy a armar este presupuesto:']
   const cotizables = ctx.items.filter(it => !it.faltante)
   cotizables.forEach((it, i) => {
@@ -18,19 +19,58 @@ export function buildOrderSummary(ctx: OrderContext): string {
   lines.push('')
   lines.push(`TOTAL: ${money(ctx.total)}`)
 
-  // Nota: los supuestos (notaSupuestos) NO se muestran en el chat; quedan en
-  // `order_context` y en la traza (bot_traces) para ver la cadena de decisión.
-
   if (ctx.faltantes.length > 0) {
     lines.push('')
     lines.push('Sin cotizar (los cotizamos a mano):')
     for (const f of ctx.faltantes) lines.push(`• ${f}`)
   }
 
-  if (ctx.clienteNombre) lines.push(`\nCliente: ${ctx.clienteNombre}`)
+  return lines
+}
 
-  lines.push('')
-  lines.push('¿Confirmás? (sí / corregí lo que quieras)')
+function buildDeliveryBlock(ctx: OrderContext): string[] {
+  const lines: string[] = []
+  if (ctx.clienteNombre) lines.push(`Cliente: ${ctx.clienteNombre}`)
+  if (ctx.tipoEntrega) lines.push(`Entrega: ${ctx.tipoEntrega}`)
+  const fecha = formatFechaEntregaDisplay(ctx.fechaEntrega)
+  if (fecha) lines.push(`Fecha de entrega: ${fecha}`)
+  if (ctx.descuento) {
+    const label = ctx.descuento.mode === 'percent' ? `${ctx.descuento.value}%` : money(ctx.descuento.value)
+    lines.push(`Descuento: ${label} (resta ${money(ctx.descuento.amount)})`)
+  }
+  return lines
+}
+
+/**
+ * Arma el resumen del pedido. Con `confirm` (default) cierra con la pregunta
+ * de confirmación; durante la recolección de datos se usa `confirm: false` y
+ * un `prompt` con la siguiente pregunta.
+ */
+export function buildOrderSummary(
+  ctx: OrderContext,
+  opts: { confirm?: boolean; prompt?: string } = {},
+): string {
+  const confirm = opts.confirm ?? true
+  const lines = buildItemsBlock(ctx)
+
+  const delivery = buildDeliveryBlock(ctx)
+  if (delivery.length > 0) {
+    lines.push('')
+    lines.push(...delivery)
+  }
+
+  // Nota: los supuestos (notaSupuestos) NO se muestran en el chat; quedan en
+  // `order_context` y en la traza (bot_traces) para ver la cadena de decisión.
+
+  if (opts.prompt) {
+    lines.push('')
+    lines.push(opts.prompt)
+  }
+
+  if (confirm) {
+    lines.push('')
+    lines.push('¿Confirmás? (sí / corregí lo que quieras)')
+  }
   return lines.join('\n')
 }
 
@@ -79,4 +119,65 @@ export function classifyOrderReply(text: string): PedidoReply {
   }
   if (significant.every(t => CONFIRM_WORDS.has(t))) return 'confirm'
   return 'other'
+}
+
+/** Interpreta la respuesta de tipo de entrega ("retira", "envío", "las dos"). */
+export function classifyEntrega(text: string): TipoEntrega | null {
+  const t = normalizeCmd(text)
+  if (!t) return null
+  const both =
+    /ret\+?\s*env/.test(t) || /\b(?:las dos|los dos|ambas|ambos)\b/.test(t)
+  const ret =
+    /\bret(?:ira|iro|irar|iralo|iramos)\b/.test(t) ||
+    /\bpaso a (?:buscar|retirar)\b/.test(t)
+  const env =
+    /\benvi(?:o|os|ar|a|alo|arlo|amos)\b/.test(t) ||
+    /\bmand(?:o|as|a|ar|arlo|alo|amos)\b/.test(t)
+  if (both || (ret && env)) return 'Retiro y Envio'
+  if (env) return 'Envio'
+  if (ret) return 'Retira'
+  return null
+}
+
+/** Clasifica una respuesta sí/no (para confirmar el cliente candidato). */
+export function classifyYesNo(text: string): 'yes' | 'no' | null {
+  const t = normalizeCmd(text)
+  if (!t) return null
+  const yes = /\b(si|sisi|s|claro|correcto|ese|esa|es ese|exacto|afirmativo)\b/.test(t)
+  const no = /\b(no|nop|nope|otro|otra|ninguno|ninguna|nuevo|nueva)\b/.test(t)
+  if (yes && !no) return 'yes'
+  if (no && !yes) return 'no'
+  return null
+}
+
+const SKIP_DESCUENTO_RE = /\b(no|nada|ninguno|ninguna|sin descuento|saltear|salteo|omitir|despues|luego|paso)\b/
+
+/**
+ * Interpreta la respuesta del descuento. Devuelve:
+ *  - `'skip'` si el usuario dijo que no
+ *  - un `DescuentoState` si dio monto o porcentaje
+ *  - `null` si no se entiende
+ */
+export function parseDescuento(text: string, baseTotal: number): DescuentoState | 'skip' | null {
+  const t = normalizeCmd(text)
+  if (!t) return null
+  if (SKIP_DESCUENTO_RE.test(t) && !/\d/.test(t)) return 'skip'
+
+  const pct = t.match(/(\d+(?:[.,]\d+)?)\s*%/)
+  if (pct) {
+    const value = parseFloat(pct[1].replace(',', '.'))
+    if (Number.isFinite(value) && value > 0 && value <= 100) {
+      return { mode: 'percent', value, amount: Math.round((baseTotal * value) / 100) }
+    }
+    return null
+  }
+
+  const amountRaw = t.match(/\$?\s*(\d+(?:[.,]\d+)?)/)
+  if (amountRaw) {
+    const value = parseFloat(amountRaw[1].replace(',', '.'))
+    if (!Number.isFinite(value)) return null
+    if (value <= 0) return 'skip'
+    return { mode: 'amount', value, amount: Math.round(value) }
+  }
+  return null
 }
