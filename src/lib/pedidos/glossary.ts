@@ -1,10 +1,13 @@
 // Glosario de términos de pedido (aprendido). Cuando el bot no entiende una
 // forma de nombrar un producto, pregunta y guarda el significado; en pedidos
 // futuros lo aplica solo (grosor o alias de texto).
+//
+// La clasificación/vocabulario vive en `classify-item.ts`; acá queda la
+// interpretación del término, su aplicación al texto y la persistencia.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { callOpenRouter } from '@/lib/ai/openrouter'
-import { normalizeText, singularize } from '@/lib/precios'
+import { normalizeText } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import type { ParsedOrderItem } from './types'
 
@@ -18,79 +21,12 @@ export interface OrderGlossaryEntry {
   meaning: GlossaryMeaning
 }
 
-export interface UnknownTerm {
-  term: string
-  itemIndex: number
-}
-
 /** Normaliza un término para comparar (minúsculas, sin acentos, espacios simples). */
 export function normalizeTerm(term: string): string {
   return normalizeText(term)
     .replace(/[^a-z0-9áéíóúñ\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-}
-
-// Palabras funcionales/genéricas que NO son términos a aclarar.
-const STOPWORDS = new Set([
-  'de', 'del', 'con', 'sin', 'para', 'y', 'e', 'a', 'el', 'la', 'los', 'las',
-  'un', 'una', 'unos', 'unas', 'en', 'por', 'cm', 'mm', 'mts', 'm', 'grosor',
-  'medida', 'tela', 'cuerpo', 'tipo', 'mas', 'menos', 'color', 'aprox',
-])
-
-const STOPWORDS_SING = new Set([...STOPWORDS].map(w => singularize(w)))
-
-/** Vocabulario conocido: categorías, variantes y reglas (más sus tokens). */
-export function buildKnownVocab(refs: PrecioReferencia[], rules: PricingRule[]): Set<string> {
-  const vocab = new Set<string>()
-  const add = (s: string) => {
-    for (const w of normalizeTerm(s).split(/\s+/)) {
-      if (!w) continue
-      vocab.add(w)
-      vocab.add(singularize(w))
-    }
-  }
-  for (const r of refs) {
-    add(r.categoria)
-    add(r.variante)
-  }
-  for (const rule of rules) {
-    add(rule.name)
-    for (const t of rule.matchTokens) add(t)
-  }
-  return vocab
-}
-
-/**
- * Detecta palabras del pedido que no pertenecen al vocabulario conocido ni al
- * glosario (candidatas a preguntar). Ignora medidas/números y palabras vacías.
- */
-export function detectUnknownTerms(
-  items: ParsedOrderItem[],
-  vocab: Set<string>,
-  glossary: OrderGlossaryEntry[] = [],
-): UnknownTerm[] {
-  const known = new Set(vocab)
-  for (const g of glossary) {
-    known.add(g.termNorm)
-    for (const w of g.termNorm.split(/\s+/)) known.add(w)
-  }
-
-  const out: UnknownTerm[] = []
-  const seen = new Set<string>()
-  items.forEach((it, itemIndex) => {
-    for (const w of normalizeTerm(it.texto).split(/\s+/)) {
-      if (!w || /\d/.test(w)) continue
-      if (w.length < 3) continue
-      if (STOPWORDS.has(w) || STOPWORDS_SING.has(singularize(w))) continue
-      const sing = singularize(w)
-      if (known.has(w) || known.has(sing)) continue
-      if (seen.has(w)) continue
-      seen.add(w)
-      out.push({ term: w, itemIndex })
-    }
-  })
-  return out
 }
 
 // ── Aplicación del glosario al texto del pedido ──
@@ -151,9 +87,6 @@ export function applyOrderGlossary(
   items: ParsedOrderItem[],
   glossary: OrderGlossaryEntry[],
 ): ParsedOrderItem[] {
-  if (glossary.length === 0) {
-    return items.map(it => ({ ...it, texto: applyOrderGlossaryText(it.texto, []) }))
-  }
   return items.map(it => ({ ...it, texto: applyOrderGlossaryText(it.texto, glossary) }))
 }
 

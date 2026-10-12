@@ -18,14 +18,8 @@ import {
 import { executePedido } from './execute'
 import { sendPedidoReceipt } from './send-receipt'
 import { buildOrderSummary, classifyOrderReply } from './summary'
-import {
-  applyOrderGlossary,
-  buildKnownVocab,
-  detectUnknownTerms,
-  loadGlossary,
-  parseGlossaryMeanings,
-  upsertGlossary,
-} from './glossary'
+import { applyOrderGlossary, loadGlossary, parseGlossaryMeanings, upsertGlossary } from './glossary'
+import { buildKnownVocab, detectUnknownTerms } from './classify-item'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import type { OrderContext, ParsedOrder } from './types'

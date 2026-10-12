@@ -6,15 +6,14 @@ import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalog
 const base = { refs: preciosReferencia, rules: pricingRules }
 
 describe('resolveItems', () => {
-  it('regla: pintura aplica +10% sobre Sin Tela', () => {
+  it('regla: pintura aplica +10% sobre Sin Tela (sin el artefacto Tapiz)', () => {
     const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'embastame una pintura 94x81' }] })
     const it = r.items[0]
     expect(it.faltante).toBe(false)
     expect(it.regla_aplicada).toBe('Pinturas')
     expect(it.precio_unitario).toBe(47000)
     expect(r.faltantes).toEqual([])
-    // Artefacto del motor: la regla "Tapiz" (trigger "ta") también matcheaba.
-    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(true)
+    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(false)
   })
 
   it('ambigüedad de variante: asume la primera sin preguntar', () => {
@@ -66,12 +65,24 @@ describe('resolveItems', () => {
     expect(r.items[0].faltante).toBe(true)
   })
 
-  it('varias reglas: toma la primera (orden estable) y anota las alternativas', () => {
+  it('el clasificador elige la regla correcta (sin el artefacto "Tapiz" del motor)', () => {
     const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'tapacanto 60x40' }] })
     const it = r.items[0]
     expect(it.regla_aplicada).toBe('Tapacanto')
     expect(it.precio_unitario).toBe(24000)
-    // "Tapiz" (trigger "ta") también matchea "tapacanto": se anota como alternativa.
-    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(true)
+    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(false)
+  })
+
+  it('unidad "cm" ya no rompe el match (clasificador → consulta canónica)', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'bastidor 60x94 cm' }] })
+    const it = r.items[0]
+    expect(it.faltante).toBe(false)
+    expect(it.categoria).toBe('BASTIDOR')
+    expect(it.precio_unitario).toBeGreaterThan(0)
+  })
+
+  it('medida no estándar sin variante: snap/perímetro (no faltante)', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'bastidor 25x45 cm' }] })
+    expect(r.items[0].faltante).toBe(false)
   })
 })

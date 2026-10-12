@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildKnownVocab,
-  detectUnknownTerms,
   applyOrderGlossary,
   applyOrderGlossaryText,
   normalizeTerm,
   type OrderGlossaryEntry,
 } from './glossary'
+import { buildKnownVocab, detectUnknownTerms } from './classify-item'
 import { resolveItems } from './resolve-items'
 import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalogo'
 

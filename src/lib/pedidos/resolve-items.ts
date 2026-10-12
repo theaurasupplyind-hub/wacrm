@@ -1,9 +1,14 @@
 // Resolución determinística de precios por ítem. "Asume y corrige": nunca
 // bloquea con preguntas, elige el mejor candidato y anota los supuestos.
-// Usa el motor portado en `@/lib/precios`.
+//
+// El "entendimiento" del texto lo hace `classify-item.ts` (vocabulario del
+// catálogo); al motor de precios se le pasa una consulta CANÓNICA
+// ("categoria medida variante regla"), así unidades/relleno/orden/sinónimos no
+// rompen el match de candidatos.
 
-import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim, parseQuery, ruleMatchScore } from '@/lib/precios'
+import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule, Producto, PriceSuggestion } from '@/lib/precios'
+import { buildKnownVocab, classifyItem } from './classify-item'
 import type { ParsedOrderItem, PedidoItem } from './types'
 
 const DEFAULT_CATEGORIA = 'BASTIDOR'
@@ -50,6 +55,7 @@ export function resolveItems(args: {
   const { items, refs, rules } = args
   const productos = refsToProductos(refs)
   const bounds = catalogBounds(refs)
+  const vocab = buildKnownVocab(refs, rules)
   const rulesByName = new Map(rules.map(r => [r.name, r]))
   const ruleNames = new Set(rules.map(r => r.name))
 
@@ -59,7 +65,7 @@ export function resolveItems(args: {
   let total = 0
 
   const pushFaltante = (cantidad: number, texto: string) => {
-    const item: PedidoItem = {
+    resolved.push({
       cantidad,
       categoria: DEFAULT_CATEGORIA,
       medida: null,
@@ -69,42 +75,37 @@ export function resolveItems(args: {
       descripcion: texto || '(sin descripción)',
       regla_aplicada: null,
       asumido: null,
-    }
-    resolved.push(item)
+    })
     faltantes.push(etiqueta(cantidad, texto || '(sin descripción)'))
   }
 
   for (const raw of items) {
     const cantidad = Number.isFinite(raw.cantidad) && raw.cantidad > 0 ? Math.floor(raw.cantidad) : 1
     const texto = (raw.texto || '').trim()
-    const dims = medidaFromText(texto)
+    const cls = classifyItem(texto, vocab)
 
-    if (!texto || !dims) {
+    if (!cls.medida) {
       pushFaltante(cantidad, texto)
       continue
     }
 
-    const rds = roundDim(dims.s)
-    const rdl = roundDim(dims.l)
-    const medidaPedida = `${dims.s} x ${dims.l}`
+    const { s, l } = cls.medida
+    const rds = roundDim(s)
+    const rdl = roundDim(l)
+    const medidaPedida = `${s} x ${l}`
+    const medidaCanonica = `${s} x ${l}${cls.grosor != null ? ` x ${cls.grosor}` : ''}`
+    const canonical = [cls.categoria, medidaCanonica, cls.variante, cls.regla?.name]
+      .filter(Boolean)
+      .join(' ')
 
-    const sugerencias = suggestPrice(texto, productos, rules)
-    const ruleSugs = sugerencias.filter(s => s.suggested && ruleNames.has(s.description))
-    const productSugs = sugerencias.filter(s => s.suggested && !ruleNames.has(s.description))
+    const sugerencias = suggestPrice(canonical, productos, rules)
+    const ruleSugs = sugerencias.filter(x => x.suggested && ruleNames.has(x.description))
+    const productSugs = sugerencias.filter(x => x.suggested && !ruleNames.has(x.description))
 
-    // 1. Regla matchea → precio de regla (primera, orden estable).
+    // 1. Regla (la elegida por el clasificador; o la sugerida por el motor).
     if (ruleSugs.length > 0) {
-      // Con varias reglas, elegir la de MAYOR score de match (no la primera por
-      // orden): el motor agrega reglas espurias por el fallback de grosor.
-      const parsed = parseQuery(texto)
-      const ranked = ruleSugs
-        .map(s => {
-          const r = rulesByName.get(s.description) ?? null
-          return { s, rule: r, score: r ? ruleMatchScore(parsed, r).score : 0 }
-        })
-        .sort((a, b) => b.score - a.score)
-      const chosen = ranked[0].s
-      const rule = ranked[0].rule
+      const chosen = (cls.regla && ruleSugs.find(x => x.description === cls.regla!.name)) || ruleSugs[0]
+      const rule = rulesByName.get(chosen.description) ?? cls.regla ?? null
       resolved.push({
         cantidad,
         categoria: rule?.baseCategoria || DEFAULT_CATEGORIA,
@@ -116,8 +117,8 @@ export function resolveItems(args: {
         regla_aplicada: chosen.description,
         asumido: null,
       })
-      if (ranked.length > 1) {
-        const alt = ranked.slice(1).map(r => r.s.description).join(', ')
+      if (!cls.regla && ruleSugs.length > 1) {
+        const alt = ruleSugs.filter(x => x !== chosen).map(x => x.description).join(', ')
         notaSupuestos.push(`${etiqueta(cantidad, texto)}: asumí la regla "${chosen.description}"; también aplicaba: ${alt}`)
       }
       total += chosen.price * cantidad
@@ -132,11 +133,11 @@ export function resolveItems(args: {
     // 2/3. Medida exacta: una sola variante o varias (asume la primera).
     if (chosen && isExact) {
       const exactVariantes = productSugs
-        .filter(s => {
-          const md = medidaFromText(s.basedOn || '')
+        .filter(x => {
+          const md = medidaFromText(x.basedOn || '')
           return md && md.s === rds && md.l === rdl
         })
-        .map(s => productFromBasedOn(s.basedOn, productos)?.variante || '')
+        .map(x => productFromBasedOn(x.basedOn, productos)?.variante || '')
         .filter(Boolean)
       const variantes = [...new Set(exactVariantes)]
       const variante = winnerProduct?.variante || variantes[0] || null
@@ -161,17 +162,17 @@ export function resolveItems(args: {
     }
 
     // 5. Medida por encima del máximo del catálogo (derivado, sin hardcodear).
-    const excedido = bounds && (dims.l > bounds.maxLadoMayor || dims.s > bounds.maxLadoMenor)
+    const excedido = bounds && (l > bounds.maxLadoMayor || s > bounds.maxLadoMenor)
     if (excedido) {
       const price = bounds!.maxPrecio
       resolved.push({
         cantidad,
-        categoria: DEFAULT_CATEGORIA,
+        categoria: cls.categoria,
         medida: medidaPedida,
         variante: null,
         precio_unitario: price,
         faltante: false,
-        descripcion: describe(DEFAULT_CATEGORIA, medidaPedida, null),
+        descripcion: describe(cls.categoria, medidaPedida, null),
         regla_aplicada: null,
         asumido: 'precio provisional (medida fuera de catálogo)',
         aRevisar: true,
@@ -185,7 +186,7 @@ export function resolveItems(args: {
 
     // 4. Candidatos por perímetro (sin exacto): el más cercano.
     if (chosen && winnerMedida) {
-      const categoria = winnerProduct?.categoria || DEFAULT_CATEGORIA
+      const categoria = winnerProduct?.categoria || cls.categoria
       const variante = winnerProduct?.variante || null
       resolved.push({
         cantidad,
