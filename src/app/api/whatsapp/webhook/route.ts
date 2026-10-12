@@ -1689,6 +1689,8 @@ async function processMessage(
               text: inboundText,
               phone: message.from,
               messageId: message.id,
+              extraction,
+              conversationContext: contextText,
             }).catch((err) => console.error('[assistant] dispatch error:', err)),
           )
           responded = true

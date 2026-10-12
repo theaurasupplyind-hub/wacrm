@@ -12,6 +12,7 @@ import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import { isPhoneAllowed } from '@/lib/bot/whitelist'
 import type { ChatMessage } from '@/lib/ai/types'
+import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 
 interface ProductionArgs {
   accountId: string
@@ -23,6 +24,10 @@ interface ProductionArgs {
   /** message_id real de Meta: permite enriquecer la MISMA traza/router_logs
    *  del webhook en vez de crear una fila duplicada por turno. */
   messageId?: string | null
+  /** Interpretación del webhook, pasada al agente como pista no vinculante. */
+  extraction?: UnifiedExtraction | null
+  /** Estado multi-turno legible construido por el webhook. */
+  conversationContext?: string | null
 }
 
 /**
@@ -130,6 +135,8 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
             knowledge.length > 0
               ? `${ASSISTANT_SYSTEM_PROMPT}\n\nCONOCIMIENTO:\n${knowledge.join('\n---\n')}`
               : ASSISTANT_SYSTEM_PROMPT,
+          extraction: args.extraction,
+          conversationContext: args.conversationContext,
           ctx: {
             db,
             accountId,
