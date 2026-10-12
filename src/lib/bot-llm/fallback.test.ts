@@ -44,9 +44,24 @@ describe('fallbackExtract', () => {
     expect(r.intent).toBe('otro')
   })
 
-  it('"compré 3 bastidores 60x40" NO es gasto → otro', () => {
+  it('"compré 3 bastidores 60x40" NO es gasto → pedido', () => {
     const r = fallbackExtract('compré 3 bastidores 60x40')
-    expect(r.intent).toBe('otro')
+    expect(r.intent).toBe('pedido')
+  })
+
+  it('lista de medidas → pedido (no multi_expense)', () => {
+    const r = fallbackExtract('56 x 78, 89 x 67, 67 x 56 sin tela')
+    expect(r.intent).toBe('pedido')
+  })
+
+  it('tapacanto con medida → pedido', () => {
+    const r = fallbackExtract('tapacanto 60x40')
+    expect(r.intent).toBe('pedido')
+  })
+
+  it('"compré 3 bastidores 60x40 a Joaquín por 30000" NO es pedido (gasto por proveedor+monto)', () => {
+    const r = fallbackExtract('compré 3 bastidores 60x40 a Joaquín por 30000')
+    expect(r.intent).not.toBe('pedido')
   })
 
   it('"compré pintura para el taller" SÍ es gasto', () => {

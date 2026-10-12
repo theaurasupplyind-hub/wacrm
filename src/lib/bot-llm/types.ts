@@ -6,6 +6,7 @@ export type BotIntent =
   | 'multi_expense'
   | 'voucher'
   | 'factura'
+  | 'pedido'
   | 'otro'
 
 export type Confidence = 'alta' | 'media' | 'baja'

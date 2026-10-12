@@ -1,12 +1,14 @@
 import type { ExpenseContextState } from '@/lib/expenses/types'
 import type { AttendanceContextState } from '@/lib/attendance/context'
 import type { VoucherContextState } from '@/lib/ai/voucher-context'
+import type { OrderContext } from '@/lib/pedidos/types'
 import type { ClarifyContextState } from './clarify-context'
 
 export interface BotContextInput {
   expenseCtx?: ExpenseContextState | null
   attendanceCtx?: AttendanceContextState | null
   voucherCtx?: VoucherContextState | null
+  orderCtx?: OrderContext | null
   clarifyCtx?: ClarifyContextState | null
 }
 
@@ -81,6 +83,19 @@ export function buildBotContextText(input: BotContextInput): string {
     const opciones = cc.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o.title}`).join(' · ')
     lines.push(
       `Aclaración pendiente: "${cc.question}" Opciones: ${opciones}. Si el mensaje responde a esto, devolvé el intent de la opción elegida.`,
+    )
+  }
+
+  const order = input.orderCtx
+  if (order && order.stage === 'confirming') {
+    const itemsTxt = order.items
+      .filter(it => !it.faltante)
+      .map((it, i) => `${i + 1}. ${it.cantidad > 1 ? `${it.cantidad}x ` : ''}${it.descripcion}`)
+      .join(' · ')
+    const falt = order.faltantes.length > 0 ? ` Sin cotizar: ${order.faltantes.join(', ')}.` : ''
+    const cliente = order.clienteNombre ? ` para ${order.clienteNombre}` : ''
+    lines.push(
+      `Pedido pendiente (presupuesto${cliente}): ${itemsTxt || '(sin ítems)'}. Total ${order.total}.${falt} El usuario puede confirmar ("sí"), cancelar ("no") o corregir ítems/medidas/variantes/precios: si el mensaje continúa el pedido, devolvé intent "pedido".`,
     )
   }
 

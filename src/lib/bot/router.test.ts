@@ -64,11 +64,78 @@ describe('decideDispatch routing', () => {
       hasPendingVoucher: false,
       flowConsumed: false,
       interactiveReplyId: null,
-      inboundText: '2 bastidores 60x40',
+      inboundText: 'bla bla bla',
       extraction: extraction({ intent: 'otro', confianza: 'baja' }),
       mediaConsumedByVoucher: false,
     })
     expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('lista de medidas sin intent → pedido (fallback regex)', () => {
+    const r = decideDispatch({
+      hasPendingExpense: false,
+      hasPendingAttendance: false,
+      hasPendingVoucher: false,
+      flowConsumed: false,
+      interactiveReplyId: null,
+      inboundText: '2 bastidores 60x40',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+      mediaConsumedByVoucher: false,
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+    expect(r.dispatchReason).toBe('fallback_regex')
+  })
+})
+
+describe('decideDispatch pedido', () => {
+  const base = {
+    hasPendingExpense: false,
+    hasPendingAttendance: false,
+    hasPendingVoucher: false,
+    flowConsumed: false,
+    interactiveReplyId: null,
+    mediaConsumedByVoucher: false,
+  }
+
+  it('intent pedido → pedido', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: '56 x 78, 89 x 67, 67 x 56 sin tela',
+      extraction: extraction({ intent: 'pedido', confianza: 'alta' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+    expect(r.dispatchReason).toBe('intent')
+  })
+
+  it('pedido pendiente + respuesta corta → pedido (pending_multiturn)', () => {
+    const r = decideDispatch({
+      ...base,
+      hasPendingOrder: true,
+      inboundText: 'dale',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+    expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+
+  it('dominio explícito (gasto alta) gana al pedido pendiente → expense', () => {
+    const r = decideDispatch({
+      ...base,
+      hasPendingOrder: true,
+      inboundText: 'pagué 5000 de luz',
+      extraction: extraction({ intent: 'gasto', confianza: 'alta', monto: 5000 }),
+    })
+    expect(r.dispatchedTo).toBe('expense')
+    expect(r.dispatchReason).toBe('intent')
+  })
+
+  it('compra a proveedor con monto NO va a pedido → gasto', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'compré 3 bastidores 60x40 a Joaquín por 30000',
+      extraction: extraction({ intent: 'gasto', confianza: 'alta', monto: 30000, proveedor: 'Joaquín' }),
+    })
+    expect(r.dispatchedTo).toBe('expense')
   })
 })
 

@@ -7,6 +7,10 @@ import { runAssistant } from '@/lib/bot-assistant/orchestrator'
 import { loadExpenseContext } from '@/lib/expenses/context'
 import { loadAttendanceContext } from '@/lib/attendance/context'
 import { loadVoucherContext, saveVoucherContext } from '@/lib/ai/voucher-context'
+import { loadOrderContext, isOrderContextActive } from '@/lib/pedidos/context'
+import { previewPedido } from '@/lib/pedidos/preview'
+import { classifyOrderReply } from '@/lib/pedidos/summary'
+import type { OrderContext } from '@/lib/pedidos/types'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 import { matchVoucherByName } from '@/lib/facbal/client'
 import { getMontoTolerancia } from '@/lib/ai/voucher-matching'
@@ -125,6 +129,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   let expenseCtx: unknown = null
   let attendanceCtx: unknown = null
   let voucherCtx: unknown = null
+  let orderCtx: unknown = null
   let contextText = ''
   // Dummy-only: keep reference to raw voucher pending for caption forced search
   let voucherPendingItem: { extraction: { monto: number | null; fecha?: string | null }; candidates: unknown[]; sourceMessageId: string } | null = null
@@ -138,19 +143,22 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
       const dummy = await getOrCreateDummyConversation(args.accountId, args.userId)
       if (dummy) {
         dummyConversationId = dummy.conversationId
-        const [exp, att, vou] = await Promise.all([
+        const [exp, att, vou, ord] = await Promise.all([
           loadExpenseContext(admin!, dummy.conversationId),
           loadAttendanceContext(admin!, dummy.conversationId),
           loadVoucherContext(admin!, dummy.conversationId),
+          loadOrderContext(admin!, dummy.conversationId),
         ])
         expenseCtx = exp
         attendanceCtx = att
         voucherCtx = vou
+        orderCtx = ord
 
         contextText = buildBotContextText({
           expenseCtx: exp as never,
           attendanceCtx: att as never,
           voucherCtx: vou as never,
+          orderCtx: ord as never,
         })
         logs.push({ step: 'botbeta_context', data: { dummyConversationId, contextText: contextText.slice(0, 1500), hasPendingExpense: !!(exp as { pendingExpense?: unknown })?.pendingExpense } })
         // Capture first pending voucher for dummy forced-client flow (caption = client name, amount = extractedAmount sole)
@@ -200,11 +208,14 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   const vouCtx = voucherCtx as { pending?: unknown[] } | null
   const hasPendingVoucherFlag = !!vouCtx && Array.isArray(vouCtx.pending) && vouCtx.pending.length > 0
 
+  const hasPendingOrder = isOrderContextActive(orderCtx as OrderContext | null)
+
   let extraction: UnifiedExtraction | null = null
   const pendingDomains: string[] = []
   if (hasPendingExpense) pendingDomains.push('expense')
   if (hasPendingAttendance) pendingDomains.push('attendance')
   if (hasPendingVoucherFlag) pendingDomains.push('voucher')
+  if (hasPendingOrder) pendingDomains.push('order')
 
   try {
     extraction = await extractBotMessage(text, contextText || undefined, { pendingDomains })
@@ -217,6 +228,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
     hasPendingExpense,
     hasPendingAttendance,
     hasPendingVoucher: hasPendingVoucherFlag,
+    hasPendingOrder,
     flowConsumed: false,
     interactiveReplyId: null,
     inboundText: text,
@@ -435,6 +447,46 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
       }
     } catch (err) {
       logs.push({ step: 'botbeta_voucher_caption_error', data: { error: err instanceof Error ? err.message : String(err) } })
+    }
+  }
+
+  // ── Pedido (preview read-only): no envía WhatsApp, no escribe contexto y no
+  // crea el presupuesto. Usa `previewPedido` (parseo + resolución + resumen).
+  if (decision.dispatchedTo === 'pedido') {
+    const ord = orderCtx as OrderContext | null
+    let reply: string
+    try {
+      if (hasPendingOrder && ord) {
+        const r = classifyOrderReply(text)
+        if (r === 'confirm') {
+          const total = `$${ord.total.toLocaleString('es-AR')}`
+          reply = ord.clienteNombre
+            ? `✅ (preview) Crearía el presupuesto para ${ord.clienteNombre} por ${total}. En preview no se envía ni se crea nada.`
+            : '(preview) Falta el cliente: en producción preguntaría el nombre antes de confirmar.'
+        } else if (r === 'cancel') {
+          reply = '(preview) Cancelaría el pedido.'
+        } else {
+          const p = await previewPedido(text, { context: ord })
+          reply = p ? `(preview)\n${p.text}` : 'No entendí la corrección (preview). ¿Me la repetís?'
+        }
+      } else {
+        const p = await previewPedido(text)
+        reply = p ? `(preview)\n${p.text}` : 'No pude armar un presupuesto con ese mensaje.'
+      }
+    } catch (err) {
+      logs.push({ step: 'botbeta_pedido_error', data: { error: err instanceof Error ? err.message : String(err) } })
+      reply = 'No pude armar el presupuesto (preview).'
+    }
+    logs.push({ step: 'botbeta_pedido_preview', data: { reply_preview: reply.slice(0, 300), hasPendingOrder } })
+    return {
+      reply,
+      dispatchedTo: 'pedido',
+      dispatchReason: decision.dispatchReason,
+      extraction,
+      toolResults: null,
+      knowledge: [],
+      logs,
+      dummyConversationId,
     }
   }
 

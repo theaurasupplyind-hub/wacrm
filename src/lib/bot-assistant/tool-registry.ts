@@ -22,6 +22,7 @@ import {
 } from '@/lib/facbal/client'
 import { processExpenseMessage } from '@/lib/expenses'
 import { processAttendanceMessage } from '@/lib/attendance'
+import { previewPedido } from '@/lib/pedidos/preview'
 
 export interface ToolContext {
   db: SupabaseClient
@@ -167,6 +168,25 @@ export const AGENT_TOOLS: AgentTool[] = [
       if (!q) return { data: null, summary: 'Falta el texto de búsqueda.' }
       const data = await buscarProductos(q)
       return { data, summary: `Productos: ${Array.isArray(data) ? data.length : 0}.` }
+    },
+  },
+  {
+    name: 'cotizar_pedido',
+    description:
+      'Cotiza un pedido/presupuesto a partir de una frase natural con medidas o productos (ej: "56 x 78, 89 x 67 sin tela", "2 bastidores 60x40", "una pintura 94x81"). Devuelve ítems con precio, los supuestos asumidos y los faltantes sin cotizar. NO crea el presupuesto: solo cotiza. Usala para armar/ver un presupuesto.',
+    parameters: {
+      type: 'object',
+      properties: {
+        texto: { type: 'string', description: 'Frase natural del pedido (medidas/productos).' },
+      },
+      required: ['texto'],
+    },
+    execute: async (args) => {
+      const texto = str(args.texto)
+      if (!texto) return { data: null, summary: 'Falta el texto del pedido.' }
+      const preview = await previewPedido(texto)
+      if (!preview) return { data: null, summary: 'No se detectaron ítems para cotizar.' }
+      return { data: preview, summary: preview.text }
     },
   },
   {

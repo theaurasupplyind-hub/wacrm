@@ -3,9 +3,10 @@ import type { JevPendingSignal } from '@/lib/bot-llm/classify-jev'
 import { isStrongConfidence, JEV_ANSWERS_PENDING_MIN, JEV_SUPERSEDES_MIN } from '@/lib/bot-llm/confidence'
 import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
+import { looksLikePedido } from '@/lib/bot-llm/fallback'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
 
-export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
+export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'pedido' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
 export type DispatchReason =
   | 'pending_multiturn'
   | 'pending_expired'
@@ -45,6 +46,8 @@ export interface RouterState {
   hasPendingExpense: boolean
   hasPendingAttendance: boolean
   hasPendingVoucher: boolean
+  /** Hay un pedido en `order_context` esperando confirmación/corrección. */
+  hasPendingOrder?: boolean
   flowConsumed: boolean
   interactiveReplyId: string | null
   inboundText: string
@@ -82,7 +85,7 @@ function resolveClarifyIntent(intent: BotIntent): RouterDecision {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -130,6 +133,19 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (!flowConsumed && !interactiveReplyId && hasPendingExpense && intent !== 'gasto' && !jevSupersede) {
     return { dispatchedTo: 'expense', dispatchReason: 'pending_multiturn' }
   }
+  // Pedido pendiente (order_context): captura respuestas cortas/correcciones.
+  // El dominio explícito ya ganó arriba (strong-intent alta/media).
+  if (
+    !flowConsumed &&
+    !interactiveReplyId &&
+    hasPendingOrder &&
+    !jevSupersede &&
+    !isAsistenciaIntent(intent) &&
+    intent !== 'voucher' &&
+    intent !== 'multi_expense'
+  ) {
+    return { dispatchedTo: 'pedido', dispatchReason: 'pending_multiturn' }
+  }
   if (!flowConsumed && !interactiveReplyId && hasPendingAttendance && !isAsistenciaIntent(intent) && !jevSupersede) {
     return { dispatchedTo: 'attendance', dispatchReason: 'pending_multiturn' }
   }
@@ -144,6 +160,15 @@ export function decideDispatch(state: RouterState): RouterDecision {
   }
   if (intent === 'voucher') {
     return { dispatchedTo: 'voucher', dispatchReason: 'intent' }
+  }
+  if (intent === 'pedido') {
+    return { dispatchedTo: 'pedido', dispatchReason: 'intent' }
+  }
+  // Fallback regex: lista de medidas o keywords de producto → pedido (aunque
+  // el extractor no lo haya etiquetado). Va antes del assistant para no perder
+  // pedidos escritos como medidas sueltas.
+  if (!flowConsumed && !interactiveReplyId && inboundText.trim() && looksLikePedido(inboundText)) {
+    return { dispatchedTo: 'pedido', dispatchReason: 'fallback_regex' }
   }
   // Conversacional / deuda: "cuanto debe", saludos, capacidades → asistente.
   const conversationalDebtRe = /cu[aá]nto debe|cu[aá]nto le queda|saldo pendiente|deuda de|qu[eé] pod[eé]s hacer|qui[eé]n sos|qui[eé]n eres|qu[eé] hac[eé]s|capacidades|tiene alguna factura|facturas de/i

@@ -11,7 +11,7 @@ const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema 
 
 Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exacta:
 {
-  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "multi_expense" | "voucher" | "factura" | "otro",
+  "intent": "asistencia_llegada" | "asistencia_salida" | "asistencia_estado" | "gasto" | "multi_expense" | "voucher" | "factura" | "pedido" | "otro",
   "confianza": "alta" | "media" | "baja",
   "empleado": "nombre del empleado o null",
   "hora": "HH:MM o null",
@@ -55,6 +55,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "multi_expense": un mismo mensaje contiene DOS O MÁS gastos separados e independientes del negocio. Devolvé la lista en "multipleExpenses". Cada gasto debe tener su propio monto.
 - "voucher": comprobante de pago o transferencia/depósito para pagar una factura.
 - "factura": consulta de facturas pendientes, deudas, saldos.
+- "pedido": el cliente arma/consulta un PRESUPUESTO. Aparece una o más medidas ("60x40", "94x81"), una lista de medidas ("56 x 78, 89 x 67"), o nombres de producto (bastidor, lienzo, tapacanto, acrílico, marco, lona, circular, rollo) sin verbo de compra del negocio. NO lleva monto pagado ni proveedor.
 - "otro": saludos genéricos ("hola", "gracias"), charla casual, mensajes irrelevantes, o respuestas que no completan ninguna intención pendiente.
 
 === REGLAS (MUY IMPORTANTES) ===
@@ -72,6 +73,9 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
  - Si consulta "factura", "deuda", "saldo", "debo", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). Si dice "deuda de [Nombre]" / "saldo de [Nombre]" → factura con proveedor="[Nombre]" (ej "Revisemos la deuda de Aldo" → proveedor:"Aldo").
  - "qué podés hacer / quién soy / capacidades" → otro (conversacional), NUNCA factura.
+- "pedido"/presupuesto: si el mensaje trae UNA O MÁS medidas ("60x40", "94x81", "56 x 78, 89 x 67") o nombres de producto de la fábrica (bastidor, lienzo, tapacanto, acrílico, marco, lona, circular, rollo) SIN verbo de compra a proveedor ni monto pagado → intent "pedido" con confianza "alta". No es gasto aunque haya números: son medidas, no montos.
+- Diferencia clave pedido vs gasto: "compré 3 bastidores 60x40 a Joaquín por 30000" (verbo comprar + proveedor + monto) → "gasto". "3 bastidores 60x40 para Juan" (solo medidas/producto del pedido) → "pedido".
+- Una lista de medidas separadas por coma ("56 x 78, 89 x 67, 67 x 56 sin tela") → SIEMPRE un solo "pedido", nunca multi_expense.
  - Ante la duda, usá confianza "baja" o "media".
 
 === MULTI-EXPENSE ===
@@ -145,6 +149,15 @@ Mensaje: "llegó juan"
 Mensaje: "se fue la luz"
 {"intent":"otro","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
+Mensaje: "56 x 78, 89 x 67, 67 x 56 sin tela"
+{"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "hacele a Matías 2 bastidores 60x40 sin tela"
+{"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "embastame una pintura 94x81"
+{"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
 Mensaje: "cuánto debo?"
 {"intent":"factura","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
@@ -182,7 +195,7 @@ DEVOLVÉ SOLO EL JSON, NADA MÁS.`
 
 const VALID_INTENTS: BotIntent[] = [
   'asistencia_llegada', 'asistencia_salida', 'asistencia_estado',
-  'gasto', 'multi_expense', 'voucher', 'factura', 'otro',
+  'gasto', 'multi_expense', 'voucher', 'factura', 'pedido', 'otro',
 ]
 const VALID_CONFIDENCE: Confidence[] = ['alta', 'media', 'baja']
 const VALID_MISSING: MissingField[] = ['empleado', 'hora', 'estado', 'monto', 'categoria', 'proveedor']

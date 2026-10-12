@@ -1,5 +1,6 @@
 import { looksLikeExpense, parseExpense } from '@/lib/expenses/parse-expense'
 import { looksLikeAttendance, parseAttendance } from '@/lib/attendance/parse-attendance'
+import { classifyPaymentIntent } from './payment-intent'
 import type { BotIntent, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
 
 function empty(raw: string): UnifiedExtraction {
@@ -90,6 +91,35 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
   return items.length >= 2 ? items : null
 }
 
+// Palabras de producto/pedido (normalizadas, sin acentos).
+const PEDIDO_PRODUCT_RE =
+  /\b(bastidor(?:es)?|lienzo|lona|tapacantos?|acrilico|marco|molduras?|circular(?:es)?|rollo|cotizar|cotiza|presupuesto|embastad[oa]?|embastar)\b/i
+const MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/
+// "a <proveedor> por <monto>" → compra del negocio, no pedido.
+const PROVIDER_AMOUNT_RE = /\ba\s+[a-záéíóúñ]+\s+(?:por|a)\s+\$?\s*\d/i
+
+/**
+ * Detecta un pedido/presupuesto por regex (sin LLM). Verdadero si hay una o
+ * más medidas o keywords de producto/pedido y NO matchea un dominio explícito
+ * (gasto/asistencia/voucher/pago). El "compré ... a proveedor por monto" es
+ * gasto, no pedido.
+ */
+export function looksLikePedido(text: string): boolean {
+  const raw = (text || '').trim()
+  if (!raw) return false
+  if (looksLikeExpense(raw)) return false
+  if (looksLikeAttendance(raw)) return false
+  if (classifyPaymentIntent(raw) === 'voucher') return false
+
+  const hasMeasure = MEASURE_RE.test(raw)
+  const hasProduct = PEDIDO_PRODUCT_RE.test(raw)
+  const hasProviderAmount = PROVIDER_AMOUNT_RE.test(raw)
+  const hasAmount = /\$\s*\d|\b\d{4,}\b/.test(raw)
+
+  if (hasMeasure) return !hasProviderAmount
+  return hasProduct && !hasAmount && !hasProviderAmount
+}
+
 /**
  * Red de seguridad sin LLM: emula los gates regex actuales y los convierte en
  * una UnifiedExtraction. Confianza siempre 'baja' y dudoso según ambigüedad,
@@ -98,6 +128,17 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
 export function fallbackExtract(text: string): UnifiedExtraction {
   const raw = (text || '').trim()
   if (!raw) return empty(raw)
+
+  // Pedidos: medidas o keywords de producto, sin dominio rival (gasto/
+  // asistencia/voucher). Va ANTES del split multi-expense porque una lista de
+  // medidas ("56 x 78, 89 x 67") no es una lista de gastos.
+  if (looksLikePedido(raw)) {
+    return {
+      ...empty(raw),
+      intent: 'pedido',
+      confianza: 'baja',
+    }
+  }
 
   const multi = trySplitMultiExpense(raw)
   if (multi) {

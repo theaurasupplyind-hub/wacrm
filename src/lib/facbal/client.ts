@@ -1,4 +1,5 @@
 import { normalizeText as normalizeTextShared } from '@/lib/text/normalize'
+import type { PrecioReferencia, PricingRule, RuleCondition } from '@/lib/precios/types'
 
 export interface FacturaPendiente {
   invoice_id: number
@@ -311,6 +312,11 @@ export async function suggestPrice(
   return res.json() as Promise<SuggestPriceResult>
 }
 
+/**
+ * @deprecated El endpoint `bulk-price` de backend_gal queda deprecado: no se
+ * usa ni se mantiene. El flujo de pedidos usa el motor portado en `@/lib/precios`
+ * (`suggestPrice`). No borrar (por compatibilidad), pero no generar código nuevo.
+ */
 export interface BulkPriceItem {
   categoria: string
   medida: string
@@ -319,6 +325,7 @@ export interface BulkPriceItem {
   regla?: string | null
 }
 
+/** @deprecated Ver {@link BulkPriceItem}. */
 export interface BulkPriceResultItem {
   cantidad: number
   categoria: string
@@ -331,12 +338,14 @@ export interface BulkPriceResultItem {
   regla_aplicada: string | null
 }
 
+/** @deprecated Ver {@link BulkPriceItem}. */
 export interface BulkPriceResult {
   items: BulkPriceResultItem[]
   sugerencias: SugerenciaPrecio[]
   mensaje: string | null
 }
 
+/** @deprecated Ver {@link BulkPriceItem}. */
 export async function bulkPrice(
   items: BulkPriceItem[],
   timeoutMs?: number,
@@ -358,6 +367,129 @@ export async function bulkPrice(
   }
 
   return res.json() as Promise<BulkPriceResult>
+}
+
+// ─── Motor de precios local (galv2) ───
+// Accesores de catálogo para el motor portado en `@/lib/precios`.
+
+interface RawPricingRule {
+  id?: number
+  name?: string
+  match_tokens?: string | string[] | null
+  matchTokens?: string | string[] | null
+  base_categoria?: string
+  baseCategoria?: string
+  base_variante?: string
+  baseVariante?: string
+  operation?: string
+  operation_value?: number
+  operationValue?: number
+  conditions?: string | RuleCondition[] | null
+  enabled?: boolean
+  rounding?: number
+}
+
+function parseJsonArray<T>(value: string | T[] | null | undefined): T[] {
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value || '[]')
+      return Array.isArray(parsed) ? (parsed as T[]) : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+/**
+ * Normaliza una fila de `pricing_rules` al tipo `PricingRule`. El backend
+ * devuelve snake_case con `match_tokens` y `conditions` serializados como
+ * JSON string (referencia: galv2 `Facturacion.svelte:585-604`). Acepta también
+ * camelCase y arrays ya parseados por robustez.
+ */
+export function parsePricingRule(raw: RawPricingRule): PricingRule {
+  return {
+    id: raw.id,
+    name: raw.name ?? '',
+    matchTokens: parseJsonArray<string>(raw.matchTokens ?? raw.match_tokens),
+    baseCategoria: raw.baseCategoria ?? raw.base_categoria ?? '',
+    baseVariante: raw.baseVariante ?? raw.base_variante ?? '',
+    operation: (raw.operation as PricingRule['operation']) ?? 'direct',
+    operationValue: raw.operationValue ?? raw.operation_value ?? 0,
+    conditions: parseJsonArray<RuleCondition>(raw.conditions),
+    enabled: raw.enabled ?? true,
+    rounding: raw.rounding ?? 1000,
+  }
+}
+
+export async function getPreciosReferencia(): Promise<PrecioReferencia[]> {
+  const url = `${apiUrl()}/precios-referencia`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al obtener precios de referencia${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  const data = await res.json()
+  if (!Array.isArray(data)) {
+    throw new Error('FacBal API devolvió una respuesta inesperada.')
+  }
+
+  return data as PrecioReferencia[]
+}
+
+export async function getPricingRules(): Promise<PricingRule[]> {
+  const url = `${apiUrl()}/pricing-rules`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al obtener reglas de precios${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  const data = await res.json()
+  if (!Array.isArray(data)) {
+    throw new Error('FacBal API devolvió una respuesta inesperada.')
+  }
+
+  return (data as RawPricingRule[]).map(parsePricingRule)
+}
+
+export async function nextInvoiceNumber(prefix = 'F'): Promise<string> {
+  const url = `${apiUrl()}/invoices/next_number?prefix=${encodeURIComponent(prefix)}`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al obtener número de factura${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  const data = (await res.json()) as { next_number?: string }
+  if (!data?.next_number) {
+    throw new Error('FacBal API devolvió un número de factura inesperado.')
+  }
+
+  return data.next_number
 }
 
 export interface PriceListImageMeta {
@@ -527,6 +659,50 @@ export async function createInvoice(payload: {
   }
 
   return res.json() as Promise<InvoiceCreatedResult>
+}
+
+export interface InvoiceItemDetail {
+  id?: number
+  cantidad: number
+  descripcion: string
+  precio_unitario: number
+  total: number
+}
+
+export interface InvoiceDetail {
+  id: number
+  numero_factura: string | null
+  numero_presupuesto: string | null
+  fecha: string
+  cliente_id: number | null
+  cliente_nombre: string
+  cliente_telefono: string | null
+  cliente_domicilio: string | null
+  items: InvoiceItemDetail[]
+  total: number
+  tipo: string
+  tipo_entrega: string | null
+  estado_kanban: string | null
+}
+
+/** GET /invoices/{id}. Devuelve null si no existe (404). */
+export async function getInvoice(id: number): Promise<InvoiceDetail | null> {
+  const url = `${apiUrl()}/invoices/${id}`
+
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al obtener factura${detail ? `: ${detail}` : ''}`,
+    )
+  }
+
+  return res.json() as Promise<InvoiceDetail>
 }
 
 // ─── Gastos ───

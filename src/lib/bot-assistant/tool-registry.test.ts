@@ -19,6 +19,7 @@ describe('agent tool registry', () => {
 
   it('findAgentTool y definiciones', () => {
     expect(findAgentTool('consultar_facturas')?.write).toBeFalsy()
+    expect(findAgentTool('cotizar_pedido')?.write).toBeFalsy()
     expect(findAgentTool('registrar_gasto')?.write).toBe(true)
     expect(findAgentTool('no_existe')).toBeUndefined()
     const defs = agentToolDefinitions()

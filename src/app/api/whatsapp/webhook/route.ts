@@ -31,6 +31,8 @@ import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext, resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
+import { processPedidoMessage } from '@/lib/pedidos'
+import { loadOrderContext, isOrderContextActive } from '@/lib/pedidos/context'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import {
@@ -849,7 +851,7 @@ async function logRouterDecision(args: {
   dispatchReason: string
   contextText?: string
   /** Flags de contexto para que el log sea 100% replayable. */
-  contextFlags?: { expense: boolean; attendance: boolean; voucher: boolean; clarify: boolean }
+  contextFlags?: { expense: boolean; attendance: boolean; voucher: boolean; clarify: boolean; order?: boolean }
   interactiveReplyId?: string | null
   mediaConsumedByVoucher?: boolean
   whitelistAllowed?: boolean
@@ -989,6 +991,10 @@ async function processMessage(
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
   const hasPendingVoucher = voucherCtx.pending.length > 0
+
+  // Cargar estado de pedido (order_context) para el flujo de presupuestos.
+  const orderCtx = await loadOrderContext(supabaseAdmin(), conversation.id)
+  const hasPendingOrder = isOrderContextActive(orderCtx)
 
   // Aclaración pendiente (bot conversacional). La resolución corre después
   // del extractor; los ids de botón se separan ya para que expense/attendance
@@ -1337,6 +1343,7 @@ async function processMessage(
     expenseCtx,
     attendanceCtx,
     voucherCtx,
+    orderCtx,
     clarifyCtx: clarifyLoad?.state ?? null,
   })
   let extraction: UnifiedExtraction | null = null
@@ -1345,6 +1352,7 @@ async function processMessage(
     if (hasPendingExpense) pendingDomains.push('expense')
     if (hasPendingAttendance) pendingDomains.push('attendance')
     if (hasPendingVoucher) pendingDomains.push('voucher')
+    if (hasPendingOrder) pendingDomains.push('order')
     try {
       extraction = await extractBotMessage(inboundText, contextText, { pendingDomains })
     } catch (err) {
@@ -1552,6 +1560,23 @@ async function processMessage(
     )
   }
 
+  const pushPedidoTask = () => {
+    bgTasks.push(
+      (async () => {
+        try {
+          await processPedidoMessage({
+            db: supabaseAdmin(),
+            text: inboundText,
+            accountId, userId: configOwnerUserId,
+            conversationId: conversation.id, contactId: contactRecord.id,
+            senderPhone: message.from, senderName: contactName,
+            accessToken, messageId: message.id,
+          })
+        } catch (err) { console.error('[pedido] Text error:', err) }
+      })()
+    )
+  }
+
   // Primary dispatch — now via shared router. Keep logging same as before.
   // Si clarify ya respondió (ask/reask/expired/cancel), no se despacha nada más.
   // Si clarify resolvió, se despacha con la extracción corregida.
@@ -1566,6 +1591,7 @@ async function processMessage(
         hasPendingExpense,
         hasPendingAttendance,
         hasPendingVoucher,
+        hasPendingOrder,
         flowConsumed,
         interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,
         inboundText,
@@ -1601,6 +1627,11 @@ async function processMessage(
       break
     case 'voucher':
       console.log('[voucher] intent dispatch (consumed, no handler) -> conversation=%s', conversation.id)
+      break
+    case 'pedido':
+      console.log('[pedido] %s dispatch -> conversation=%s', dispatchReason, conversation.id)
+      pushPedidoTask()
+      responded = true
       break
     case 'assistant':
       if (!hasPendingVoucher) {
@@ -1660,6 +1691,7 @@ async function processMessage(
       attendance: hasPendingAttendance,
       voucher: hasPendingVoucher,
       clarify: !!clarifyLoad?.state,
+      order: hasPendingOrder,
     },
     interactiveReplyId,
     mediaConsumedByVoucher,

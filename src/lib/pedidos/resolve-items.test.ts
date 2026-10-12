@@ -1,0 +1,77 @@
+import { describe, it, expect } from 'vitest'
+import { resolveItems } from './resolve-items'
+import { catalogBounds } from '@/lib/precios'
+import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalogo'
+
+const base = { refs: preciosReferencia, rules: pricingRules }
+
+describe('resolveItems', () => {
+  it('regla: pintura aplica +10% sobre Sin Tela', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'embastame una pintura 94x81' }] })
+    const it = r.items[0]
+    expect(it.faltante).toBe(false)
+    expect(it.regla_aplicada).toBe('Pinturas')
+    expect(it.precio_unitario).toBe(47000)
+    expect(r.faltantes).toEqual([])
+    // Artefacto del motor: la regla "Tapiz" (trigger "ta") también matcheaba.
+    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(true)
+  })
+
+  it('ambigüedad de variante: asume la primera sin preguntar', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 5, texto: 'bastidor 60x40' }] })
+    const it = r.items[0]
+    expect(it.faltante).toBe(false)
+    // Orden estable del motor: `slPriority` pone primero las variantes S/L
+    // (Lienzo Profesional / Lona Preparada / Sin Tela) y de esas, la primera.
+    expect(it.variante).toBe('Lienzo Profesional')
+    expect(it.precio_unitario).toBe(24000)
+    expect(it.asumido).toContain('Lienzo Profesional')
+    expect(r.notaSupuestos.some(n => n.includes('varias variantes'))).toBe(true)
+    expect(r.total).toBe(120000)
+  })
+
+  it('sin referencia: ítem faltante, excluido del total', () => {
+    const r = resolveItems({
+      ...base,
+      items: [
+        { cantidad: 1, texto: 'bastidor sin tela 60x40' },
+        { cantidad: 1, texto: 'acrilico 94x81' },
+      ],
+    })
+    expect(r.items[1].faltante).toBe(true)
+    expect(r.items[1].precio_unitario).toBeNull()
+    expect(r.faltantes).toHaveLength(1)
+    expect(r.total).toBe(18000) // sólo el cotizable
+  })
+
+  it('medida por encima del máximo: precio provisional (a revisar) derivado del catálogo', () => {
+    const bounds = catalogBounds(preciosReferencia)!
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: '400x300' }] })
+    const it = r.items[0]
+    expect(it.aRevisar).toBe(true)
+    expect(it.precio_unitario).toBe(bounds.maxPrecio)
+    expect(r.total).toBe(bounds.maxPrecio)
+  })
+
+  it('perímetro: sin exacto usa la referencia más cercana', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'bastidor 42x141' }] })
+    const it = r.items[0]
+    expect(it.faltante).toBe(false)
+    expect(it.asumido).toContain('referencia')
+    expect(r.notaSupuestos.some(n => n.includes('perímetro'))).toBe(true)
+  })
+
+  it('sin medidas: faltante', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'tapacanto' }] })
+    expect(r.items[0].faltante).toBe(true)
+  })
+
+  it('varias reglas: toma la primera (orden estable) y anota las alternativas', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'tapacanto 60x40' }] })
+    const it = r.items[0]
+    expect(it.regla_aplicada).toBe('Tapacanto')
+    expect(it.precio_unitario).toBe(24000)
+    // "Tapiz" (trigger "ta") también matchea "tapacanto": se anota como alternativa.
+    expect(r.notaSupuestos.some(n => n.includes('Tapiz'))).toBe(true)
+  })
+})
