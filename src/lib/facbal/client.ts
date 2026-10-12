@@ -680,6 +680,7 @@ export interface InvoiceDetail {
   cliente_domicilio: string | null
   items: InvoiceItemDetail[]
   total: number
+  envio?: number | null
   tipo: string
   tipo_entrega: string | null
   estado_kanban: string | null

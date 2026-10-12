@@ -78,8 +78,21 @@ async function sendText(args: ProcessPedidoMessageArgs, text: string): Promise<v
   }
 }
 
+function normalizeBaseUrl(raw: string | undefined): string | null {
+  const v = (raw || '').trim()
+  if (!v) return null
+  const withScheme = /^https?:\/\//i.test(v) ? v : `https://${v}`
+  return withScheme.replace(/\/+$/, '')
+}
+
 function buildImageUrl(invoiceId: number): string | undefined {
-  const base = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '')
+  // Meta exige una URL absoluta con esquema; el env puede venir sin "https://".
+  // Fallbacks: APP_URL → SITE_URL → VERCEL_PROJECT_PRODUCTION_URL → VERCEL_URL.
+  const base =
+    normalizeBaseUrl(process.env.NEXT_PUBLIC_APP_URL) ||
+    normalizeBaseUrl(process.env.NEXT_PUBLIC_SITE_URL) ||
+    normalizeBaseUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
+    normalizeBaseUrl(process.env.VERCEL_URL)
   return base ? `${base}/api/presupuesto-image/${invoiceId}` : undefined
 }
 
@@ -125,6 +138,33 @@ async function logOrderDecision(
   }
 }
 
+/** Registra en la traza si el presupuesto se envió como imagen o cayó a texto. */
+async function logPedidoSend(
+  args: ProcessPedidoMessageArgs,
+  info: { imageUrl?: string; replied: boolean; numeroPresupuesto: string; total: number },
+): Promise<void> {
+  try {
+    await recordBotTrace(
+      buildBotTrace({
+        messageId: args.messageId ?? `pedido-${args.conversationId}-${Date.now()}`,
+        producer: 'pedido',
+        conversationId: args.conversationId,
+        contactId: args.contactId,
+        accountId: args.accountId,
+        source: 'text',
+        rawText: args.text,
+        messageType: 'text',
+        dispatchedTo: 'pedido',
+        dispatchReason: 'pedido_created',
+        logs: [{ step: 'pedido_sent', data: info }],
+        finalStatus: info.replied ? 'replied' : 'no_reply',
+      }),
+    )
+  } catch (err) {
+    console.error('[pedido] trace send log error:', err)
+  }
+}
+
 async function loadCatalog(
   args: ProcessPedidoMessageArgs,
 ): Promise<{ refs: PrecioReferencia[]; rules: PricingRule[] }> {
@@ -162,6 +202,12 @@ async function executeConfirmed(
       caption: msg,
     })
     if (replied) (args as RepliablePedidoArgs).__pedidoReplied = true
+    await logPedidoSend(args, {
+      imageUrl,
+      replied,
+      numeroPresupuesto: result.numeroPresupuesto,
+      total: result.total,
+    })
     return {
       handled: true,
       text: msg,

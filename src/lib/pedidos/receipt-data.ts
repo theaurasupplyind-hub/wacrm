@@ -3,6 +3,7 @@ import type { ReceiptData } from './receipt-image'
 
 /** Mapea la factura de backend_gal a los datos de la tarjeta de WhatsApp. */
 export function invoiceToReceipt(invoice: InvoiceDetail, faltantes: string[] = []): ReceiptData {
+  const tipoEntrega = invoice.tipo_entrega || 'Retira'
   return {
     numeroPresupuesto: invoice.numero_presupuesto || invoice.numero_factura || `#${invoice.id}`,
     fecha: invoice.fecha,
@@ -16,5 +17,9 @@ export function invoiceToReceipt(invoice: InvoiceDetail, faltantes: string[] = [
     })),
     total: invoice.total,
     faltantes,
+    envio: invoice.envio ?? 0,
+    retira: tipoEntrega === 'Retira',
+    tipoEntrega,
+    mode: invoice.tipo === 'BORRADOR' ? 'BORRADOR' : 'PRESUPUESTO',
   }
 }

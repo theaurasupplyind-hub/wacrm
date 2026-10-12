@@ -1,6 +1,8 @@
 // Tarjeta de presupuesto para WhatsApp como imagen (satori/JSX).
-// Replica la tarjeta de galv2-tauri/src/lib/utils/receipt.ts en flexbox
-// (satori no soporta <table>). La usa la ruta de imagen (Fase 4) vía ImageResponse.
+// Port del template de galv2-tauri/src/lib/utils/receipt.ts (renderReceiptHtml)
+// a flexbox — satori no soporta <table> ni selectores CSS, así que el diseño se
+// reproduce con estilos inline equivalentes (card, acento, caja de cliente,
+// header de columnas, subtotal, total en color y footer).
 
 export interface ReceiptItem {
   cantidad: number
@@ -17,96 +19,188 @@ export interface ReceiptData {
   items: ReceiptItem[]
   total: number
   faltantes: string[]
+  envio?: number
+  retira?: boolean
+  tipoEntrega?: string
+  mode?: 'PRESUPUESTO' | 'BORRADOR'
+  saldo?: number
 }
 
 const money = (n: number) => `$${n.toLocaleString('es-AR')}`
 
 export function receiptElement(data: ReceiptData) {
+  const mode = data.mode ?? 'PRESUPUESTO'
+  const accent = mode === 'BORRADOR' ? '#0d6efd' : '#00C853'
+  const envVal = data.envio ?? 0
+  const subtotal = data.total - envVal
+  const envDisplay = envVal === 0 ? 'Sin cargo' : money(envVal)
+  const retira = data.retira ?? true
+  const mostrarSaldo = mode === 'PRESUPUESTO' && data.saldo !== undefined
+
   return (
     <div
       style={{
         display: 'flex',
-        flexDirection: 'column',
         width: '400px',
-        backgroundColor: '#ffffff',
-        padding: '20px',
+        backgroundColor: '#f5f5f5',
+        padding: '16px',
         fontFamily: 'sans-serif',
-        color: '#111111',
       }}
     >
       <div
         style={{
           display: 'flex',
-          justifyContent: 'center',
-          fontSize: '22px',
-          fontWeight: 700,
-          letterSpacing: '2px',
+          flexDirection: 'column',
+          width: '100%',
+          backgroundColor: '#ffffff',
+          borderRadius: '16px',
+          padding: '24px 20px',
         }}
       >
-        BASTIDORES GAL
-      </div>
+        {/* Header */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '20px' }}>
+          <span style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '1px', color: '#1a1a1a' }}>
+            BASTIDORES GAL
+          </span>
+          <div style={{ width: '40px', height: '3px', backgroundColor: accent, borderRadius: '2px', margin: '8px 0' }} />
+          <span style={{ fontSize: '13px', color: '#888888' }}>
+            #{data.numeroPresupuesto} | {data.fecha}
+          </span>
+        </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginTop: '6px', color: '#555555' }}>
-        <span>Presupuesto</span>
-        <span>{data.numeroPresupuesto}</span>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#555555' }}>
-        <span>Fecha</span>
-        <span>{data.fecha}</span>
-      </div>
+        {/* Caja de cliente */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            backgroundColor: '#f8faf8',
+            borderRadius: '12px',
+            border: '1px solid #eef3ee',
+            padding: '12px 14px',
+            marginBottom: '16px',
+          }}
+        >
+          <span style={{ fontSize: '15px', fontWeight: 700, color: '#1a1a1a', marginBottom: '2px' }}>
+            {data.clienteNombre}
+          </span>
+          {data.clienteTelefono ? (
+            <span style={{ fontSize: '13px', color: '#666666' }}>{data.clienteTelefono}</span>
+          ) : null}
+        </div>
 
-      <div style={{ display: 'flex', height: '1px', backgroundColor: '#dddddd', margin: '12px 0' }} />
+        {/* Encabezado de columnas */}
+        <div style={{ display: 'flex', borderBottom: '1px solid #eeeeee', paddingBottom: '6px' }}>
+          <span style={{ width: '34px', fontSize: '11px', fontWeight: 600, color: '#999999', letterSpacing: '0.5px' }}>
+            Cant
+          </span>
+          <span style={{ flex: '1', fontSize: '11px', fontWeight: 600, color: '#999999', letterSpacing: '0.5px' }}>
+            Detalle
+          </span>
+          <span
+            style={{
+              width: '90px',
+              fontSize: '11px',
+              fontWeight: 600,
+              color: '#999999',
+              letterSpacing: '0.5px',
+              textAlign: 'right',
+            }}
+          >
+            Total
+          </span>
+        </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', fontSize: '14px' }}>
-        <span style={{ fontWeight: 600 }}>{data.clienteNombre}</span>
-        {data.clienteTelefono ? <span style={{ color: '#555555' }}>{data.clienteTelefono}</span> : null}
-      </div>
-
-      <div style={{ display: 'flex', height: '1px', backgroundColor: '#dddddd', margin: '12px 0' }} />
-
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {data.items.map((it, i) => (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', marginBottom: '8px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span>
-                {it.cantidad > 1 ? `${it.cantidad} x ` : ''}
-                {it.descripcion}
+        {/* Ítems */}
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {data.items.map((it, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                borderBottom: '1px solid #f5f5f5',
+                padding: '6px 0',
+              }}
+            >
+              <span style={{ width: '34px', fontSize: '13px', color: '#333333' }}>
+                {it.cantidad === 0 ? '' : it.cantidad}
               </span>
-              <span>{money(it.total)}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', flex: '1' }}>
+                <span style={{ fontSize: '13px', color: '#1a1a1a' }}>{it.descripcion}</span>
+                {it.cantidad !== 0 ? (
+                  <span style={{ fontSize: '11px', color: '#999999' }}>{money(it.precio_unitario)} c/u</span>
+                ) : null}
+              </div>
+              <span style={{ width: '90px', fontSize: '13px', color: '#1a1a1a', textAlign: 'right' }}>
+                {it.cantidad === 0 ? '' : money(it.total)}
+              </span>
             </div>
-            {it.cantidad > 1 ? (
-              <span style={{ fontSize: '11px', color: '#777777' }}>{money(it.precio_unitario)} c/u</span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-
-      {data.faltantes.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', marginTop: '4px' }}>
-          {data.faltantes.map((f, i) => (
-            <span key={i} style={{ fontSize: '11px', color: '#b45309' }}>
-              A cotizar: {f}
-            </span>
           ))}
         </div>
-      ) : null}
 
-      <div style={{ display: 'flex', height: '1px', backgroundColor: '#dddddd', margin: '12px 0' }} />
+        {/* Faltantes (extra nuestro: no están en el template) */}
+        {data.faltantes.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', marginTop: '8px' }}>
+            {data.faltantes.map((f, i) => (
+              <span key={i} style={{ fontSize: '11px', color: '#b45309' }}>
+                A cotizar: {f}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#555555' }}>
-        <span>Entrega</span>
-        <span>Retira</span>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '18px', fontWeight: 700, marginTop: '6px' }}>
-        <span>TOTAL</span>
-        <span>{money(data.total)}</span>
-      </div>
-      {data.faltantes.length > 0 ? (
-        <span style={{ fontSize: '11px', color: '#b45309' }}>(no incluye los ítems a cotizar)</span>
-      ) : null}
+        {/* Divider punteado */}
+        <div style={{ display: 'flex', borderTop: '1px dashed #dddddd', margin: '8px 0' }} />
 
-      <div style={{ display: 'flex', justifyContent: 'center', fontSize: '11px', color: '#999999', marginTop: '14px' }}>
-        Presupuesto
+        {/* Subtotal + entrega */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: '#1a1a1a' }}>Subtotal</span>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: '#1a1a1a' }}>{money(subtotal)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+          <span style={{ fontSize: '13px', color: '#555555' }}>
+            {retira ? 'Entrega' : data.tipoEntrega === 'Retiro y Envio' ? 'Retiro y Envio' : 'Envio'}
+          </span>
+          <span style={{ fontSize: '13px', color: '#555555' }}>{retira ? 'Retira' : envDisplay}</span>
+        </div>
+
+        {/* Total */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginTop: '12px',
+            paddingTop: '12px',
+            borderTop: `2px solid ${accent}`,
+          }}
+        >
+          <span style={{ fontSize: '14px', fontWeight: 600, color: '#333333' }}>TOTAL A PAGAR</span>
+          {mostrarSaldo ? (
+            (data.saldo ?? 0) <= 0.01 ? (
+              <span style={{ fontSize: '20px', fontWeight: 800, color: '#16a34a' }}>✓ Pagado</span>
+            ) : (
+              <span style={{ fontSize: '28px', fontWeight: 800, color: accent }}>{money(data.saldo ?? 0)}</span>
+            )
+          ) : (
+            <span style={{ fontSize: '28px', fontWeight: 800, color: accent }}>{money(data.total)}</span>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            marginTop: '16px',
+            paddingTop: '12px',
+            borderTop: '1px solid #f0f0f0',
+            fontSize: '11px',
+            color: '#bbbbbb',
+          }}
+        >
+          {mode === 'BORRADOR' ? 'Borrador' : 'Presupuesto'}
+        </div>
       </div>
     </div>
   )

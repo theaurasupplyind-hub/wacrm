@@ -13,13 +13,25 @@ const data = {
   ],
   total: 60000,
   faltantes: ['acrilico 94x81'],
+  envio: 0,
+  retira: true,
+  tipoEntrega: 'Retira',
+  mode: 'PRESUPUESTO' as const,
+}
+
+async function render(element: ReturnType<typeof receiptElement>) {
+  const res = new ImageResponse(element, { width: 400, height: 700 })
+  expect(res.headers.get('content-type')).toBe('image/png')
+  const buf = await res.arrayBuffer()
+  expect(buf.byteLength).toBeGreaterThan(1000)
 }
 
 describe('receiptElement', () => {
-  it('renderiza un PNG válido con la tarjeta', async () => {
-    const res = new ImageResponse(receiptElement(data), { width: 400, height: 620 })
-    expect(res.headers.get('content-type')).toBe('image/png')
-    const buf = await res.arrayBuffer()
-    expect(buf.byteLength).toBeGreaterThan(1000)
+  it('renderiza un PNG válido con la tarjeta (presupuesto)', async () => {
+    await render(receiptElement(data))
+  })
+
+  it('renderiza con saldo "Pagado" y modo borrador', async () => {
+    await render(receiptElement({ ...data, mode: 'BORRADOR', saldo: 0 }))
   })
 })

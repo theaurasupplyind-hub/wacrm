@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic'
 const WIDTH = 400
 
 function estimatedHeight(itemCount: number, faltantes: number): number {
-  return Math.max(420, 320 + itemCount * 40 + faltantes * 18)
+  return Math.max(520, 380 + itemCount * 44 + faltantes * 18)
 }
 
 export async function GET(
