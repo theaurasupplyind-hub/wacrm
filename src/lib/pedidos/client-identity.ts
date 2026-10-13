@@ -44,6 +44,42 @@ export function isSenderPhoneCandidate(
 const NOT_A_CLIENT_NAME_RE =
   /\b(?:presupuesto|cotizaci[oó]n|prueba|creando|armando|estabas|estaba|cancelar|olvidar|precio|disponible|tienen|cu[aá]nto|quiero|quer[ií]a|cambia|cambiar|cambi[aá]|corrige|corregir|correg[ií]|agrega|agregar|saca|sacar|quita|quitar|medida|reemplaza|mejor|hola|gracias|otro|otra|ninguno|ninguna|buenos?\s+d[ií]as|buenas?\s+(?:tardes|noches))\b/i
 
+// Saludo seguido de un nombre ("Hola Jorge", "Buenas tardes Ana"): ese nombre es
+// el DESTINATARIO del saludo, no el cliente del presupuesto.
+const GREETING_NAME_RE =
+  /\b(?:hola+|buenos\s+d[ií]as|buenas\s+(?:tardes|noches)|buen[oa]s?|qu[eé]\s+tal)[,\s]+([A-Za-zÁÉÍÓÚÑáéíóúñ]{2,})\b/i
+
+function nameKey(value: string): string {
+  return (value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+}
+
+/** Destinatario explícito del pedido ("para Juan", "a Joaquín"). */
+export function explicitClientFromText(text: string): string | null {
+  const m = (text || '').match(
+    /\b(?:para|a)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)/,
+  )
+  return m ? m[1].trim() : null
+}
+
+/**
+ * En "Hola Jorge tengo 4 pinturas...", "Jorge" es a quién saluda el mensaje, no
+ * el cliente. Devuelve true cuando `value` sólo aparece como nombre del saludo
+ * (y no como destinatario explícito "para Jorge").
+ */
+export function isGreetingRecipientName(value: string | null | undefined, text: string): boolean {
+  const name = nameKey(value || '')
+  if (!name) return false
+  const m = (text || '').match(GREETING_NAME_RE)
+  if (!m) return false
+  if (nameKey(m[1]) !== name) return false
+  const explicit = explicitClientFromText(text)
+  return !(explicit && nameKey(explicit) === name)
+}
+
 /**
  * A pending customer-name slot must not absorb a sentence about the task.
  * Returns a cleaned name only for plausible short name-like replies.

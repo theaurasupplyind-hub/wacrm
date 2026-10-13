@@ -36,12 +36,12 @@ vi.mock('@/lib/bot-trace/record', () => ({
 import { processPedidoMessage } from './index'
 import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalogo'
 
-function makeDb() {
+function makeDb(glossaryRows: unknown[] = []) {
   const state: { order: unknown } = { order: null }
   const db = {
     from(table: string) {
       if (table === 'order_glossary') {
-        return { select: () => ({ eq: async () => ({ data: [] }) }) }
+        return { select: () => ({ eq: async () => ({ data: glossaryRows }) }) }
       }
       return {
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { order_context: state.order } }) }) }),
@@ -305,5 +305,72 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(findClientsFn).toHaveBeenCalledWith('Fede')
     expect(sent.buttons.at(-1)?.bodyText).toContain('Fede')
     expect(sent.buttons.at(-1)?.bodyText).not.toContain('5491100000000')
+  })
+
+  it('la cotización aplica el glosario (moldura = grosor) igual que la creación', async () => {
+    const db = makeDb([
+      { term_norm: 'moldura', term_display: 'moldura', meaning: { type: 'grosor', value: 4 } },
+    ])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'moldura de 4 56x41 sin tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'moldura de 4 56x41 sin tela', { parseFn }))
+
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('20.000')
+    expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
+  })
+
+  it('la cotización pregunta por un término desconocido que bloquea y espera el glosario', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'pantalla para embastar' }],
+    })
+
+    const result = await processPedidoMessage(args(db, 'pantalla para embastar', { parseFn }))
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('necesito entender')
+    expect(sent.texts.at(-1)).toContain('pantalla')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+      awaitingGlossary: { terms: ['pantalla'] },
+    })
+  })
+
+  it('no toma el nombre del saludo como cliente en la cotización', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: 'Jorge',
+      items: [{ cantidad: 4, texto: 'pintura 94x81' }],
+    })
+
+    await processPedidoMessage(
+      args(db, 'Hola Jorge, tengo 4 pinturas para embastar', { parseFn }),
+    )
+
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).not.toContain('Jorge')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      clienteNombre: null,
+    })
+  })
+
+  it('no usa el nombre del saludo como cliente al crear (pregunta a nombre de quién)', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: 'Jorge',
+      items: [{ cantidad: 1, texto: 'bastidor sin tela 60x40' }],
+    })
+
+    await processPedidoMessage(
+      args(db, 'Hola Jorge, armame un presupuesto 60x40', { parseFn }),
+    )
+
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+    expect(sent.texts.at(-1)).not.toContain('Jorge')
   })
 })

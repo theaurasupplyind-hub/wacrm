@@ -14,7 +14,7 @@ import {
 } from '@/lib/facbal/client'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
-import { resolveItems } from './resolve-items'
+import { comprehendOrder, resolveClientGuess } from './understand'
 import {
   loadOrderContext,
   saveOrderContext,
@@ -22,7 +22,6 @@ import {
   isOrderContextActive,
 } from './context'
 import { executePedido, pedidoItemsNeto } from './execute'
-import { previewPedido } from './preview'
 import { sendPedidoReceipt } from './send-receipt'
 import {
   buildOrderSummary,
@@ -31,11 +30,11 @@ import {
   classifyYesNo,
   parseDescuento,
 } from './summary'
-import { applyOrderGlossary, loadGlossary, parseGlossaryMeanings, upsertGlossary } from './glossary'
-import { buildKnownVocab, detectUnknownTerms } from './classify-item'
+import { loadGlossary, parseGlossaryMeanings, upsertGlossary } from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
 import {
   isPhoneLikeClientName,
+  isGreetingRecipientName,
   isSenderPhone,
   isSenderPhoneCandidate,
   normalizeClientNameReply,
@@ -458,34 +457,37 @@ async function resolveAndSave(
 
   const { refs, rules } = await loadCatalog(args)
   const glossary = await loadGlossary(args.db, args.accountId)
-  const items = applyOrderGlossary(parsed.items, glossary)
+  const { resolved, blockingTerms } = comprehendOrder({
+    items: parsed.items,
+    refs,
+    rules,
+    glossary,
+  })
 
-  // Términos que el bot no entiende → preguntar y aguardar (glosario general).
-  const vocab = buildKnownVocab(refs, rules)
-  const unknown = detectUnknownTerms(items, vocab, glossary)
-  if (unknown.length > 0) {
-    const terms = unknown.map(u => u.term)
+  // Términos desconocidos que BLOQUEAN la cotización (ítem sin precio) → preguntar
+  // y aprender al glosario. Los cosméticos (color/marca) no interrumpen.
+  if (blockingTerms.length > 0) {
     const state: OrderContext = {
       stage: 'confirming',
       items: [],
-      clienteNombre: parsed.cliente || existing?.clienteNombre || null,
+      clienteNombre: resolveClientGuess(parsed.cliente, text, existing?.clienteNombre, args.senderPhone).value,
       total: 0,
       faltantes: [],
       notaSupuestos: [],
-      awaitingGlossary: { terms, orderText: text },
+      awaitingGlossary: { terms: blockingTerms, orderText: text },
     }
     await saveOrderContext(args.db, args.conversationId, state)
-    const msg = buildGlossaryQuestion(terms)
+    const msg = buildGlossaryQuestion(blockingTerms)
     await sendText(args, msg)
     return { handled: true, text: msg }
   }
 
-  const resolved = resolveItems({ items, refs, rules })
   if (resolved.items.length === 0) return { handled: false }
 
   const invalidParsedClient = isPhoneLikeClientName(parsed.cliente, args.senderPhone)
+  const invalidGreeting = isGreetingRecipientName(parsed.cliente, text)
   const invalidExistingClient = isPhoneLikeClientName(existing?.clienteNombre, args.senderPhone)
-  const parsedCliente = invalidParsedClient ? null : parsed.cliente
+  const parsedCliente = invalidParsedClient || invalidGreeting ? null : parsed.cliente
   const existingClienteNombre = invalidExistingClient ? null : existing?.clienteNombre
   const nextClienteNombre = parsedCliente || existingClienteNombre || null
   const clienteChanged = !!parsedCliente && parsedCliente !== existingClienteNombre
@@ -551,7 +553,9 @@ async function handleGlossaryAnswer(
   ctx: OrderContext,
 ): Promise<ProcessPedidoResult> {
   const pending = ctx.awaitingGlossary
-  if (!pending) return resolveAndSave(args, ctx)
+  if (!pending) {
+    return ctx.awaitingQuoteApproval ? presentQuote(args, args.text, ctx) : resolveAndSave(args, ctx)
+  }
 
   const catalog = await loadCatalog(args)
   const interpretations = await parseGlossaryMeanings(pending.terms, args.text, catalog)
@@ -569,7 +573,11 @@ async function handleGlossaryAnswer(
     })
   }
 
-  // Re-resolver el pedido original ahora que el glosario lo entiende.
+  // Re-resolver el texto original ahora que el glosario lo entiende. Si estábamos
+  // en una cotización, volvemos a cotizar; si no, seguimos el flujo de creación.
+  if (ctx.awaitingQuoteApproval) {
+    return presentQuote(args, pending.orderText, { ...ctx, awaitingGlossary: null, quoteText: null })
+  }
   return resolveAndSave(args, ctx, pending.orderText)
 }
 
@@ -696,13 +704,13 @@ async function presentQuote(
   text: string,
   context: OrderContext | null = null,
 ): Promise<ProcessPedidoResult> {
-  const preview = await previewPedido(text, {
-    context,
-    refs: args.refs,
-    rules: args.rules,
-    parseFn: args.parseFn,
-  })
-  if (!preview) {
+  const parsed = args.parseFn
+    ? await args.parseFn(text, context)
+    : await parseOrder(text, { context })
+
+  const quoteText = context?.quoteText ? `${context.quoteText}\n${text}` : text
+
+  if (parsed.items.length === 0) {
     const msg = context?.awaitingQuoteApproval
       ? 'No actualicé la cotización ni guardé un presupuesto. Si querés crear el presupuesto, respondé "sí"; si querés cambiar el producto, decime cuál.'
       : 'No pude identificar el producto para cotizar. Decime qué producto y medida querés consultar.'
@@ -710,16 +718,51 @@ async function presentQuote(
     return { handled: true, text: msg }
   }
 
-  const quoteText = context?.quoteText
-    ? `${context.quoteText}\n${text}`
-    : text
+  const { refs, rules } = await loadCatalog(args)
+  const glossary = await loadGlossary(args.db, args.accountId)
+  const { resolved, blockingTerms } = comprehendOrder({ items: parsed.items, refs, rules, glossary })
+
+  if (resolved.items.length === 0) {
+    const msg = 'No pude identificar el producto para cotizar. Decime qué producto y medida querés consultar.'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  // Términos desconocidos que bloquean la cotización → preguntar y aprender.
+  // Guardamos el modo "cotización" para re-cotizar cuando el usuario responda.
+  if (blockingTerms.length > 0) {
+    const state: OrderContext = {
+      stage: 'confirming',
+      items: [],
+      clienteNombre: context?.clienteNombre ?? null,
+      total: 0,
+      faltantes: [],
+      notaSupuestos: [],
+      awaitingQuoteApproval: true,
+      quoteText,
+      awaitingGlossary: { terms: blockingTerms, orderText: quoteText },
+    }
+    await saveCtx(args, state)
+    const msg = buildGlossaryQuestion(blockingTerms)
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  // El cliente se PROPONE acá (nombre limpio) pero se resuelve recién al crear.
+  const clienteNombre = resolveClientGuess(
+    parsed.cliente,
+    text,
+    context?.clienteNombre,
+    args.senderPhone,
+  ).value
+
   const state: OrderContext = {
     stage: 'confirming',
-    items: preview.items,
-    clienteNombre: preview.clienteNombre,
-    total: preview.total,
-    faltantes: preview.faltantes,
-    notaSupuestos: [],
+    items: resolved.items,
+    clienteNombre,
+    total: resolved.total,
+    faltantes: resolved.faltantes,
+    notaSupuestos: resolved.notaSupuestos,
     awaitingQuoteApproval: true,
     quoteText,
   }
@@ -774,6 +817,12 @@ async function handlePending(
   const text = (args.text || '').trim()
   if (!text) return { handled: false }
 
+  // Estamos esperando la explicación de un término desconocido (glosario). Va
+  // antes de la cotización porque una cotización puede estar esperando glosario.
+  if (ctx.awaitingGlossary) {
+    return handleGlossaryAnswer(args, ctx)
+  }
+
   if (ctx.awaitingQuoteApproval) {
     return handleQuoteApproval(args, ctx, text)
   }
@@ -785,11 +834,6 @@ async function handlePending(
     const msg = 'No pude identificar los productos o medidas. Escribilos, por ejemplo: "2 bastidores 60x40 sin tela".'
     await sendText(args, msg)
     return { handled: true, text: msg }
-  }
-
-  // Estamos esperando la explicación de un término desconocido (glosario).
-  if (ctx.awaitingGlossary) {
-    return handleGlossaryAnswer(args, ctx)
   }
 
   // Estábamos esperando el nombre del cliente.

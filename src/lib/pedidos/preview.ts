@@ -1,11 +1,13 @@
-// Preview read-only del pedido (para bot-beta): parsea + resuelve + resumen,
-// SIN enviar WhatsApp, SIN escribir contexto y SIN crear el presupuesto.
+// Preview read-only del pedido (para bot-beta y el tool de cotización): parsea +
+// comprende (glosario + resolución) + resumen, SIN enviar WhatsApp, SIN escribir
+// contexto y SIN crear el presupuesto.
 
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
-import { resolveItems } from './resolve-items'
+import { comprehendOrder, resolveClientGuess } from './understand'
 import { buildOrderSummary } from './summary'
+import type { OrderGlossaryEntry } from './glossary'
 import type { OrderContext, ParsedOrder, PedidoItem } from './types'
 
 export interface PedidoPreview {
@@ -22,6 +24,9 @@ export async function previewPedido(
     context?: OrderContext | null
     refs?: PrecioReferencia[]
     rules?: PricingRule[]
+    /** Glosario aprendido (si se pasa, se aplica igual que en la creación). */
+    glossary?: OrderGlossaryEntry[]
+    senderPhone?: string | null
     /** Inyección para tests: parseo (evita llamar al LLM). */
     parseFn?: (text: string, context: OrderContext | null) => Promise<ParsedOrder>
   } = {},
@@ -33,13 +38,25 @@ export async function previewPedido(
 
   const refs = opts.refs ?? (await getPreciosReferencia())
   const rules = opts.rules ?? (await getPricingRules())
-  const resolved = resolveItems({ items: parsed.items, refs, rules })
+  const { resolved } = comprehendOrder({
+    items: parsed.items,
+    refs,
+    rules,
+    glossary: opts.glossary ?? [],
+  })
   if (resolved.items.length === 0) return null
+
+  const clienteNombre = resolveClientGuess(
+    parsed.cliente,
+    text,
+    opts.context?.clienteNombre,
+    opts.senderPhone,
+  ).value
 
   const ctx: OrderContext = {
     stage: 'confirming',
     items: resolved.items,
-    clienteNombre: parsed.cliente ?? opts.context?.clienteNombre ?? null,
+    clienteNombre,
     total: resolved.total,
     faltantes: resolved.faltantes,
     notaSupuestos: resolved.notaSupuestos,
@@ -49,6 +66,6 @@ export async function previewPedido(
     total: resolved.total,
     items: resolved.items,
     faltantes: resolved.faltantes,
-    clienteNombre: parsed.cliente ?? opts.context?.clienteNombre ?? null,
+    clienteNombre,
   }
 }
