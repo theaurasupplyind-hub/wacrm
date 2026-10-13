@@ -102,5 +102,18 @@ export interface OrderContext {
    * re-resolver cuando responda.
    */
   awaitingGlossary?: { terms: string[]; orderText: string } | null
+  /**
+   * Faltó un atributo de un ítem (medida/variante) y esperamos que el usuario lo
+   * indique. Guarda el pedido parseado para completar el ítem y re-resolver sin
+   * volver a llamar al parser.
+   */
+  awaitingItemAttr?: {
+    itemIndex: number
+    ask: 'medida' | 'variante'
+    options: string[]
+    term: string
+    parsed: ParsedOrder
+    orderText: string
+  } | null
   updatedAt?: number | null
 }

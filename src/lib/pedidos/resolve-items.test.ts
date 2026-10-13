@@ -85,4 +85,24 @@ describe('resolveItems', () => {
     const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'bastidor 25x45 cm' }] })
     expect(r.items[0].faltante).toBe(false)
   })
+
+  it('productos por atributo: resuelve por catálogo (rollo, acrílico, circulares)', () => {
+    const rollo = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'rollo de tela' }] })
+    expect(rollo.items[0].faltante).toBe(false)
+    expect(rollo.items[0].precio_unitario).toBe(197000)
+
+    const acr = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'acrilico 60cc comunes' }] })
+    expect(acr.items[0].faltante).toBe(false)
+    expect(acr.items[0].categoria).toBe('ACRILICO')
+    expect(acr.items[0].precio_unitario).toBe(7500)
+
+    const circ = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'circular 60' }] })
+    expect(circ.items[0].faltante).toBe(false)
+    expect(circ.items[0].precio_unitario).toBe(73000)
+  })
+
+  it('acrílico sin medida/variante queda faltante (no inventa)', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'acrilico' }] })
+    expect(r.items[0].faltante).toBe(true)
+  })
 })

@@ -9,6 +9,7 @@
 import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule, Producto, PriceSuggestion } from '@/lib/precios'
 import { buildKnownVocab, classifyItem } from './classify-item'
+import { resolveCatalogAttrs } from './catalog-attrs'
 import type { ParsedOrderItem, PedidoItem } from './types'
 
 const DEFAULT_CATEGORIA = 'BASTIDOR'
@@ -45,6 +46,37 @@ function etiqueta(cantidad: number, texto: string): string {
 
 function describe(categoria: string, medida: string, variante: string | null): string {
   return `${cap(categoria)} ${medida}${variante ? ` ${variante}` : ''}`.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Cotiza un producto "por atributo" (categorías que no se miden en `AxB`:
+ * acrílico, circulares, rollo de tela) cuando el texto ya alcanza para
+ * determinarlo (categoría + medida + variante únicas en el catálogo).
+ */
+function resolveByAttr(
+  cantidad: number,
+  texto: string,
+  categoria: string,
+  refs: PrecioReferencia[],
+): { item: PedidoItem; total: number } | null {
+  if (categoria === DEFAULT_CATEGORIA) return null
+  const resolved = resolveCatalogAttrs(texto, categoria, refs)
+  const m = resolved.matched
+  if (!m) return null
+  return {
+    item: {
+      cantidad,
+      categoria: m.categoria,
+      medida: m.medida,
+      variante: m.variante || null,
+      precio_unitario: m.precio,
+      faltante: false,
+      descripcion: describe(m.categoria, m.medida, m.variante || null),
+      regla_aplicada: null,
+      asumido: null,
+    },
+    total: m.precio * cantidad,
+  }
 }
 
 export function resolveItems(args: {
@@ -85,6 +117,12 @@ export function resolveItems(args: {
     const cls = classifyItem(texto, vocab)
 
     if (!cls.medida) {
+      const byAttr = resolveByAttr(cantidad, texto, cls.categoria, refs)
+      if (byAttr) {
+        resolved.push(byAttr.item)
+        total += byAttr.total
+        continue
+      }
       pushFaltante(cantidad, texto)
       continue
     }

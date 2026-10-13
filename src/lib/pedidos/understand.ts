@@ -4,8 +4,8 @@
 // (`resolveAndSave`) y la cotización (`presentQuote`/`previewPedido`):
 //   1. aplica el glosario aprendido,
 //   2. clasifica y resuelve los ítems contra el catálogo,
-//   3. separa los términos que BLOQUEAN la cotización (ítem sin precio con
-//      vocabulario desconocido) de los cosméticos (color/marca/nota).
+//   3. separa los términos que BLOQUEAN la cotización de los cosméticos, y
+//   4. detecta qué atributo falta (medida/variante) para cotizar.
 //
 // El precio y el catálogo siempre salen de los datos (`refs`/`rules`); acá no se
 // inventa nada.
@@ -16,8 +16,11 @@ import type { OrderGlossaryEntry } from './glossary'
 import { buildKnownVocab, classifyItem } from './classify-item'
 import { resolveItems } from './resolve-items'
 import type { ResolveResult } from './resolve-items'
+import { resolveCatalogAttrs } from './catalog-attrs'
 import { isGreetingRecipientName, isPhoneLikeClientName } from './client-identity'
 import type { ParsedOrderItem } from './types'
+
+const DEFAULT_CATEGORIA = 'BASTIDOR'
 
 export interface ComprehendInput {
   items: ParsedOrderItem[]
@@ -26,39 +29,73 @@ export interface ComprehendInput {
   glossary?: OrderGlossaryEntry[]
 }
 
+export interface MissingAttr {
+  itemIndex: number
+  /** Texto del ítem tal como quedó (con glosario aplicado). */
+  term: string
+  ask: 'medida' | 'variante'
+  /** Opciones del catálogo (botones/lista). Vacío = pedir en texto libre. */
+  options: string[]
+}
+
 export interface ComprehendResult {
   /** Ítems con el glosario ya aplicado (insumo de `resolveItems`). */
   items: ParsedOrderItem[]
   resolved: ResolveResult
-  /** Términos desconocidos que dejan algún ítem sin cotizar (bloquean). */
+  /** Términos desconocidos que dejan el producto sin reconocer (bloquean). */
   blockingTerms: string[]
+  /** Atributos que faltan para cotizar productos ya reconocidos. */
+  missing: MissingAttr[]
 }
 
 /**
- * Aplica glosario, resuelve precios y detecta términos que bloquean. Los
- * términos desconocidos en ítems que igual se cotizaron se consideran cosméticos
- * y NO se devuelven (no interrumpen al usuario).
+ * Aplica glosario, resuelve precios, detecta términos que bloquean y atributos
+ * faltantes. Un término desconocido solo "bloquea" si el ítem NO se reconoce
+ * como producto/categoría; si el producto se entiende, las palabras extra
+ * (color/marca) son cosméticas y se pide el atributo que falte.
  */
 export function comprehendOrder(input: ComprehendInput): ComprehendResult {
   const glossary = input.glossary ?? []
   const items = applyOrderGlossary(input.items, glossary)
   const resolved = resolveItems({ items, refs: input.refs, rules: input.rules })
 
-  // `resolveItems` emite exactamente un ítem por ítem de entrada (mismo índice),
-  // así que puedo mapear los faltantes de vuelta a su texto original.
   const vocab = buildKnownVocab(input.refs, input.rules)
   const blockingTerms: string[] = []
-  const seen = new Set<string>()
+  const missing: MissingAttr[] = []
+  const seenTerms = new Set<string>()
+
   resolved.items.forEach((item, idx) => {
     if (!item.faltante) return
-    for (const term of classifyItem(items[idx]?.texto ?? '', vocab, glossary).unknownTerms) {
-      if (seen.has(term)) continue
-      seen.add(term)
-      blockingTerms.push(term)
+    const texto = items[idx]?.texto ?? ''
+    const cls = classifyItem(texto, vocab, glossary)
+    const recognized = cls.categoria !== DEFAULT_CATEGORIA || cls.regla !== null
+
+    // Producto sin reconocer → preguntar por la palabra (glosario).
+    if (cls.unknownTerms.length > 0 && !recognized) {
+      for (const term of cls.unknownTerms) {
+        if (seenTerms.has(term)) continue
+        seenTerms.add(term)
+        blockingTerms.push(term)
+      }
+      return
     }
+
+    // Producto reconocido (categoría explícita) → pedir la medida/variante que falta.
+    if (cls.categoria !== DEFAULT_CATEGORIA) {
+      const r = resolveCatalogAttrs(texto, cls.categoria, input.refs)
+      if (!r.medida) {
+        missing.push({ itemIndex: idx, term: texto, ask: 'medida', options: r.medidaOptions })
+      } else if (!r.matched) {
+        missing.push({ itemIndex: idx, term: texto, ask: 'variante', options: r.varianteOptions })
+      }
+      return
+    }
+
+    // Bastidor / regla sin medida → pedir dimensiones en texto libre.
+    missing.push({ itemIndex: idx, term: texto, ask: 'medida', options: [] })
   })
 
-  return { items, resolved, blockingTerms }
+  return { items, resolved, blockingTerms, missing }
 }
 
 export interface ClientGuess {

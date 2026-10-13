@@ -6,10 +6,32 @@ import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalog
 const base = { refs: preciosReferencia, rules: pricingRules }
 
 describe('comprehendOrder', () => {
-  it('marca como bloqueante un término desconocido que deja el ítem sin precio', () => {
-    const r = comprehendOrder({ ...base, items: [{ cantidad: 1, texto: 'pantalla para embastar' }] })
-    expect(r.blockingTerms).toEqual(['pantalla'])
+  it('marca como bloqueante un producto sin reconocer (sin medida)', () => {
+    const r = comprehendOrder({ ...base, items: [{ cantidad: 1, texto: 'florero' }] })
+    expect(r.blockingTerms).toEqual(['florero'])
     expect(r.resolved.items[0].faltante).toBe(true)
+  })
+
+  it('si el producto se reconoce pero falta la medida, no bloquea y pide medida', () => {
+    const r = comprehendOrder({ ...base, items: [{ cantidad: 4, texto: 'pintura para embastar' }] })
+    expect(r.blockingTerms).toEqual([])
+    expect(r.missing).toEqual([{ itemIndex: 0, term: 'pintura para embastar', ask: 'medida', options: [] }])
+  })
+
+  it('para una categoría por atributo (acrílico) ofrece las medidas del catálogo', () => {
+    const r = comprehendOrder({ ...base, items: [{ cantidad: 1, texto: 'acrilico' }] })
+    expect(r.blockingTerms).toEqual([])
+    expect(r.missing).toHaveLength(1)
+    expect(r.missing[0].ask).toBe('medida')
+    expect(r.missing[0].options).toContain('60cc')
+    expect(r.missing[0].options).toContain('250cc')
+  })
+
+  it('resuelve rollo de tela por su única medida del catálogo', () => {
+    const r = comprehendOrder({ ...base, items: [{ cantidad: 1, texto: 'rollo de tela' }] })
+    expect(r.resolved.items[0].faltante).toBe(false)
+    expect(r.resolved.items[0].precio_unitario).toBe(197000)
+    expect(r.missing).toEqual([])
   })
 
   it('no bloquea por términos cosméticos en un ítem que igual se cotiza', () => {

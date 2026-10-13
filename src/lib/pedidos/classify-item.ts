@@ -83,6 +83,9 @@ export function buildKnownVocab(refs: PrecioReferencia[], rules: PricingRule[]):
     for (const w of wordList(cat, 3)) {
       if (STOPWORDS.has(w) || variantWordSet.has(w)) continue
       categoryByWord.set(w, cat)
+      // También el singular, para que "circular" matchee "CIRCULARES".
+      const sing = singularize(w)
+      if (sing && sing !== w) categoryByWord.set(sing, cat)
     }
   }
 

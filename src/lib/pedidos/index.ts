@@ -15,6 +15,7 @@ import {
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
 import { comprehendOrder, resolveClientGuess } from './understand'
+import type { MissingAttr } from './understand'
 import {
   loadOrderContext,
   saveOrderContext,
@@ -30,7 +31,7 @@ import {
   classifyYesNo,
   parseDescuento,
 } from './summary'
-import { loadGlossary, parseGlossaryMeanings, upsertGlossary } from './glossary'
+import { loadGlossary, normalizeTerm, parseGlossaryMeanings, upsertGlossary } from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
 import {
   isPhoneLikeClientName,
@@ -455,17 +456,30 @@ async function resolveAndSave(
     return { handled: false }
   }
 
+  return resolveParsedAndAdvance(args, existing, parsed, text)
+}
+
+/**
+ * Resuelve y avanza con un pedido ya parseado (sin volver a llamar al parser).
+ * Se usa con el mensaje del usuario y también al completar un atributo faltante.
+ */
+async function resolveParsedAndAdvance(
+  args: ProcessPedidoMessageArgs,
+  existing: OrderContext | null,
+  parsed: ParsedOrder,
+  text: string,
+): Promise<ProcessPedidoResult> {
   const { refs, rules } = await loadCatalog(args)
   const glossary = await loadGlossary(args.db, args.accountId)
-  const { resolved, blockingTerms } = comprehendOrder({
+  const { resolved, blockingTerms, missing } = comprehendOrder({
     items: parsed.items,
     refs,
     rules,
     glossary,
   })
 
-  // Términos desconocidos que BLOQUEAN la cotización (ítem sin precio) → preguntar
-  // y aprender al glosario. Los cosméticos (color/marca) no interrumpen.
+  // Términos desconocidos que dejan el producto sin reconocer → preguntar y
+  // aprender al glosario. Los cosméticos (color/marca) no interrumpen.
   if (blockingTerms.length > 0) {
     const state: OrderContext = {
       stage: 'confirming',
@@ -483,6 +497,17 @@ async function resolveAndSave(
   }
 
   if (resolved.items.length === 0) return { handled: false }
+
+  // Producto reconocido pero sin la medida/variante → preguntarla antes de cotizar.
+  if (missing.length > 0) {
+    return askItemAttr(args, {
+      missing: missing[0],
+      parsed,
+      orderText: text,
+      awaitingQuoteApproval: false,
+      clienteNombre: resolveClientGuess(parsed.cliente, text, existing?.clienteNombre, args.senderPhone).value,
+    })
+  }
 
   const invalidParsedClient = isPhoneLikeClientName(parsed.cliente, args.senderPhone)
   const invalidGreeting = isGreetingRecipientName(parsed.cliente, text)
@@ -548,6 +573,115 @@ function buildGlossaryQuestion(terms: string[]): string {
   )
 }
 
+function buildItemAttrQuestion(missing: MissingAttr): string {
+  const label = `"${missing.term}"`
+  if (missing.ask === 'variante') return `¿Qué variante de ${label}?`
+  if (missing.options.length > 0) return `¿Qué medida de ${label}?`
+  return `¿Qué medida para ${label}? (ej: 60x40)`
+}
+
+/** Pregunta el atributo que falta (medida/variante). Botones si hay ≤3 opciones. */
+async function askItemAttr(
+  args: ProcessPedidoMessageArgs,
+  opts: {
+    missing: MissingAttr
+    parsed: ParsedOrder
+    orderText: string
+    awaitingQuoteApproval: boolean
+    clienteNombre: string | null
+  },
+): Promise<ProcessPedidoResult> {
+  const { missing } = opts
+  const state: OrderContext = {
+    stage: 'confirming',
+    items: [],
+    clienteNombre: opts.clienteNombre,
+    total: 0,
+    faltantes: [],
+    notaSupuestos: [],
+    awaitingQuoteApproval: opts.awaitingQuoteApproval || undefined,
+    quoteText: opts.awaitingQuoteApproval ? opts.orderText : undefined,
+    awaitingItemAttr: {
+      itemIndex: missing.itemIndex,
+      ask: missing.ask,
+      options: missing.options,
+      term: missing.term,
+      parsed: opts.parsed,
+      orderText: opts.orderText,
+    },
+  }
+  await saveOrderContext(args.db, args.conversationId, state)
+
+  const question = buildItemAttrQuestion(missing)
+  if (missing.options.length >= 1 && missing.options.length <= 3) {
+    await sendButtons(
+      args,
+      question,
+      missing.options.map((opt, i) => ({ id: `pedido_attr_${i}`, title: opt.slice(0, 20) })),
+    )
+    return { handled: true, text: question }
+  }
+  const list =
+    missing.options.length > 0
+      ? `\n\n${missing.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\nRespondé el número o el valor.`
+      : ''
+  const msg = question + list
+  await sendText(args, msg)
+  return { handled: true, text: msg }
+}
+
+/** Interpreta la respuesta del usuario al atributo faltante. */
+async function handleItemAttrAnswer(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  chosenOverride?: string,
+): Promise<ProcessPedidoResult> {
+  const slot = ctx.awaitingItemAttr
+  if (!slot) {
+    return ctx.awaitingQuoteApproval ? presentQuote(args, args.text, ctx) : resolveAndSave(args, ctx)
+  }
+
+  const reask = async (prefix: string): Promise<ProcessPedidoResult> => {
+    const msg = `${prefix} ${buildItemAttrQuestion(slot)}`
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  const text = (chosenOverride ?? args.text ?? '').trim()
+  if (!text) return { handled: false }
+  if (!chosenOverride && classifyOrderReply(text) === 'cancel') return cancelOrder(args)
+
+  // Elegir el valor: opción (por número o valor) o texto libre.
+  let chosen: string | null
+  if (slot.options.length > 0) {
+    const num = text.match(/^\s*(\d{1,2})\s*$/)
+    if (num) {
+      const idx = parseInt(num[1], 10) - 1
+      chosen = idx >= 0 && idx < slot.options.length ? slot.options[idx] : null
+    } else {
+      const key = normalizeTerm(text)
+      chosen = slot.options.find(o => normalizeTerm(o) === key) ?? null
+    }
+  } else {
+    chosen = text
+  }
+  if (chosen === null) return reask('No entendí esa opción.')
+  if (slot.ask === 'medida' && slot.options.length === 0 && !/\d/.test(chosen)) {
+    return reask('Necesito una medida.')
+  }
+
+  const items = slot.parsed.items.map((it, i) =>
+    i === slot.itemIndex ? { ...it, texto: `${it.texto} ${chosen}`.replace(/\s+/g, ' ').trim() } : it,
+  )
+  const parsed: ParsedOrder = { ...slot.parsed, items }
+  const cleaned: OrderContext = { ...ctx, awaitingItemAttr: null, awaitingGlossary: null }
+
+  if (ctx.awaitingQuoteApproval) {
+    return quoteFromParsed(args, slot.orderText, { ...cleaned, quoteText: null }, parsed)
+  }
+  return resolveParsedAndAdvance(args, cleaned, parsed, slot.orderText)
+}
+
 async function handleGlossaryAnswer(
   args: ProcessPedidoMessageArgs,
   ctx: OrderContext,
@@ -600,6 +734,12 @@ async function handleButton(
   }
   if (buttonId === 'pedido_cli_no') {
     return advance(args, { ...ctx, clienteId: null, clienteTelefono: null, clienteCandidatos: [], awaitingClienteChoice: false })
+  }
+  // Opción de un atributo faltante (medida/variante) tocada como botón.
+  if (buttonId.startsWith('pedido_attr_')) {
+    const idx = parseInt(buttonId.slice('pedido_attr_'.length), 10)
+    const opt = ctx.awaitingItemAttr?.options?.[idx]
+    if (opt != null) return handleItemAttrAnswer(args, ctx, opt)
   }
   const entrega: Record<string, TipoEntrega> = {
     pedido_entrega_retira: 'Retira',
@@ -707,7 +847,15 @@ async function presentQuote(
   const parsed = args.parseFn
     ? await args.parseFn(text, context)
     : await parseOrder(text, { context })
+  return quoteFromParsed(args, text, context, parsed)
+}
 
+async function quoteFromParsed(
+  args: ProcessPedidoMessageArgs,
+  text: string,
+  context: OrderContext | null,
+  parsed: ParsedOrder,
+): Promise<ProcessPedidoResult> {
   const quoteText = context?.quoteText ? `${context.quoteText}\n${text}` : text
 
   if (parsed.items.length === 0) {
@@ -720,7 +868,7 @@ async function presentQuote(
 
   const { refs, rules } = await loadCatalog(args)
   const glossary = await loadGlossary(args.db, args.accountId)
-  const { resolved, blockingTerms } = comprehendOrder({ items: parsed.items, refs, rules, glossary })
+  const { resolved, blockingTerms, missing } = comprehendOrder({ items: parsed.items, refs, rules, glossary })
 
   if (resolved.items.length === 0) {
     const msg = 'No pude identificar el producto para cotizar. Decime qué producto y medida querés consultar.'
@@ -746,6 +894,17 @@ async function presentQuote(
     const msg = buildGlossaryQuestion(blockingTerms)
     await sendText(args, msg)
     return { handled: true, text: msg }
+  }
+
+  // Producto reconocido sin medida/variante → preguntarla (modo cotización).
+  if (missing.length > 0) {
+    return askItemAttr(args, {
+      missing: missing[0],
+      parsed,
+      orderText: quoteText,
+      awaitingQuoteApproval: true,
+      clienteNombre: context?.clienteNombre ?? null,
+    })
   }
 
   // El cliente se PROPONE acá (nombre limpio) pero se resuelve recién al crear.
@@ -821,6 +980,11 @@ async function handlePending(
   // antes de la cotización porque una cotización puede estar esperando glosario.
   if (ctx.awaitingGlossary) {
     return handleGlossaryAnswer(args, ctx)
+  }
+
+  // Esperando la medida/variante de un ítem reconocido (también antes de cotizar).
+  if (ctx.awaitingItemAttr) {
+    return handleItemAttrAnswer(args, ctx)
   }
 
   if (ctx.awaitingQuoteApproval) {

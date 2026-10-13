@@ -327,18 +327,63 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     const db = makeDb()
     const parseFn = async () => ({
       cliente: null,
-      items: [{ cantidad: 1, texto: 'pantalla para embastar' }],
+      items: [{ cantidad: 1, texto: 'florero' }],
     })
 
-    const result = await processPedidoMessage(args(db, 'pantalla para embastar', { parseFn }))
+    const result = await processPedidoMessage(args(db, 'florero', { parseFn }))
 
     expect(result.handled).toBe(true)
     expect(sent.texts.at(-1)).toContain('necesito entender')
-    expect(sent.texts.at(-1)).toContain('pantalla')
+    expect(sent.texts.at(-1)).toContain('florero')
     expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
       awaitingQuoteApproval: true,
-      awaitingGlossary: { terms: ['pantalla'] },
+      awaitingGlossary: { terms: ['florero'] },
     })
+  })
+
+  it('cotiza un producto por atributo cuando el texto ya lo determina (rollo de tela)', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'rollo de tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'agregá un rollo de tela', { parseFn }))
+
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('197.000')
+    expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
+  })
+
+  it('pregunta medida y variante de acrílico con opciones del catálogo y cotiza', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'acrilico' }],
+    })
+
+    // 1. Pide la medida con opciones del catálogo (60cc/125cc/...).
+    await processPedidoMessage(args(db, 'acrilico', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('¿Qué medida de "acrilico"?')
+    expect(sent.texts.at(-1)).toContain('60cc')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+      awaitingItemAttr: { ask: 'medida' },
+    })
+
+    // 2. Elige 60cc (opción 1) → pide la variante.
+    await processPedidoMessage(args(db, '1', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('¿Qué variante de "acrilico 60cc"?')
+    expect(sent.texts.at(-1)).toContain('Comunes')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingItemAttr: { ask: 'variante' },
+    })
+
+    // 3. Elige Comunes → cotiza 60cc Comunes = $7.500.
+    await processPedidoMessage(args(db, 'Comunes', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('7.500')
+    expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
   })
 
   it('no toma el nombre del saludo como cliente en la cotización', async () => {
