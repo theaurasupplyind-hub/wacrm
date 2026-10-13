@@ -193,6 +193,8 @@ export interface ShadowComparison {
   deterministicReason: string
   plannerDomains: string[]
   plannerWrites: string[]
+  /** false para turnos fuera de alcance del planner (voucher/clarify/interactive/…) — no entran a las métricas. */
+  applicable: boolean
   agrees: boolean
   unnecessaryWrite: boolean
   missedWrite: boolean
@@ -204,7 +206,20 @@ export interface ShadowComparison {
   error?: string
 }
 
-const DETERMINISTIC_WRITE_DOMAINS = new Set(['expense', 'attendance', 'pedido', 'voucher'])
+/**
+ * Dominios donde el planner puede proponer una **escritura de negocio** real
+ * (llamando a `registrar_gasto`/`registrar_asistencia`). `pedido` y `voucher`
+ * NO cuentan: pedido es cotización/consulta (el handler de pedidos confirma la
+ * creación por su cuenta) y voucher está congelado.
+ */
+const PLANNER_WRITE_DOMAINS = new Set(['expense', 'attendance'])
+
+/**
+ * Dominios donde la comparación determinístico↔planner es significativa.
+ * Fuera: `voucher` (congelado), `clarify`/`interactive`/`flow`/`none` (el
+ * planner no aplica). Estos turnos se registran pero NO entran a las métricas.
+ */
+const COMPARABLE_DOMAINS = new Set(['expense', 'attendance', 'pedido', 'assistant'])
 
 export function compareShadow(args: {
   deterministicDomain: string
@@ -215,21 +230,22 @@ export function compareShadow(args: {
   const p = result.proposal
   const domains = p?.domains ?? []
   const writes = p?.writes ?? []
-  const detIsWrite = DETERMINISTIC_WRITE_DOMAINS.has(deterministicDomain)
+  const applicable = COMPARABLE_DOMAINS.has(deterministicDomain)
+  const detIsWrite = PLANNER_WRITE_DOMAINS.has(deterministicDomain)
 
-  const agrees = !!p && domains.some((d) => d === deterministicDomain || (d === 'assistant' && deterministicDomain === 'clarify')) &&
-    // si el determinístico escribió, el planner debe proponer la misma escritura
-    (!detIsWrite || writes.length > 0)
+  // Acuerdo por DOMINIO (no por "escribió"): pedido/consulta son válidos.
+  const agrees = applicable && domains.includes(deterministicDomain)
 
   return {
     deterministicDomain,
     deterministicReason,
     plannerDomains: domains,
     plannerWrites: writes,
+    applicable,
     agrees,
     // LLM propone escribir cuando el determinístico NO iba a escribir → falso positivo.
     unnecessaryWrite: writes.length > 0 && !detIsWrite,
-    // El determinístico iba a escribir y el planner no lo propuso.
+    // El determinístico iba a escribir (gasto/asistencia) y el planner no lo propuso.
     missedWrite: detIsWrite && writes.length === 0,
     latched: result.error ? 'error' : 'ok',
     latencyMs: result.latencyMs,

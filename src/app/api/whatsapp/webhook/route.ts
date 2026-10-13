@@ -1489,7 +1489,7 @@ async function processMessage(
   const plannerMode = getPlannerMode()
   let plannerSource: 'deterministic' | 'planner' = 'deterministic'
   let plannerReason = 'mode_off'
-  const plannerEligible = plannerMode !== 'off' && botAllowed && !flowConsumed && !!inboundText.trim()
+  const plannerEligible = plannerMode !== 'off' && botAllowed && !flowConsumed && !interactiveReplyId && !!inboundText.trim()
   if (plannerEligible) {
     const allowedDomains = getPlannerDomains()
     if (plannerMode === 'on' && allowedDomains.size > 0) {

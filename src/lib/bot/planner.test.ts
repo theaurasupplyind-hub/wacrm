@@ -124,5 +124,22 @@ describe('compareShadow', () => {
     const c = compareShadow({ deterministicDomain: 'none', deterministicReason: 'none', result: result({ error: 'planner_off' }) })
     expect(c.plannerDomains).toEqual([])
     expect(c.agrees).toBe(false)
+    expect(c.applicable).toBe(false)
+  })
+
+  it('pedido acuerda por dominio y NO es missedWrite (no es escritura de tool)', () => {
+    const proposal = proposeActions([call('cotizar_pedido', { texto: '2 bastidores 60x40' })], '2 bastidores 60x40', null)
+    const c = compareShadow({ deterministicDomain: 'pedido', deterministicReason: 'intent', result: result({ proposal }) })
+    expect(c.applicable).toBe(true)
+    expect(c.agrees).toBe(true)
+    expect(c.missedWrite).toBe(false)
+    expect(c.unnecessaryWrite).toBe(false)
+  })
+
+  it('voucher queda fuera de alcance (no aplicable)', () => {
+    const proposal = proposeActions([], 'Me pagó (cobro)', null)
+    const c = compareShadow({ deterministicDomain: 'voucher', deterministicReason: 'clarify_resolve', result: result({ proposal }) })
+    expect(c.applicable).toBe(false)
+    expect(c.agrees).toBe(false)
   })
 })
