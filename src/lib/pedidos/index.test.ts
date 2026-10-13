@@ -33,15 +33,27 @@ vi.mock('@/lib/bot-trace/record', () => ({
   recordBotTrace: vi.fn(async () => {}),
 }))
 
+const ai = vi.hoisted(() => ({ callOpenRouter: vi.fn() }))
+vi.mock('@/lib/ai/openrouter', () => ai)
+
 import { processPedidoMessage } from './index'
 import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalogo'
 
 function makeDb(glossaryRows: unknown[] = []) {
-  const state: { order: unknown } = { order: null }
+  const state: { order: unknown; glossary: unknown[] } = { order: null, glossary: glossaryRows }
   const db = {
     from(table: string) {
       if (table === 'order_glossary') {
-        return { select: () => ({ eq: async () => ({ data: glossaryRows }) }) }
+        return {
+          select: () => ({ eq: async () => ({ data: state.glossary }) }),
+          upsert: async (row: { term_norm?: string }) => {
+            state.glossary = state.glossary.filter(
+              r => (r as { term_norm?: string }).term_norm !== row.term_norm,
+            )
+            state.glossary.push(row)
+            return { error: null }
+          },
+        }
       }
       return {
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { order_context: state.order } }) }) }),
@@ -55,7 +67,12 @@ function makeDb(glossaryRows: unknown[] = []) {
     },
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return Object.assign(db as any, { getOrderContext: () => state.order })
+  return Object.assign(db as any, {
+    getOrderContext: () => state.order,
+    setGlossary: (rows: unknown[]) => {
+      state.glossary = rows
+    },
+  })
 }
 
 type Extra = Record<string, unknown>
@@ -86,6 +103,10 @@ describe('processPedidoMessage — creación de presupuesto', () => {
   beforeEach(() => {
     sent.texts = []
     sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
     facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
     facbal.createInvoice.mockImplementation(async (p: Record<string, unknown>) => ({
       id: 55,
@@ -431,5 +452,40 @@ describe('processPedidoMessage — creación de presupuesto', () => {
 
     expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
     expect(sent.texts.at(-1)).not.toContain('Jorge')
+  })
+
+  it('"revisá el glosario" reprocesa la cotización con el glosario actualizado', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'moldura de 4 56x41 sin tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'moldura de 4 56x41 sin tela', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('18.000')
+
+    // El usuario agrega el término al glosario (pantalla) y pide revisarlo.
+    db.setGlossary([{ term_norm: 'moldura', term_display: 'moldura', meaning: { type: 'grosor', value: 4 } }])
+    await processPedidoMessage(args(db, 'revisá el glosario', { parseFn }))
+
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('20.000')
+  })
+
+  it('aprende una definición en línea y reprocesa el pedido pendiente', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'moldura de 4 56x41 sin tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'moldura de 4 56x41 sin tela', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('18.000')
+
+    await processPedidoMessage(args(db, 'revisá el glosario, moldura significa grosor', { parseFn }))
+
+    expect(ai.callOpenRouter).toHaveBeenCalled()
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+    expect(sent.texts.at(-1)).toContain('20.000')
   })
 })

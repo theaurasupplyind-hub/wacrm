@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   applyOrderGlossary,
   applyOrderGlossaryText,
+  detectInlineDefinition,
   normalizeTerm,
+  stripGlossaryReview,
+  wantsGlossaryReview,
   type OrderGlossaryEntry,
 } from './glossary'
 import { buildKnownVocab, detectUnknownTerms } from './classify-item'
@@ -64,5 +67,37 @@ describe('normalizeTerm', () => {
   it('normaliza acentos y mayúsculas', () => {
     expect(normalizeTerm('  Moldura  ')).toBe('moldura')
     expect(normalizeTerm('Acrílico')).toBe('acrilico')
+  })
+})
+
+describe('detección de glosario en el mensaje', () => {
+  it('detecta "revisá el glosario"', () => {
+    expect(wantsGlossaryReview('revisá el glosario')).toBe(true)
+    expect(wantsGlossaryReview('revisa el glosario, moldura significa grosor')).toBe(true)
+    expect(wantsGlossaryReview('mira el glosario')).toBe(true)
+    expect(wantsGlossaryReview('2 bastidores 60x40')).toBe(false)
+  })
+
+  it('quita la frase de revisión del mensaje', () => {
+    const out = stripGlossaryReview('revisá el glosario, dame 2 de 60x40')
+    expect(out).toContain('dame 2 de 60x40')
+    expect(out).not.toContain('glosario')
+  })
+
+  it('detecta una definición en línea', () => {
+    const d = detectInlineDefinition('moldura significa grosor')
+    expect(d?.term).toBe('moldura')
+    expect(d?.meaning).toBe('grosor')
+  })
+
+  it('separa la definición del pedido que la acompaña', () => {
+    const d = detectInlineDefinition('tapiz significa marco con tela, dame 2 de 60x40')
+    expect(d?.term).toBe('tapiz')
+    expect(d?.cleaned).toContain('dame 2 de 60x40')
+  })
+
+  it('no detecta definición en un pedido común', () => {
+    expect(detectInlineDefinition('2 bastidores 60x40 sin tela')).toBeNull()
+    expect(detectInlineDefinition('revisá el glosario')).toBeNull()
   })
 })

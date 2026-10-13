@@ -31,8 +31,17 @@ import {
   classifyYesNo,
   parseDescuento,
 } from './summary'
-import { loadGlossary, normalizeTerm, parseGlossaryMeanings, upsertGlossary } from './glossary'
+import {
+  detectInlineDefinition,
+  loadGlossary,
+  normalizeTerm,
+  parseGlossaryMeanings,
+  stripGlossaryReview,
+  upsertGlossary,
+  wantsGlossaryReview,
+} from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
+import { buildKnownVocab, classifyItem } from './classify-item'
 import {
   isPhoneLikeClientName,
   isGreetingRecipientName,
@@ -1098,12 +1107,87 @@ async function handlePending(
   return resolveAndSave(args, ctx)
 }
 
+/**
+ * P2 — Glosario "en línea": aprende definiciones ("moldura significa grosor") y
+ * reprocesa el pedido pendiente cuando el usuario pide "revisá el glosario".
+ * Devuelve un resultado si manejó el mensaje; null para seguir el flujo normal.
+ */
+async function tryGlossaryAction(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext | null,
+  active: boolean,
+): Promise<ProcessPedidoResult | null> {
+  const raw = (args.text || '').trim()
+  if (!raw) return null
+  const review = wantsGlossaryReview(raw)
+  const inline = detectInlineDefinition(raw)
+  if (!review && !inline) return null
+
+  const { refs, rules } = await loadCatalog(args)
+  let learned = false
+
+  if (inline) {
+    const vocab = buildKnownVocab(refs, rules)
+    const unknown = classifyItem(inline.term, vocab).unknownTerms.length > 0
+    if (unknown) {
+      const interpretations = await parseGlossaryMeanings([inline.term], raw, { refs, rules })
+      for (const it of interpretations) {
+        await upsertGlossary(args.db, args.accountId, {
+          termNorm: it.termNorm,
+          termDisplay: it.termNorm,
+          meaning: it.meaning,
+        })
+        learned = true
+      }
+    }
+  }
+
+  // Reprocesar el pedido pendiente con el glosario vigente.
+  if (active && ctx) {
+    if (ctx.awaitingQuoteApproval && ctx.quoteText) {
+      return presentQuote(args, ctx.quoteText, {
+        ...ctx,
+        awaitingQuoteApproval: true,
+        quoteText: null,
+        awaitingItemAttr: null,
+        awaitingGlossary: null,
+      })
+    }
+    if (ctx.items.length > 0) {
+      const parsed: ParsedOrder = {
+        cliente: ctx.clienteNombre,
+        items: ctx.items.map(it => ({ cantidad: it.cantidad, texto: it.descripcion })),
+      }
+      return resolveParsedAndAdvance(args, ctx, parsed, raw)
+    }
+  }
+
+  // El mismo mensaje trae un pedido además de la definición.
+  const orderPart = inline ? inline.cleaned : stripGlossaryReview(raw)
+  if (orderPart && mentionsOrderItems(orderPart)) {
+    return presentQuote(args, orderPart, null)
+  }
+
+  const msg = learned
+    ? 'Listo, lo guardé en el glosario para los próximos pedidos.'
+    : 'No hay un pedido abierto para revisar. Decime el pedido y lo cotizo con el glosario.'
+  await sendText(args, msg)
+  return { handled: true, text: msg }
+}
+
 export async function processPedidoMessage(
   args: ProcessPedidoMessageArgs,
 ): Promise<ProcessPedidoResult> {
   ;(args as RepliablePedidoArgs).__pedidoReplied = false
   const ctx = await loadOrderContext(args.db, args.conversationId)
   const active = isOrderContextActive(ctx)
+
+  // P2: "revisá el glosario" / definiciones en línea.
+  const glossaryAction = await tryGlossaryAction(args, active ? (ctx as OrderContext) : null, active)
+  if (glossaryAction) {
+    return { ...glossaryAction, replied: (args as RepliablePedidoArgs).__pedidoReplied }
+  }
+
   let result: ProcessPedidoResult
   if (active) {
     result = await handlePending(args, ctx as OrderContext)

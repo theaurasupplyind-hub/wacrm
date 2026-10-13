@@ -90,6 +90,52 @@ export function applyOrderGlossary(
   return items.map(it => ({ ...it, texto: applyOrderGlossaryText(it.texto, glossary) }))
 }
 
+// ── Detección de intención de glosario en el mensaje ──
+
+// "revisá el glosario", "mira el glosario", "usa el glosario", "repasá el glosario".
+const REVIEW_RE = /\b(?:revis|mir|chequ|repas|us|aplic|ver)[^\s]{0,4}\s+(?:el\s+|mi\s+|tu\s+|nuestro\s+)?glosario\b/i
+
+// Verbos de definición: "moldura significa grosor", "X quiere decir Y", "X = Y".
+const DEF_VERB = '(?:significa|significan|quiere decir|quieren decir|se llama|se llaman|se dice|se dicen|se refiere a|refiere a|ser[íi]a|ser[íi]an|=)'
+
+/** ¿El usuario pide revisar/reprocesar con el glosario? */
+export function wantsGlossaryReview(text: string): boolean {
+  return REVIEW_RE.test(text || '')
+}
+
+/** Quita la frase "revisá el glosario" del mensaje. */
+export function stripGlossaryReview(text: string): string {
+  return (text || '').replace(new RegExp(REVIEW_RE.source, 'gi'), ' ').replace(/\s+/g, ' ').trim()
+}
+
+export interface InlineDefinition {
+  /** Término definido (a la izquierda del verbo). */
+  term: string
+  /** Lo que significa (a la derecha). */
+  meaning: string
+  /** El mensaje sin la definición (por si además trae un pedido). */
+  cleaned: string
+}
+
+/**
+ * Detecta una definición "en línea" del tipo `moldura significa grosor` o
+ * `tapiz = marco con tela`, para aprenderla sin pasar por la pregunta.
+ */
+export function detectInlineDefinition(text: string): InlineDefinition | null {
+  const base = stripGlossaryReview(text)
+  if (!base) return null
+  const re = new RegExp(`([^,;:]{2,40}?)\\s*${DEF_VERB}\\s*([^,;:]{2,40})`, 'i')
+  const m = base.match(re)
+  if (!m || m.index === undefined) return null
+  const term = m[1].replace(/^\s*(?:y|que|el|la|los|las)\s+/i, '').trim()
+  if (!term || /\d/.test(term) || term.split(/\s+/).length > 3) return null
+  const meaning = m[2].trim()
+  const cleaned = (base.slice(0, m.index) + ' ' + base.slice(m.index + m[0].length))
+    .replace(/\s+/g, ' ')
+    .trim()
+  return { term, meaning, cleaned }
+}
+
 // ── Persistencia ──
 
 interface RawGlossaryRow {
