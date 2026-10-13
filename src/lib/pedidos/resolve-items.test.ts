@@ -105,4 +105,19 @@ describe('resolveItems', () => {
     const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'acrilico' }] })
     expect(r.items[0].faltante).toBe(true)
   })
+
+  it('no contamina "rollo de tela" con la variante Sin Tela (colisión categoría/variante)', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'rollo de tela 2x5 sin tela' }] })
+    expect(r.items[0].faltante).toBe(false)
+    expect(r.items[0].categoria).toBe('ROLLO DE TELA')
+    expect(r.items[0].precio_unitario).toBe(197000)
+  })
+
+  it('corrección "sin tela" reemplaza la variante anterior en la descripción', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'lienzo profesional 62.5x76.5 sin tela' }] })
+    const it = r.items[0]
+    expect(it.faltante).toBe(false)
+    expect(it.descripcion).toContain('Sin Tela')
+    expect(it.descripcion).not.toContain('Lienzo Profesional')
+  })
 })

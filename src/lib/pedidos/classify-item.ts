@@ -150,20 +150,32 @@ export function classifyItem(
     }
   }
 
-  // Variante: todas sus palabras presentes (>1 → la más específica).
-  const variantMatches: { variant: string; words: string[] }[] = []
-  for (const [variant, words] of vocab.variantWords) {
-    if (words.length > 0 && words.every(w => hasToken(tokens, w))) {
-      variantMatches.push({ variant, words })
+  // Variante: todas sus palabras presentes. Las variantes del catálogo son de
+  // BASTIDOR, así que solo aplican a esa categoría (evita que "rollo de tela"
+  // + "sin tela" del contexto se vuelva un BASTIDOR Sin Tela). Si el texto
+  // menciona varias, gana la ÚLTIMA mencionada (así "… sin tela" corrige un
+  // "lienzo profesional" anterior).
+  const variantMatches: { variant: string; words: string[]; lastPos: number }[] = []
+  if (categoria === DEFAULT_CATEGORIA) {
+    for (const [variant, words] of vocab.variantWords) {
+      if (words.length === 0 || !words.every(w => hasToken(tokens, w))) continue
+      let lastPos = -1
+      tokens.forEach((t, i) => {
+        if (words.some(w => tokenMatchesWord(t, w))) lastPos = i
+      })
+      variantMatches.push({ variant, words, lastPos })
     }
+    variantMatches.sort((a, b) => b.lastPos - a.lastPos || b.words.length - a.words.length)
   }
-  variantMatches.sort((a, b) => b.words.length - a.words.length)
   const variante = variantMatches[0]?.variant ?? null
 
-  // Regla: la de mayor cantidad de palabras matcheadas.
+  // Regla: la de mayor cantidad de palabras matcheadas. Las reglas del catálogo
+  // se basan en BASTIDOR, así que no aplican a otras categorías (evita que
+  // "rollo de tela … sin tela" tome la regla Sin Tela).
   let regla: PricingRule | null = null
   let bestScore = 0
   for (const rule of vocab.rules) {
+    if (rule.baseCategoria && normalizeText(rule.baseCategoria) !== normalizeText(categoria)) continue
     const words = vocab.ruleWords.get(rule.name) ?? []
     let score = 0
     for (const w of words) if (hasToken(tokens, w)) score++
@@ -207,4 +219,32 @@ export function detectUnknownTerms(
     }
   })
   return out
+}
+
+/**
+ * Quita del texto las palabras de variantes BASTIDOR distintas de `keep`. Sirve
+ * para que una corrección ("… sin tela") no arrastre la variante anterior
+ * ("lienzo profesional") en la descripción del producto.
+ */
+export function stripOtherVariants(
+  texto: string,
+  keep: string | null | undefined,
+  vocab: CatalogVocab,
+): string {
+  const keepKey = normalizeText(keep || '')
+  const dropWords = new Set<string>()
+  for (const [variant, words] of vocab.variantWords) {
+    if (normalizeText(variant) === keepKey) continue
+    for (const w of words) dropWords.add(w)
+  }
+  if (dropWords.size === 0) return texto
+  const dropList = [...dropWords]
+  return (texto || '')
+    .split(/\s+/)
+    .filter(tok => {
+      const t = normalizeText(tok).replace(/[^a-z0-9áéíóúñ]/g, '')
+      if (!t || /\d/.test(t)) return true
+      return !dropList.some(w => tokenMatchesWord(t, w))
+    })
+    .join(' ')
 }

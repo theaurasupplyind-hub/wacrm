@@ -44,4 +44,15 @@ describe('classifyItem', () => {
     expect(classifyItem('acrilico 94x81', vocab).categoria).toBe('ACRILICO')
     expect(classifyItem('rollo 2x5', vocab).categoria).toBe('ROLLO DE TELA')
   })
+
+  it('no aplica variantes BASTIDOR a categorías que no lo son', () => {
+    const c = classifyItem('rollo de tela 2x5 sin tela', vocab)
+    expect(c.categoria).toBe('ROLLO DE TELA')
+    expect(c.variante).toBeNull()
+  })
+
+  it('si el texto menciona varias variantes, gana la última', () => {
+    const c = classifyItem('lienzo profesional 62.5x76.5 sin tela', vocab)
+    expect(c.variante).toBe('Sin Tela')
+  })
 })

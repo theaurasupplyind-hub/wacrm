@@ -28,7 +28,7 @@ Reglas:
 - cliente: sólo el nombre del cliente si aparece explicito como destinatario ("para Juan", "a Joaquín", "hacele a Matías", "a nombre de Ana"); si no, null. NUNCA tomes el nombre de un saludo ("Hola Jorge..." → Jorge es a quien se saluda, no el cliente → null).
 - tipo_entrega: sólo si el usuario lo dice ("retira", "envío", "lo paso a buscar", "te lo mando") → "Retira" | "Envio" | "Retiro y Envio"; si no, null.
 - fecha_entrega: sólo si el usuario menciona una fecha de entrega, devolvé el texto tal cual lo dijo (ej: "el viernes", "15/11", "la semana que viene"); si no, null. NO la confundas con medidas.
-- Si te paso "pedido_actual" y el mensaje es una CORRECCIÓN, devolvé la lista COMPLETA actualizada (incluyendo los ítems sin cambios). Si es un pedido nuevo, ignorá "pedido_actual".
+- Si te paso "pedido_actual" y el mensaje es una CORRECCIÓN, devolvé la lista COMPLETA actualizada (incluyendo los ítems sin cambios). Cambiá solo lo que el usuario pide: NO agregues variantes/modificadores ("sin tela", "lienzo profesional", etc.) a un ítem nuevo si el usuario no los dijo en ESTE mensaje. Si es un pedido nuevo, ignorá "pedido_actual".
 
 Ejemplos:
 "embastame una pintura 94x81" → {"cliente":null,"items":[{"cantidad":1,"texto":"pintura 94x81"}],"tipo_entrega":null,"fecha_entrega":null}
@@ -36,7 +36,8 @@ Ejemplos:
 "56 x 78, 89 x 67, 67 x 56 sin tela" → {"cliente":null,"items":[{"cantidad":1,"texto":"56x78 sin tela"},{"cantidad":1,"texto":"89x67 sin tela"},{"cantidad":1,"texto":"67x56 sin tela"}],"tipo_entrega":null,"fecha_entrega":null}
 "hacele a Matías 2 de 60x40 sin tela" → {"cliente":"Matías","items":[{"cantidad":2,"texto":"60x40 sin tela"}],"tipo_entrega":null,"fecha_entrega":null}
 "Hola Jorge, tengo 4 pinturas y un tapiz para embastar" → {"cliente":null,"items":[{"cantidad":4,"texto":"pintura para embastar"},{"cantidad":1,"texto":"tapiz para embastar"}],"tipo_entrega":null,"fecha_entrega":null}
-"en vez de 60x40 poné 60x50" (pedido_actual: 60x40) → {"cliente":null,"items":[{"cantidad":1,"texto":"60x50"}],"tipo_entrega":null,"fecha_entrega":null}`
+"en vez de 60x40 poné 60x50" (pedido_actual: 60x40) → {"cliente":null,"items":[{"cantidad":1,"texto":"60x50"}],"tipo_entrega":null,"fecha_entrega":null}
+(pedido_actual: 1 bastidor 60x40 sin tela) "agregá un rollo de tela 2x5" → {"cliente":null,"items":[{"cantidad":1,"texto":"bastidor 60x40 sin tela"},{"cantidad":1,"texto":"rollo de tela 2x5"}],"tipo_entrega":null,"fecha_entrega":null}`
 
 function buildUserMessage(text: string, context?: OrderContext | null): string {
   if (context && context.items && context.items.length > 0) {

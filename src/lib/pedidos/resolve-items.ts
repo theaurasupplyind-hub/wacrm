@@ -8,7 +8,7 @@
 
 import { suggestPrice, refsToProductos, catalogBounds, buildSuggestionDesc, roundDim } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule, Producto, PriceSuggestion } from '@/lib/precios'
-import { buildKnownVocab, classifyItem } from './classify-item'
+import { buildKnownVocab, classifyItem, stripOtherVariants } from './classify-item'
 import { resolveCatalogAttrs } from './catalog-attrs'
 import type { ParsedOrderItem, PedidoItem } from './types'
 
@@ -137,7 +137,13 @@ export function resolveItems(args: {
       .join(' ')
 
     const sugerencias = suggestPrice(canonical, productos, rules)
-    const ruleSugs = sugerencias.filter(x => x.suggested && ruleNames.has(x.description))
+    const ruleSugs = sugerencias.filter(x => {
+      if (!x.suggested || !ruleNames.has(x.description)) return false
+      // Las reglas del catálogo se basan en una categoría; no aplican a otra
+      // (p.ej. la regla "Sin Tela" no debe tomar un "rollo de tela").
+      const rule = rulesByName.get(x.description)
+      return !rule?.baseCategoria || rule.baseCategoria.toUpperCase() === cls.categoria.toUpperCase()
+    })
     const productSugs = sugerencias.filter(x => x.suggested && !ruleNames.has(x.description))
 
     // 1. Regla (la elegida por el clasificador; o la sugerida por el motor).
@@ -151,7 +157,11 @@ export function resolveItems(args: {
         variante: rule?.baseVariante || null,
         precio_unitario: chosen.price,
         faltante: false,
-        descripcion: buildSuggestionDesc(texto, chosen.description, rule),
+        descripcion: buildSuggestionDesc(
+          stripOtherVariants(texto, rule?.baseVariante, vocab),
+          chosen.description,
+          rule,
+        ),
         regla_aplicada: chosen.description,
         asumido: null,
       })

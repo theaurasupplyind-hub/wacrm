@@ -355,6 +355,20 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
   })
 
+  it('no contamina el rollo de tela con una variante arrastrada del contexto', async () => {
+    const db = makeDb()
+    // Simula el LLM que reemite el ítem nuevo con "sin tela" pegado del contexto.
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'rollo de tela 2x5 sin tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'agregá un rollo de tela 2x5', { parseFn }))
+
+    expect(sent.texts.at(-1)).toContain('197.000')
+    expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
+  })
+
   it('pregunta medida y variante de acrílico con opciones del catálogo y cotiza', async () => {
     const db = makeDb()
     const parseFn = async () => ({
