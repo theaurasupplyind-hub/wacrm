@@ -36,7 +36,7 @@ import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import { detectFailureSignal } from '@/lib/bot-assistant/failure-detect'
 import { logFailureSignal } from '@/lib/bot-assistant/failure-trace'
 import { processPedidoMessage } from '@/lib/pedidos'
-import { loadOrderContext, isOrderContextActive, clearOrderContext } from '@/lib/pedidos/context'
+import { loadOrderContext, isOrderContextActive, clearOrderContext, getStaleQuote } from '@/lib/pedidos/context'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import {
@@ -1353,6 +1353,13 @@ async function processMessage(
         clarify: !!clarifyLoad?.state,
         order: hasPendingOrder,
       },
+      // Fix #2: si no hay nada activo pero hay cotización vencida recordable,
+      // "cancela" la menciona en vez de decir "nada pendiente".
+      staleQuote: (() => {
+        const stale = getStaleQuote(orderCtx)
+        if (!stale) return null
+        return { total: stale.total ?? null, items: stale.items?.length ?? 0 }
+      })(),
     })
     if (cmd.handled) {
       console.log('[context-command] %s -> conv=%s', ctxCommand, conversation.id)

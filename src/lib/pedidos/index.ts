@@ -41,6 +41,7 @@ import {
   wantsGlossaryReview,
 } from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
+import { interpretOrderReply } from './interpret-reply'
 import { buildKnownVocab, classifyItem } from './classify-item'
 import {
   isPhoneLikeClientName,
@@ -949,7 +950,16 @@ async function handleQuoteApproval(
   ctx: OrderContext,
   text: string,
 ): Promise<ProcessPedidoResult> {
-  const reply = classifyOrderReply(text)
+  // Anti-keywords: lo obvio va por listas; lo ambiguo lo entiende el LLM con
+  // el contexto de la cotización (nunca keywords nuevas).
+  const { decision: reply } = await interpretOrderReply(text, {
+    waitingFor: `aprobación de la cotización (total $${ctx.total.toLocaleString('es-AR')}) para crear el presupuesto`,
+    itemsText: ctx.items
+      .filter((it) => !it.faltante)
+      .map((it) => `${it.cantidad}x ${it.descripcion}`)
+      .join('; ')
+      .slice(0, 300),
+  })
   if (reply === 'cancel') {
     await clearOrderContext(args.db, args.conversationId)
     const msg = 'Listo. Era solo una cotización; no guardé ni creé ningún presupuesto.'
@@ -1092,7 +1102,14 @@ async function handlePending(
     return { handled: true, text: msg }
   }
 
-  const reply = classifyOrderReply(text)
+  const { decision: reply } = await interpretOrderReply(text, {
+    waitingFor: 'respuesta pendiente del presupuesto (confirmar, cancelar o corregir)',
+    itemsText: ctx.items
+      .filter((it) => !it.faltante)
+      .map((it) => `${it.cantidad}x ${it.descripcion}`)
+      .join('; ')
+      .slice(0, 300),
+  })
   if (reply === 'cancel') {
     return cancelOrder(args)
   }

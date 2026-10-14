@@ -53,4 +53,32 @@ describe('classifyContextCommand', () => {
     expect(cleared.order).toHaveBeenCalledWith(db, 'conv-1')
     expect(result.reply).toContain('presupuesto pendiente')
   })
+
+  it('sin nada activo pero con cotización vencida: la menciona (fix #2)', async () => {
+    const db = {} as never
+    const result = await handleContextCommand({
+      db,
+      conversationId: 'conv-1',
+      command: 'cancel_active',
+      active: {},
+      staleQuote: { total: 676000, items: 2 },
+    })
+
+    expect(result.reply).toContain('venc')
+    expect(result.reply).toContain('676.000')
+    expect(result.reply).not.toContain('nada pendiente')
+  })
+
+  it('sin nada activo ni vencido: nada pendiente (como antes)', async () => {
+    const db = {} as never
+    const result = await handleContextCommand({
+      db,
+      conversationId: 'conv-1',
+      command: 'cancel_active',
+      active: {},
+      staleQuote: null,
+    })
+
+    expect(result.reply).toContain('nada pendiente')
+  })
 })

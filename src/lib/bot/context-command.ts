@@ -17,18 +17,20 @@ import { clearExpenseContext } from '@/lib/expenses/context'
 import { clearAttendanceContext } from '@/lib/attendance/context'
 import { clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { clearOrderContext } from '@/lib/pedidos/context'
+import { isDismissCommand } from '@/lib/bot-llm/reply-intent'
 
 export type ContextCommand = 'cancel_active' | 'reset_all' | null
 
 const RESET_RE = /^(reiniciar|reinicia|reinicio|empezar de nuevo|empezar de cero|arrancar de nuevo|arrancar de cero|borrar todo|borra todo|resetear|reset|olvida todo|olvid[aá]te de todo|salir|chau bot|jesusdanielllavesecreta)[.!]*$/i
 
-const CANCEL_RE = /^(cancelar|cancela|cancelo|olvidalo|olv[ií]dalo|mejor no|despu[eé]s|todav[ií]a no|nada|ninguno|ninguna|saltar|saltear|no\s+lo\s+cre(?:es|as)(?:\s*,?\s*(?:era|es|fue)\s+una\s+prueba)?|(?:era|es|fue)\s+una\s+prueba|no\s+lo\s+hagas|no\s+(?:quiero|necesito)\s+(?:un\s+)?presupuesto|me\s+arrepent[ií])[.!]*$/i
-
 export function classifyContextCommand(text: string): ContextCommand {
   const t = (text || '').trim()
   if (!t) return null
   if (RESET_RE.test(t)) return 'reset_all'
-  if (CANCEL_RE.test(t)) return 'cancel_active'
+  // Comando global de descarte: definición única en bot-llm/reply-intent.ts
+  // (fix #4). Incluye diferir/omitir ("después", "saltar") que dentro de un
+  // flujo no cancelan sino que siguen otro camino.
+  if (isDismissCommand(t)) return 'cancel_active'
   return null
 }
 
@@ -45,15 +47,24 @@ export interface ContextCommandResult {
   reply?: string
 }
 
+/** Cotización vencida pero recordable (ver `getStaleQuote` en pedidos/context). */
+export interface StaleQuoteInfo {
+  total?: number | null
+  items?: number
+}
+
 /**
  * Aplica el comando. `cancel_active` descarta solo lo pendiente; si no hay
- * nada, igual limpia por las dudas y responde corto. `reset_all` limpia todo.
+ * nada activo pero hay una cotización vencida recordable, la menciona y ofrece
+ * re-armarla en vez de decir "nada pendiente" (fix #2, notas-fallos-reales.md).
+ * `reset_all` limpia todo.
  */
 export async function handleContextCommand(args: {
   db: SupabaseClient
   conversationId: string
   command: Exclude<ContextCommand, null>
   active: ActiveContexts
+  staleQuote?: StaleQuoteInfo | null
 }): Promise<ContextCommandResult> {
   const { db, conversationId, command, active } = args
 
@@ -83,6 +94,15 @@ export async function handleContextCommand(args: {
 
   // cancel_active
   if (cleared.length === 0) {
+    const q = args.staleQuote
+    if (q && (q.total || q.items)) {
+      const what =
+        q.total && q.total > 0 ? `la cotización de $${q.total.toLocaleString('es-AR')}` : 'tu cotización'
+      return {
+        handled: true,
+        reply: `Esa ${what} venció. ¿Querés que la arme de nuevo? Mandame los productos y medidas.`,
+      }
+    }
     return { handled: true, reply: 'No tenías nada pendiente. ¿En qué te ayudo?' }
   }
   return {

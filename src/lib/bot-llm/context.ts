@@ -2,6 +2,7 @@ import type { ExpenseContextState } from '@/lib/expenses/types'
 import type { AttendanceContextState } from '@/lib/attendance/context'
 import type { VoucherContextState } from '@/lib/ai/voucher-context'
 import type { OrderContext } from '@/lib/pedidos/types'
+import { isOrderContextActive, getStaleQuote } from '@/lib/pedidos/context'
 import type { ClarifyContextState } from './clarify-context'
 
 export interface BotContextInput {
@@ -87,7 +88,21 @@ export function buildBotContextText(input: BotContextInput): string {
   }
 
   const order = input.orderCtx
-  if (order?.awaitingOrderItems) {
+  // Fix #3 (notas-fallos-reales.md): el contexto vencido NO se presenta como
+  // pendiente — el LLM ofrecía cancelar cotizaciones muertas. Si venció pero es
+  // recordable, se marca como vencida para que ofrezca re-armarla.
+  const orderActive = isOrderContextActive(order ?? null)
+  const staleQuote = orderActive ? null : getStaleQuote(order ?? null)
+  if (staleQuote) {
+    const totalTxt =
+      staleQuote.total && staleQuote.total > 0 ? ` (total $${staleQuote.total.toLocaleString('es-AR')})` : ''
+    lines.push(
+      `Cotización anterior VENCIDA${totalTxt}: ya no está pendiente, NO la ofrezcas para aceptar/cancelar y NO tomes "sí"/"cancelar" como respuesta a ella. Si el usuario la menciona, ofrecé armarla de nuevo pidiendo productos y medidas.`,
+    )
+  } else if (!orderActive) {
+    // Contexto inactivo y no recordable (muy viejo o sin stage): no se
+    // menciona. El LLM no debe ofrecer nada de un pedido muerto.
+  } else if (order?.awaitingOrderItems) {
     lines.push('El dueño pidió crear un presupuesto y está por indicar los productos/medidas. Todavía no hay presupuesto guardado.')
   } else if (order?.awaitingQuoteApproval) {
     const itemsTxt = order.items

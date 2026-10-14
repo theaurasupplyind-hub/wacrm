@@ -9,6 +9,7 @@
  * Supabase (nunca lanzan).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { classifyReply } from '@/lib/bot-llm/reply-intent'
 
 /** TTL de una confirmación pendiente (minutos). */
 export const PENDING_TTL_MIN = 15
@@ -33,28 +34,18 @@ function normReply(t: string): string {
     .trim()
 }
 
-const CONFIRM_RES = [
-  /^(si|sí|dale|de una|joya|ok|okay|listo|confirmo|confirmado|hacelo|metele|perfecto|exacto|va|bueno|de acuerdo)(\s+(si|sí|dale|de una))?$/,
-  /^(si|sí),?\s+(dale|hacelo|metele|confirmo|de una)$/,
-]
-
-const CANCEL_RES = [
-  /^(no|mejor no|para|para para|cancel[aá]|cancelalo|olvidalo|olvídate|nada|dejalo|dejá|no hagas nada)$/,
-  /^(no|mejor no),?\s+(cancel[aá]|nada|dejalo|deja|(no\s+)?lo hagas)$/,
-]
-
-/** ¿El mensaje confirma la operación pendiente? (corto y afirmativo). */
+/** Respuesta corta que confirma (fix #4: definición única en reply-intent). */
 export function isConfirmationReply(text: string): boolean {
   const t = normReply(text)
   if (!t || t.length > 40) return false
-  return CONFIRM_RES.some((re) => re.test(t))
+  return classifyReply(text) === 'confirm'
 }
 
-/** ¿El mensaje cancela la operación pendiente? */
+/** Respuesta corta que cancela (fix #4: definición única en reply-intent). */
 export function isCancellationReply(text: string): boolean {
   const t = normReply(text)
   if (!t || t.length > 40) return false
-  return CANCEL_RES.some((re) => re.test(t))
+  return classifyReply(text) === 'cancel'
 }
 
 export async function createPendingConfirm(

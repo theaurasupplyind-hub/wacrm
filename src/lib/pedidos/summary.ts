@@ -1,5 +1,6 @@
 import type { DescuentoState, OrderContext, TipoEntrega } from './types'
 import { formatFechaEntregaDisplay } from './dates'
+import { classifyReply } from '@/lib/bot-llm/reply-intent'
 
 function money(n: number): string {
   return `$${n.toLocaleString('es-AR')}`
@@ -86,43 +87,14 @@ function normalizeCmd(text: string): string {
     .trim()
 }
 
-// Palabras que por sí solas significan confirmar/cancelar (normalizadas).
-const CONFIRM_WORDS = new Set([
-  'si', 'dale', 'ok', 'oka', 'okey', 'confirmo', 'confirmar', 'confirma', 'confirme',
-  'confirmado', 'listo', 'perfecto', 'joya', 'bueno', 'va', 'vamos', 'hacelo',
-  'hagamoslo', 'mandale', 'manda', 'sale', 'correcto', 'aprobado', 'acuerdo',
-  'genial', 'buenisimo', 'bien', 'sisi',
-])
-const CANCEL_WORDS = new Set([
-  'no', 'cancelar', 'cancela', 'cancelalo', 'cancelo', 'cancelalo', 'dejalo', 'deja',
-  'olvidalo', 'olvidate', 'anular', 'anula', 'anulalo', 'nada', 'basta',
-])
-const CANCEL_PHRASE_RE = /\bno\s+lo\s+cre(?:es|as)(?:\s*,?\s*(?:era|es|fue)\s+una\s+prueba)?\b|\b(?:era|es|fue)\s+una\s+prueba\b|\bno\s+lo\s+hagas\b|\bno\s+(?:quiero|necesito)\s+(?:un\s+)?presupuesto\b|\bme\s+arrepent[ií]\b/i
-// Relleno: no aportan significado (se ignoran al clasificar).
-const FILLER_WORDS = new Set([
-  'el', 'la', 'los', 'las', 'lo', 'un', 'una', 'unos', 'unas', 'de', 'del',
-  'presupuesto', 'pedido', 'ya', 'entonces', 'che', 'por', 'favor', 'todo', 'gracias',
-])
-
 /**
  * Clasifica la respuesta del usuario ante un pedido pendiente.
- * Robusto a frases compuestas ("si confirmo", "ok listo"), ignorando relleno.
- * Si queda contenido que no es sólo confirmación/cancelación → es una corrección.
+ * Delega en el módulo único (`bot-llm/reply-intent.ts`, fix #4): simétrico
+ * some/some — "sí + verbo que repite la oferta" confirma; contenido nuevo
+ * (medidas, cambios, "pero") es corrección.
  */
 export function classifyOrderReply(text: string): PedidoReply {
-  if (CANCEL_PHRASE_RE.test(text || '')) return 'cancel'
-  const tokens = normalizeCmd(text)
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-  const significant = tokens.filter(t => !FILLER_WORDS.has(t))
-  if (significant.length === 0) return 'other'
-
-  if (significant.some(t => CANCEL_WORDS.has(t))) {
-    const rest = significant.filter(t => !CANCEL_WORDS.has(t))
-    if (rest.length === 0) return 'cancel'
-  }
-  if (significant.every(t => CONFIRM_WORDS.has(t))) return 'confirm'
-  return 'other'
+  return classifyReply(text)
 }
 
 /** Interpreta la respuesta de tipo de entrega ("retira", "envío", "las dos"). */
