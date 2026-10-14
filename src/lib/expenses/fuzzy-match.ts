@@ -272,11 +272,20 @@ export async function resolveExpenseEntities(
   }
 
   // Cross-match parsed.provider against BOTH lists
+  // (Fase 4: se guarda el top-2 de cada lista para el margen S3 del gate).
+  const topProviders: { name: string; score: number }[] = []
+  const topEmployees: { name: string; score: number }[] = []
+  function trackTop(top: { name: string; score: number }[], name: string, score: number) {
+    top.push({ name, score })
+    top.sort((a, b) => b.score - a.score)
+    if (top.length > 2) top.length = 2
+  }
   if (parsed.provider) {
     let bestProvScore = 0
     let bestProv: Provider | null = null
     for (const prov of providers) {
       const score = tokenScore(prov.name, parsed.provider)
+      trackTop(topProviders, prov.name, score)
       if (score > bestProvScore) { bestProvScore = score; bestProv = prov }
     }
 
@@ -284,6 +293,7 @@ export async function resolveExpenseEntities(
     let bestEmp: Employee | null = null
     for (const emp of employees) {
       const score = tokenScore(emp.name, parsed.provider)
+      trackTop(topEmployees, emp.name, score)
       if (score > bestEmpScore) { bestEmpScore = score; bestEmp = emp }
     }
 
@@ -302,6 +312,7 @@ export async function resolveExpenseEntities(
     let bestEmp: Employee | null = null
     for (const emp of employees) {
       const score = tokenScore(emp.name, parsed.employee)
+      trackTop(topEmployees, emp.name, score)
       if (score > bestEmpScore) { bestEmpScore = score; bestEmp = emp }
     }
 
@@ -309,6 +320,7 @@ export async function resolveExpenseEntities(
     let bestProv: Provider | null = null
     for (const prov of providers) {
       const score = tokenScore(prov.name, parsed.employee)
+      trackTop(topProviders, prov.name, score)
       if (score > bestProvScore) { bestProvScore = score; bestProv = prov }
     }
 
@@ -350,6 +362,7 @@ export async function resolveExpenseEntities(
     providerName,
     employeeId,
     employeeName,
+    entityScores: { provider: topProviders, employee: topEmployees },
   }
 }
 

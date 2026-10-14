@@ -7,7 +7,7 @@
 | Documento | Estado | Qué lo supera |
 |-----------|--------|---------------|
 | [`integracion-vouchers-original.md`](./integracion-vouchers-original.md) | ✅ Implementado | [`vouchers.md`](../vouchers.md) — spec de matching + pipeline actual |
-| [`refactor-chatbot.md`](./refactor-chatbot.md) | ❌ Sin implementar (bot deshabilitado) | Voice Orders cubre el flujo de pedidos: [`voice-orders.md`](../voice-orders.md) |
+| [`refactor-chatbot.md`](./refactor-chatbot.md) | ❌ Sin implementar (bot deshabilitado) | Sucesor real: `src/lib/pedidos/` + asistente ([`assistant-agent.md`](../assistant-agent.md), [`architecture.md`](../architecture.md) §6). Nota: `voice-orders.md` también está retirado, no es sucesor válido |
 | [`bot-personal.md`](./bot-personal.md) | ⏳ Planificado (no iniciado) | Roadmap en [`architecture.md`](../architecture.md) §11 |
 
 ## ¿Cómo leer estos archivos?

@@ -14,6 +14,12 @@
 > `docs/bots/assistant-agent.md` para el estado real.
 
 > El contenido histórico que sigue no está verificado como descripción actual.
+> Cifras y rutas del cuerpo (p. ej. "711 tests", "webhook de 1883 líneas",
+> `/api/budget-image/*`, `voice-orders/*`, `router.ts:37`, `knowledge=[]`) son
+> de la etapa Beta y están superadas: el webhook hoy tiene ~1956 líneas, solo
+> existen `src/app/api/bot-beta/{assistant,unified,voucher}/`, la imagen de
+> presupuesto vive en `src/app/api/presupuesto-image/` y la KB se integra en
+> `production.ts` (`retrieveKnowledge`). No corregir el cuerpo; leerlo como acta.
 
 ---
 

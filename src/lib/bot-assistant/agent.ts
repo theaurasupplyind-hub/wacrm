@@ -9,6 +9,15 @@
 
 import { callOpenRouterChat, type ChatMessage } from '@/lib/ai/openrouter'
 import { findAgentTool, agentToolDefinitions, type ToolContext } from './tool-registry'
+import { deriveMatchInfo } from './effect-gate'
+import {
+  peekFreshPending,
+  settlePending,
+  isConfirmationReply,
+  isCancellationReply,
+} from './pending-confirm'
+import { fuzzyMatchExpense } from '@/lib/expenses/fuzzy-match'
+import type { ParsedExpense } from '@/lib/expenses/types'
 import { historyIncludesCurrent } from './history'
 import type { ToolLog } from './tools'
 import type { AssistantResult } from './orchestrator'
@@ -109,6 +118,66 @@ export function buildAgentMessages(
   return messages
 }
 
+/**
+ * Resuelve una confirmación pendiente del turno anterior (Fase 4).
+ * Devuelve reply lista (corta el loop) o null para seguir normal.
+ * Solo ejecuta tools de la whitelist de confirmables con los args GUARDADOS.
+ */
+async function maybeHandlePendingConfirm(args: {
+  text: string
+  toolCtx: ToolContext
+  extraction: UnifiedExtraction | null
+}): Promise<{
+  reply: string
+  toolResults: Record<string, unknown>
+  logs: { step: string; data: unknown }[]
+  toolLogs: ToolLog[]
+} | null> {
+  const pending = await peekFreshPending(args.toolCtx.db, args.toolCtx.conversationId)
+  if (!pending) return null
+
+  if (isCancellationReply(args.text)) {
+    await settlePending(args.toolCtx.db, pending.id, 'cancelled')
+    return {
+      reply: 'Listo, no guardé nada.',
+      toolResults: {},
+      logs: [{ step: 'pending_cancelled', data: { pendingId: pending.id } }],
+      toolLogs: [],
+    }
+  }
+
+  if (isConfirmationReply(args.text)) {
+    const tool = findAgentTool(pending.tool)
+    if (!tool) {
+      await settlePending(args.toolCtx.db, pending.id, 'expired')
+      return null
+    }
+    await settlePending(args.toolCtx.db, pending.id, 'confirmed')
+    const t0 = Date.now()
+    try {
+      const out = await tool.execute({ ...pending.args, _confirmed: true }, args.toolCtx)
+      return {
+        reply: out.summary || 'Listo.',
+        toolResults: { [tool.name]: out.data },
+        logs: [{ step: 'pending_confirmed', data: { pendingId: pending.id, tool: tool.name } }],
+        toolLogs: [{ tool: tool.name, duration_ms: Date.now() - t0 }],
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return {
+        reply: 'No pude confirmarlo. ¿Me lo repetís?',
+        toolResults: {},
+        logs: [{ step: 'pending_confirm_error', data: { error: msg } }],
+        toolLogs: [{ tool: pending.tool, duration_ms: Date.now() - t0, error: msg }],
+      }
+    }
+  }
+
+  // Otro tema: la pendiente se supera y se sigue el loop normal.
+  await settlePending(args.toolCtx.db, pending.id, 'superseded')
+  return null
+}
+
 export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantResult> {
   const logs: { step: string; data: unknown }[] = []
   const toolLogs: ToolLog[] = []
@@ -116,6 +185,59 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
   const model = args.model || process.env.ASSISTANT_MODEL || undefined
 
   const messages = buildAgentMessages(args)
+
+  // La extracción viaja en el ctx para que las tools de escritura evalúen el
+  // gate de efectos con la señal real del turno.
+  const toolCtx: ToolContext = { ...args.ctx, extraction: args.extraction ?? null }
+
+  // Fase 4: pre-match único para S3/S4 (solo gasto; best-effort, no bloquea).
+  if (args.extraction && (args.extraction.intent === 'gasto' || args.extraction.intent === 'multi_expense')) {
+    try {
+      const ext = args.extraction
+      const parsed: ParsedExpense = {
+        amount: ext.monto,
+        description: ext.proveedor
+          ? `Pago a ${ext.proveedor}`
+          : ext.empleado_gasto
+            ? `Pago a ${ext.empleado_gasto}`
+            : ext.categoria || 'Pago',
+        category: ext.categoria,
+        tipoGasto: ext.tipo_gasto ?? null,
+        provider: ext.proveedor,
+        employee: ext.empleado_gasto,
+        payment_method: ext.metodo_pago,
+        reference: null,
+        date: ext.fecha,
+        isExpenseIntent: true,
+        raw: args.text,
+        amountAmbiguous: ext.dudoso,
+        extractorSource: ext.extractor_source,
+        confianza: ext.confianza,
+      }
+      const match = await fuzzyMatchExpense(parsed, { readonly: true })
+      toolCtx.preMatch = deriveMatchInfo(match)
+    } catch (err) {
+      console.warn('[agent] pre-match failed:', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Fase 4: si el turno anterior dejó una confirmación pendiente, este mensaje
+  // la resuelve (confirma / cancela / cambia de tema) antes del loop normal.
+  const pendingReply = await maybeHandlePendingConfirm({
+    text: args.text,
+    toolCtx,
+    extraction: args.extraction ?? null,
+  })
+  if (pendingReply) {
+    return {
+      reply: pendingReply.reply,
+      extraction: args.extraction ?? null,
+      toolResults: pendingReply.toolResults,
+      knowledge: [],
+      logs: pendingReply.logs,
+      toolLogs: pendingReply.toolLogs,
+    }
+  }
 
   const tools = agentToolDefinitions()
   const maxIters = args.maxIters ?? 4
@@ -155,7 +277,7 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
 
       const t0 = Date.now()
       try {
-        const out = await tool.execute(toolArgs, args.ctx)
+        const out = await tool.execute(toolArgs, toolCtx)
         toolResults[tool.name] = out.data
         const count = Array.isArray(out.data)
           ? out.data.length

@@ -33,6 +33,8 @@ import { isPhoneAllowed } from '@/lib/bot/whitelist'
 import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
+import { detectFailureSignal } from '@/lib/bot-assistant/failure-detect'
+import { logFailureSignal } from '@/lib/bot-assistant/failure-trace'
 import { processPedidoMessage } from '@/lib/pedidos'
 import { loadOrderContext, isOrderContextActive, clearOrderContext } from '@/lib/pedidos/context'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
@@ -886,6 +888,22 @@ async function logRouterDecision(args: {
         whitelist_allowed: args.whitelistAllowed ?? null,
       },
     })
+    // Fase 3 (sombra): si el mensaje es una corrección ("te equivocaste"),
+    // se tracea sin cambiar el dispatch. La resolución la completan las tools
+    // de corrección o la revisión semanal.
+    const signal = detectFailureSignal(args.rawText)
+    if (signal) {
+      await logFailureSignal(supabaseAdmin(), {
+        account_id: args.accountId,
+        conversation_id: args.conversationId,
+        contact_id: args.contactId,
+        message_id: args.messageId,
+        signal_text: args.rawText,
+        reporter: signal.reporter,
+        intent: args.extraction?.intent ?? null,
+        confianza: args.extraction?.confianza ?? null,
+      })
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('relation') && msg.includes('does not exist')) {
@@ -1609,6 +1627,37 @@ async function processMessage(
     )
   }
 
+  // Fase 4: dominios donde el AGENTE es la vía principal (csv en
+  // ASSISTANT_PRIMARY_DOMAINS, subset de {expense, attendance}). Vacío =
+  // comportamiento determinístico actual. Pedido y voucher quedan siempre
+  // determinísticos (flujo formal y pipeline congelado, respectivamente).
+  const isAgentPrimary = (domain: 'expense' | 'attendance'): boolean => {
+    const set = new Set(
+      (process.env.ASSISTANT_PRIMARY_DOMAINS || '')
+        .toLowerCase()
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+    return set.has(domain)
+  }
+
+  const pushAssistantTask = (text: string, extraction: UnifiedExtraction | null) => {
+    bgTasks.push(
+      runAssistantForWebhook({
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        userId: configOwnerUserId,
+        text,
+        phone: message.from,
+        messageId: message.id,
+        extraction,
+        conversationContext: contextText,
+      }).catch((err) => console.error('[assistant] dispatch error:', err)),
+    )
+  }
+
   const executeAction = async (action: TurnAction): Promise<void> => {
     switch (action.kind) {
       case 'clear_context':
@@ -1637,28 +1686,26 @@ async function processMessage(
         )
         break
       case 'run_expense':
-        pushExpenseTask(action.extraction ?? undefined)
+        if (isAgentPrimary('expense')) {
+          console.log('[assistant-primary] expense via agent conversation=%s', conversation.id)
+          pushAssistantTask(action.text, action.extraction)
+        } else {
+          pushExpenseTask(action.extraction ?? undefined)
+        }
         break
       case 'run_attendance':
-        pushAttendanceTask(action.extraction ?? undefined)
+        if (isAgentPrimary('attendance')) {
+          console.log('[assistant-primary] attendance via agent conversation=%s', conversation.id)
+          pushAssistantTask(action.text, action.extraction)
+        } else {
+          pushAttendanceTask(action.extraction ?? undefined)
+        }
         break
       case 'run_order':
         pushPedidoTask()
         break
       case 'run_assistant':
-        bgTasks.push(
-          runAssistantForWebhook({
-            accountId,
-            conversationId: conversation.id,
-            contactId: contactRecord.id,
-            userId: configOwnerUserId,
-            text: action.text,
-            phone: message.from,
-            messageId: message.id,
-            extraction: action.extraction,
-            conversationContext: contextText,
-          }).catch((err) => console.error('[assistant] dispatch error:', err)),
-        )
+        pushAssistantTask(action.text, action.extraction)
         break
       case 'run_voucher_text':
         bgTasks.push(

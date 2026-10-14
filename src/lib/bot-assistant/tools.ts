@@ -1,25 +1,26 @@
+/**
+ * Vía de lectura del orquestador legacy (`runAssistant`).
+ *
+ * Fase 1 del plan agente-conversacional: las lecturas delegan a las queries
+ * compartidas de `tool-registry.ts` (única fuente de verdad de QUÉ se
+ * consulta). Acá solo queda el envelope legacy ({data, log} con withTiming y
+ * los nombres de tool históricos) y el ruteo por keywords
+ * (`runToolsForQuery`), que se jubila en Fase 4.
+ */
+import { getAttendance } from '@/lib/facbal/client'
 import {
-  listExpenses,
-  searchProviders,
-  listProviders,
-  listEmployees,
-  searchEmployees,
-  getAttendance,
-  listExpenseCategories,
-  matchVoucherByName,
-} from '@/lib/facbal/client'
+  queryFacturas,
+  queryGastos,
+  queryProveedores,
+  queryEmpleados,
+  queryCategorias,
+  todayISO,
+} from './tool-registry'
 
 export type ToolLog = { tool: string; duration_ms: number; resultCount?: number; error?: string }
 
-function todayISO(): string {
-  const d = new Date()
-  return d.toISOString().slice(0, 10)
-}
-
 function yesterdayISO(): string {
-  const d = new Date()
-  d.setDate(d.getDate() - 1)
-  return d.toISOString().slice(0, 10)
+  return todayISO(-1)
 }
 
 async function withTiming<T>(tool: string, fn: () => Promise<T>): Promise<{ data: T | null; log: ToolLog; error?: string }> {
@@ -36,35 +37,35 @@ async function withTiming<T>(tool: string, fn: () => Promise<T>): Promise<{ data
 
 export async function fetchExpensesToday(): Promise<{ data: unknown; log: ToolLog }> {
   const { data, log } = await withTiming('listExpenses(today)', () =>
-    listExpenses({ from_date: todayISO(), to_date: todayISO(), limit: 50 }),
+    queryGastos(todayISO(), todayISO()),
   )
   return { data, log }
 }
 
 export async function fetchExpensesYesterday(): Promise<{ data: unknown; log: ToolLog }> {
   const { data, log } = await withTiming('listExpenses(yesterday)', () =>
-    listExpenses({ from_date: yesterdayISO(), to_date: yesterdayISO(), limit: 50 }),
+    queryGastos(yesterdayISO(), yesterdayISO()),
   )
   return { data, log }
 }
 
 export async function fetchProvidersByQuery(q: string): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming(`searchProviders(${q})`, () => searchProviders(q))
+  const { data, log } = await withTiming(`searchProviders(${q})`, () => queryProveedores(q))
   return { data, log }
 }
 
 export async function fetchEmployeesByQuery(q: string): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming(`searchEmployees(${q})`, () => searchEmployees(q))
+  const { data, log } = await withTiming(`searchEmployees(${q})`, () => queryEmpleados(q))
   return { data, log }
 }
 
 export async function fetchAllEmployees(): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming('listEmployees', () => listEmployees())
+  const { data, log } = await withTiming('listEmployees', () => queryEmpleados(null))
   return { data, log }
 }
 
 export async function fetchAllProviders(): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming('listProviders', () => listProviders())
+  const { data, log } = await withTiming('listProviders', () => queryProveedores(null))
   return { data, log }
 }
 
@@ -74,31 +75,12 @@ export async function fetchAttendanceFor(employeeId: number, date: string): Prom
 }
 
 export async function fetchCategories(): Promise<{ data: unknown; log: ToolLog }> {
-  const { data, log } = await withTiming('listExpenseCategories', () => listExpenseCategories())
+  const { data, log } = await withTiming('listExpenseCategories', () => queryCategorias())
   return { data, log }
 }
 
 export async function fetchDebtByClient(clientName: string): Promise<{ data: unknown; log: ToolLog }> {
-  return withTiming(`deuda_cliente(${clientName.slice(0,40)})`, async () => {
-    const res = await matchVoucherByName({
-      nombre_cliente: clientName,
-      nombre_origen: clientName,
-      nombre_destino: null,
-      cbu_destino: null,
-      cuit_destino: null,
-      monto: 0,
-      tolerancia: 999999999,
-    })
-    const invoices = (res.invoice_candidates || []).map((c) => ({
-      factura: c.numero_factura,
-      cliente: c.cliente_nombre,
-      saldo: c.saldo_pendiente,
-      fecha: c.fecha,
-      score: c.score,
-    }))
-    const total = invoices.reduce((s, i) => s + (i.saldo || 0), 0)
-    return { invoices: invoices.slice(0, 10), total, cliente_buscado: clientName }
-  })
+  return withTiming(`deuda_cliente(${clientName.slice(0,40)})`, () => queryFacturas(clientName))
 }
 
 export async function runToolsForQuery(args: {
@@ -221,7 +203,7 @@ export async function runToolsForQuery(args: {
       // por defecto hoy; si pide fecha explícita usa esa fecha (deja al responder interpretar)
       if (args.fecha) {
         pending.push(
-          withTiming(`listExpenses(${args.fecha})`, () => listExpenses({ from_date: args.fecha!, to_date: args.fecha!, limit: 50 })).then((r) => ({
+          withTiming(`listExpenses(${args.fecha})`, () => queryGastos(args.fecha!, args.fecha!)).then((r) => ({
             key: 'expenses',
             data: r.data,
             log: r.log,

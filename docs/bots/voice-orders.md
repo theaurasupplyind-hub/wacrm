@@ -1,20 +1,22 @@
-# Voice Orders / Bot de pedidos
+# Voice Orders / Bot de pedidos — HISTÓRICO
 
-> **Estado:** ⚠️ Retirado del código vigente (referencia de 2026-10).
-> Este documento describe el pipeline anterior; no asumir que sus rutas,
-> herramientas o soporte de pedidos siguen desplegados. Ver la arquitectura
-> actual en [`architecture.md`](./architecture.md).
-> Arquitectura vigente: [`architecture.md`](./architecture.md) §6
-> Este documento conserva detalles del pipeline retirado; no es fuente de estado actual.
+> **Estado:** ⚠️ **Solo histórico — no usar como referencia de implementación.**
+> El módulo `src/lib/voice-orders/*` fue retirado del código en 2026-10
+> (verificado: la ruta no existe). Las rutas `src/app/api/bot-beta/run/route.ts`,
+> `src/app/api/bot-beta/voice-run/route.ts` y `src/app/api/budget-image/*`
+> tampoco existen. El sucesor para pedidos es `src/lib/pedidos/` + el motor de
+> turno (`src/lib/bot/engine.ts`) documentados en [`architecture.md`](./architecture.md)
+> §6 y [`assistant-agent.md`](./assistant-agent.md).
+> Todo lo que sigue debajo está en pasado y se conserva sin mantener.
 
-**Propósito:** Toma pedidos por voz (audio) o texto vía WhatsApp, transcribe,
-parsea, resuelve precios a través de FacBal API y crea presupuestos/facturas.
+**Propósito (histórico):** tomaba pedidos por voz (audio) o texto vía WhatsApp, transcribía,
+parseaba, resolvía precios a través de FacBal API y creaba presupuestos/facturas.
 
 ---
 
-## Estado actual
+## Estado histórico (no vigente)
 
-### Archivos clave
+### Archivos clave (retirados — no existen en el código actual)
 
 | Archivo | Rol |
 |---------|-----|
@@ -27,7 +29,7 @@ parsea, resuelve precios a través de FacBal API y crea presupuestos/facturas.
 | `src/app/api/bot-beta/voice-run/route.ts` | REST endpoint para audio (FormData) |
 | `src/app/(dashboard)/bot-beta/page.tsx` | UI beta con chat + audio + debug panel |
 
-### Flujo (audio WhatsApp)
+### Flujo histórico (audio WhatsApp — retirado)
 
 ```
 Mensaje de Audio WhatsApp
@@ -48,7 +50,7 @@ processVoiceOrder()
   └── 4. sendVoiceResponse() → WhatsApp reply
 ```
 
-### Flujo (texto WhatsApp)
+### Flujo histórico (texto WhatsApp — retirado)
 
 ```
 Mensaje de Texto WhatsApp (no consumido por Flows Engine)
@@ -60,7 +62,7 @@ handleVoiceText()
 processTextOrder() → mismo pipeline (salta transcripción)
 ```
 
-### Soporte multi-turno
+### Soporte multi-turno (histórico)
 
 - Si un item tiene múltiples variantes → pregunta al usuario, guarda estado en `voice_context`
 - Si falta nombre de cliente → pregunta, guarda en `voice_context`
@@ -74,7 +76,7 @@ processTextOrder() → mismo pipeline (salta transcripción)
 
 ---
 
-## Mejoras pendientes
+## Mejoras pendientes (históricas — no ejecutar)
 
 ### 1. Ambigüedad del LLM ("dos más")
 
@@ -112,8 +114,11 @@ Agregar en `galv2-tauri` una pantalla de confirmación antes de enviar la orden 
 
 ---
 
-## Roadmap
+## Roadmap (histórico — superado)
 
-La unificación de este módulo con el resto de los intents del bot (gastos,
-asistencia, vouchers, facturas) está planificada en el router unificado con
-umbral de confianza de 3 niveles — ver [`archive/bot-personal.md`](./archive/bot-personal.md).
+La unificación de este módulo con el resto de los intents del bot ya no sigue
+esta vía: el router unificado de 3 niveles de `archive/bot-personal.md` fue
+reemplazado por el motor de turno puro (`src/lib/bot/engine.ts` → `planTurn`) +
+planner LLM opt-in — ver [`architecture.md`](./architecture.md) §6 y
+[`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md). El flujo de
+pedidos vive hoy en `src/lib/pedidos/`.

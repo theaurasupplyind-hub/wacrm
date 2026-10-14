@@ -20,22 +20,24 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     wacrm (Next.js 16)                      │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │                 WhatsApp Webhook                      │   │
-│  │   POST /api/whatsapp/webhook ← Meta Cloud API        │   │
-│  └──────────┬───────────────────────────────────────────┘   │
-│             │                                               │
-│    ┌────────┴────────┐                                      │
-│    │  ProcessMessage  │                                      │
-│    └──┬──┬──┬──┬──┬──┘                                      │
-│       │  │  │  │  │                                         │
-│  ┌────┘  │  │  │  └──────────┐                              │
-│  │   ┌───┘  │  └──────┐      │                              │
-│  ▼   ▼      ▼         ▼      ▼                              │
-│ ┌──┐ ┌──┐ ┌──────┐ ┌────┐ ┌──────┐ ┌────────┐              │
-│ │  │ │  │ │Voz & │ │Vou-│ │Flows │ │Gastos  │              │
-│ │  │ │  │ │Texto │ │cher│ │Engine│ │/Expense│              │
-│ └──┘ └──┘ └──┬───┘ └┬───┘ └──────┘ └────┬───┘              │
+ │  ┌──────────────────────────────────────────────────────┐   │
+ │  │                 WhatsApp Webhook                      │   │
+ │  │   POST /api/whatsapp/webhook ← Meta Cloud API        │   │
+ │  └──────────┬───────────────────────────────────────────┘   │
+ │             │                                               │
+ │    ┌────────┴────────┐                                      │
+ │    │ Motor de turno  │  src/lib/bot/engine.ts → planTurn   │
+ │    │ (puro) + router │  clarify → decideDispatch → acciones│
+ │    └──┬──┬──┬──┬──┬──┘                                      │
+ │       │  │  │  │  │                                         │
+ │  ┌────┘  │  │  │  └──────────┐                              │
+ │  │   ┌───┘  │  └──────┐      │                              │
+ │  ▼   ▼      ▼         ▼      ▼                              │
+ │ ┌──┐ ┌──┐ ┌──────┐ ┌────┐ ┌──────┐ ┌────────┐              │
+ │ │Pe│ │As│ │Vou-  │ │Pe- │ │Flows │ │Gastos  │              │
+ │ │di│ │is│ │cher  │ │di- │ │Engine│ │/Expense│              │
+ │ │do│ │te│ │      │ │do* │ │      │ │        │              │
+ │ └──┘ └──┘ └──┬───┘ └┬───┘ └──────┘ └────┬───┘              │
 │              │       │                    │                  │
 │              ▼       ▼                    ▼                  │
 │     ┌──────────────────────────────────────┐                 │
@@ -70,7 +72,7 @@
 
 | Archivo | Rol |
 |---------|-----|
-| `src/lib/ai/chatbot.ts` | Orchestrador principal (1340 líneas) |
+| `src/lib/ai/chatbot.ts` | Orchestrador principal (~1190 líneas, verificado 2026-10) |
 | `src/lib/ai/chatbot-logger.ts` | Logger de auditoría |
 | `src/lib/ai/cart-state.ts` | Estado del carrito (interfaces, CRUD) |
 | `src/lib/ai/conversation-flow.ts` | Máquina de estados (confirmar/derivar/continuar) |
@@ -174,7 +176,7 @@ pipeline activo.
 
 ### Prioridad en webhook
 
-**#1** — Se ejecuta antes que cualquier otro sistema. Si un flujo consume el mensaje, suprime AI Auto-Reply y Voice Orders.
+**#1** — Se ejecuta antes que cualquier otro sistema. Si un flujo consume el mensaje, suprime AI Auto-Reply y el dispatch del motor de turno (gastos/asistencia/voucher/pedido/asistente).
 
 ---
 
@@ -310,18 +312,18 @@ La tabla conserva integraciones históricas de pedidos; para las herramientas
 que el agente ofrece hoy, la fuente de verdad es `src/lib/bot-assistant/tool-registry.ts`
 y el cliente `src/lib/facbal/client.ts`.
 
-| Endpoint | Usado por |
-|----------|-----------|
-| `GET /invoices/pending-by-phone?telefono=` | Chatbot, Voucher |
+| Endpoint | Usado por (vigente) |
+|----------|---------------------|
+| `GET /invoices/pending-by-phone?telefono=` | Voucher (`matchVoucherByName`) |
 | `POST /payments` | Voucher |
-| `GET /clients` | Chatbot, Voice Orders |
-| `POST /clients` | Voice Orders |
-| `GET /products/search?q=` | Chatbot |
-| `GET /products/suggest-price?q=` | Chatbot, Voice Orders |
-| `POST /products/bulk-price` | Chatbot, Voice Orders |
-| `GET /price-list-images` | Chatbot |
-| `GET /price-list-images/{id}/view` | Chatbot |
-| `POST /invoices` | Voice Orders |
+| `GET /clients` | Pedidos (`src/lib/pedidos/`) |
+| `POST /clients` | Pedidos (`src/lib/pedidos/`) |
+| `GET /products/search?q=` | Pedidos (catálogo) |
+| `GET /products/suggest-price?q=` | Pedidos (cotización) |
+| `POST /products/bulk-price` | Cliente FacBal conservado; el motor nuevo de pedidos no lo usa |
+| `GET /price-list-images` | Legado (`chatbot.ts` deshabilitado) |
+| `GET /price-list-images/{id}/view` | Legado (`chatbot.ts` deshabilitado) |
+| `POST /invoices` | Pedidos (`src/lib/pedidos/`, creación con confirmación) |
 | `GET /expense-categories` | Expense Bot |
 | `POST /expense-categories` | Expense Bot / FacGal |
 | `POST /expenses` | Expense Bot / FacGal |
@@ -346,7 +348,7 @@ y el cliente `src/lib/facbal/client.ts`.
 - Misma base de datos PostgreSQL (NeonDB) compartida vía `backend_gal`
 - `build-invoice-payload.ts:30` — comentario referencia que `buildItemDescription` genera descripciones "like galv2-tauri uses"
 - Ambos sistemas comparten el mismo API key para `backend_gal`
-- Voice Orders propone una pantalla de confirmación en `galv2-tauri` antes de enviar pedidos a WhatsApp (ver [`voice-orders.md`](./voice-orders.md) §3)
+- Voice Orders (retirado en 2026-10) proponía una pantalla de confirmación en `galv2-tauri`; el flujo vigente de pedidos (`src/lib/pedidos/`) confirma por WhatsApp antes de escribir (ver §6).
 
 ### Print Agent en galv2-tauri
 
@@ -371,7 +373,8 @@ y el cliente `src/lib/facbal/client.ts`.
 
 > DeepSeek V4.1 Flash es un piloto propuesto para agente y extractor, no un
 > modelo confirmado como desplegado. El chatbot legado de `chatbot.ts` sigue
-> deshabilitado y no representa al asistente productivo.
+> deshabilitado y no representa al asistente productivo. Tabla canónica de
+> modelos/envs: [`assistant-agent.md`](./assistant-agent.md) § Modelos y configuración.
 
 ---
 
@@ -388,7 +391,7 @@ y el cliente `src/lib/facbal/client.ts`.
 3. **Categorías dinámicas.** El bot puede crear categorías automáticamente si no existen y avisar al usuario.
 4. **Acceso por número autorizado.** El bot interno se limita a números activos
    en `bot_allowed_numbers`; los demás contactos siguen por Flows/AI Auto-Reply.
-5. **Reutiliza infraestructura existente.** Transcribe audio con Whisper (mismo modelo de Voice Orders) y lee comprobantes con Gemini Vision (mismo modelo de Voucher).
+5. **Reutiliza infraestructura existente.** Transcribe audio con Whisper (`src/lib/audio/transcribe.ts`, `openai/whisper-1` vía OpenRouter) y lee comprobantes con Gemini Vision (mismo modelo de Voucher).
 
 ### Parser de montos
 
@@ -476,23 +479,27 @@ src/lib/attendance/
 ### Routing en el webhook
 
 - Las respuestas a los botones de corrección se interceptan **antes** de `dispatchInboundToFlows` y se marcan como consumidas.
-- Un texto mientras hay asistencia pendiente (empleado a resolver o botón esperando) se rutea al bot de asistencia y **suprime Voice Orders** (`hasPendingAttendance` en `shouldSuppressVoiceOrder`).
+- Un texto mientras hay asistencia pendiente (empleado a resolver o botón esperando) se rutea al bot de asistencia con prioridad sobre el intent del mensaje (pendiente multi-turno en `decideDispatch`).
 
 ---
 
-## 12. Mejoras Propuestas / Roadmap
+## 12. Mejoras Propuestas / Roadmap (actualizado 2026-10, post-motor)
+
+> El roadmap anterior (router regex 3 niveles, mejoras Voice Orders) quedó
+> superado por el motor de turno puro (`src/lib/bot/engine.ts`) + planner LLM
+> opt-in (ver §6 y [`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md)).
 
 ### Corto plazo
-1. **Router unificado de intents** — reemplazar el bloque de dispatch por regex/LLM binario con umbral de confianza de 3 niveles (plan: `archive/bot-personal.md`)
-2. **Mejoras de Voice Orders** — ambigüedad del LLM, confirmación por WhatsApp, panel FacGal (ver [`voice-orders.md`](./voice-orders.md))
-3. **Filtrado del disparo del pipeline de vouchers** — no procesar cualquier imagen; solo comprobantes probables (gate por caption/keywords/contexto)
-4. **Agregar más tests** para voice-orders pipeline
+1. **Planner LLM:** medir `shadow` en `router_logs.debug_info.planner_shadow` → `on` + `assistant` → `+pedido` → `+expense` → `+attendance` → `ASSISTANT_PLANNER_WRITES=true`. Vouchers siempre congelados.
+2. **Filtrado del disparo del pipeline de vouchers** — no procesar cualquier imagen; solo comprobantes probables (gate por caption/keywords/contexto).
+3. **Pedidos:** ejecutar [`plan-presupuestos-por-bot.md`](./plan-presupuestos-por-bot.md) (pendiente); no reintroducir `voice-orders`.
+4. **Piloto DeepSeek** (`ASSISTANT_MODEL`/`EXTRACTOR_MODEL`) en Preview con comparativa rioplatense/clasificación/latencia/coste; mantener `VOUCHER_AI_MODEL` en Gemini.
 
 ### Mediano plazo
-5. **Webhook de FacBal hacia wacrm** — en lugar de polling, que FacBal notifique cambios
-6. **Sincronización bidireccional** entre wacrm y galv2-tauri para evitar conflictos
-7. **Dashboard en galv2-tauri** para monitorear pedidos entrantes desde wacrm
+5. **Webhook de FacBal hacia wacrm** — en lugar de polling, que FacBal notifique cambios.
+6. **Sincronización bidireccional** entre wacrm y galv2-tauri para evitar conflictos.
+7. **Dashboard en galv2-tauri** para monitorear pedidos entrantes desde wacrm.
 
 ### Largo plazo
-8. **Manejo de cola de impresión** desde wacrm (actualmente solo en galv2-tauri Print Agent)
-9. **Notificaciones push** desde wacrm a galv2-tauri para nuevos pedidos
+8. **Manejo de cola de impresión** desde wacrm (actualmente solo en galv2-tauri Print Agent).
+9. **Notificaciones push** desde wacrm a galv2-tauri para nuevos pedidos.

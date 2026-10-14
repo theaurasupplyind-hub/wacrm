@@ -112,6 +112,23 @@ export async function registrarPago(args: {
   return res.json() as Promise<PagoRegistrado>
 }
 
+/** Borra un pago y revierte su movimiento vinculado (Fase 2: undo). */
+export async function deletePayment(paymentId: number): Promise<{ status: string }> {
+  const url = `${apiUrl()}/payments/${paymentId}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al eliminar pago${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ status: string }>
+}
+
 export interface VoucherCandidatePayload {
   invoice_id: number
   numero_factura: string
@@ -731,6 +748,40 @@ export async function getInvoice(id: number): Promise<InvoiceDetail | null> {
   return res.json() as Promise<InvoiceDetail>
 }
 
+/** Anula un presupuesto/factura (soft delete, reversible con restoreInvoice). */
+export async function deleteInvoice(id: number): Promise<{ status: string }> {
+  const url = `${apiUrl()}/invoices/${id}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al anular factura${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ status: string }>
+}
+
+/** Revierte una anulación (deshace deleteInvoice). */
+export async function restoreInvoice(id: number): Promise<{ status: string }> {
+  const url = `${apiUrl()}/invoices/${id}/restore`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al restaurar factura${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ status: string }>
+}
+
 // ─── Gastos ───
 
 export interface ExpenseCategory {
@@ -868,6 +919,23 @@ export async function getAttendance(
   }
   const data = await res.json()
   return Array.isArray(data) ? (data as AttendanceRow[]) : []
+}
+
+/** Borra un registro de asistencia (empleado + fecha). La corrección es un re-registro (upsert). */
+export async function deleteAttendance(employeeId: number, date: string): Promise<{ status: string }> {
+  const url = `${apiUrl()}/attendance?employee_id=${employeeId}&date=${encodeURIComponent(date)}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al eliminar asistencia${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<{ status: string }>
 }
 
 export async function listProviders(): Promise<Provider[]> {
@@ -1014,6 +1082,29 @@ export async function updateExpense(
     )
   }
   return res.json() as Promise<Expense>
+}
+
+export interface ExpenseDeleteResult {
+  status: string
+  deleted_movements: number
+  deleted_payments: number
+}
+
+/** Elimina un gasto (soft delete con reversión en cascada en el backend). */
+export async function deleteExpense(expenseId: number): Promise<ExpenseDeleteResult> {
+  const url = `${apiUrl()}/expenses/${expenseId}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al eliminar gasto${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  return res.json() as Promise<ExpenseDeleteResult>
 }
 
 export async function createExpense(

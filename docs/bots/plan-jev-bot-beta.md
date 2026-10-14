@@ -1,7 +1,9 @@
 # Plan — Jev (TypeSafe System One) como auxiliar del bot
 
-> Estado: **implementado** (Fase 0/1/2 + tests). Pendiente: cargar
-> `OPENROUTER_API_KEY` y correr el spike real + shadow de 10 días.
+> Estado: **código listo, no validado en producción** (Fase 0/1/2 + tests en
+> código; `JEV_ENABLED=false` por defecto). Pendiente: cargar
+> `OPENROUTER_API_KEY` y correr el spike real + shadow de 10 días. Sin esa
+> validación no afirmar "implementado".
 > Modelo: `typesafe/jev-1.13` vía OpenRouter Decisions API.
 > Objetivo: mejorar **A) clasificación de intent** y **B) ruteo de respuestas a
 > pendientes** (bug "se queda esperando y no responde"), sin borrar el pipeline

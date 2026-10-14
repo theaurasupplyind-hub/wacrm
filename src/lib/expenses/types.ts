@@ -42,6 +42,14 @@ export interface ExpenseFuzzyMatch {
   providerName: string | null
   employeeId: number | null
   employeeName: string | null
+  /**
+   * Top-2 scores por lista (Fase 4: margen S3 del gate). Opcional para no
+   * romper constructores existentes; `resolveExpenseEntities` lo puebla.
+   */
+  entityScores?: {
+    provider: { name: string; score: number }[]
+    employee: { name: string; score: number }[]
+  }
 }
 
 export interface ExpenseExecutionResult {

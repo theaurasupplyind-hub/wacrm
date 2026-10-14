@@ -144,6 +144,26 @@ rioplatense, contexto corto/multi-turn, clasificación, extracción JSON,
 selección de tool, respuesta grounded, fallos, latencia y coste. Habilitar
 producción solo tras revisar regresiones y conservar rollback por env.
 
+### Resultado del piloto (2026-10-14, Fase 5) — NO cambiar
+
+38 fixtures (`agente-fixtures.ts`) + 5 respuestas (`respuesta-eval.live.test.ts`):
+
+| Métrica (extractor) | Gemini 2.5 Flash Lite | DeepSeek v4.1 Flash |
+|---|---|---|
+| Intent accuracy | 34/38 (89.5%) | 35/38 (92.1%, dentro del ruido ±1) |
+| Fallback regex | 0/38 | 1/38 |
+| Costo/caso | $0.00050 | $0.00054 (+8%: input más barato, output 3x) |
+| Latencia p50/p95 | 1330/2795 ms | 2309/10804 ms |
+
+Respuestas: rioplatense correcto en ambos; DeepSeek más verborrágico y
+conservador ("¿Lo registro?" donde el prompt pide confirmar registrado —
+fricción extra para auto-save, requeriría retunear el prompt por modelo).
+
+**Decisión: se mantiene Gemini Flash Lite** en extractor y agente. DeepSeek no
+pasa la regla (calidad ≈ igual, costo mayor, p95 4x). Re-evaluar si cambian
+precios o sale versión más rápida. Harness reutilizable: `agente-eval.live`
+(costo/latencia) + `respuesta-eval.live` (rúbrica humana).
+
 ## Siguiente evolución sin cambiar capacidades existentes
 
 1. Ejecutar y documentar el piloto de modelo; guardar ejemplos fallidos y
