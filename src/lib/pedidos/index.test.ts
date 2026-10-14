@@ -8,6 +8,7 @@ const facbal = vi.hoisted(() => ({
   findClientMatches: vi.fn(),
   getPreciosReferencia: vi.fn(),
   getPricingRules: vi.fn(),
+  getClientAddresses: vi.fn(),
 }))
 
 vi.mock('@/lib/facbal/client', () => facbal)
@@ -119,22 +120,32 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     }))
     facbal.searchClients.mockResolvedValue(null)
     facbal.createClient.mockResolvedValue({ id: 10, nombre: 'X' })
+    facbal.getClientAddresses.mockResolvedValue([])
   })
 
-  it('pide cliente y confirmación; usa defaults de entrega, fecha y descuento', async () => {
+  it('pide cliente, luego todo junto (entrega+fecha+descuento) y crea', async () => {
     const db = makeDb()
 
     // 1. Creación explícita → confirma el cliente encontrado.
     await processPedidoMessage(args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela'))
     expect(sent.buttons.at(-1)?.bodyText).toContain('Juan')
 
-    // 2. Confirmar cliente → presenta el resumen final; no obliga a rellenar
-    // entrega/fecha/descuento que el ERP ya permite dejar en sus defaults.
+    // 2. Confirmar cliente → UNA pregunta combinada (Caso 3), no confirmación directa.
     await processPedidoMessage(args(db, '', { interactiveReplyId: 'pedido_cli_ok' }))
-    expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
-    expect(sent.texts.at(-1)).not.toMatch(/¿Cómo lo entregamos|Fecha de entrega|¿Descuento\?/)
+    expect(sent.texts.at(-1)).toContain('Entrega')
+    expect(sent.texts.at(-1)).toContain('Fecha')
+    expect(sent.texts.at(-1)).toContain('Descuento')
+    expect(sent.texts.at(-1)).not.toContain('¿Confirmás?')
 
-    // 3. Confirmar → crea el presupuesto con los defaults del ERP.
+    // 3. Responde todo junto → resumen final con ¿Confirmás?
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({ tipo_entrega: 'Retira', fecha: 'no', descuento: 'no', domicilio: null }),
+    })
+    await processPedidoMessage(args(db, 'retira, sin fecha y sin descuento'))
+    expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
+    expect(sent.texts.at(-1)).toContain('Entrega: Retira')
+
+    // 4. Confirmar → crea el presupuesto.
     const r = await processPedidoMessage(args(db, 'sí'))
     expect(r.createdInvoice).toBeTruthy()
 
@@ -152,13 +163,49 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(false)
   })
 
-  it('sin candidatos identifica cliente nuevo en el resumen antes de guardar', async () => {
+  it('con varias direcciones las propone y guarda la elegida (Caso 3c)', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [{ id: 9, nombre: 'Lucas', telefono: '3512390977', score: 0.9 }])
+    facbal.getClientAddresses.mockResolvedValue([
+      { id: 1, address: 'Taller Centro', label: '', extra: '', is_default: true },
+      { id: 2, address: 'Depósito Sur', label: '', extra: '', is_default: false },
+    ])
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela', { findClientsFn }))
+    await processPedidoMessage(args(db, '', { interactiveReplyId: 'pedido_cli_ok', findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('Taller Centro')
+    expect(sent.texts.at(-1)).toContain('Depósito Sur')
+
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({ tipo_entrega: 'Envio', fecha: 'no', descuento: 'no', domicilio: 'Depósito Sur' }),
+    })
+    await processPedidoMessage(args(db, 'envío al depósito sur, sin fecha y sin descuento', { findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('Domicilio: Depósito Sur')
+    expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
+
+    await processPedidoMessage(args(db, 'sí', { findClientsFn }))
+    const payload = facbal.createInvoice.mock.calls[0][0] as {
+      tipo_entrega: string
+      cliente_domicilio: string
+    }
+    expect(payload.tipo_entrega).toBe('Envio')
+    expect(payload.cliente_domicilio).toBe('Depósito Sur')
+  })
+
+  it('sin candidatos pregunta datos combinados y luego crea (Caso 3)', async () => {
     const db = makeDb()
     await processPedidoMessage(
       args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela', { findClientsFn: async () => [] }),
     )
     expect(sent.texts.at(-1)).toContain('Cliente nuevo: Juan')
-    expect(sent.texts.at(-1)).toContain('¿Confirmás?')
+    expect(sent.texts.at(-1)).toContain('Entrega')
+    expect(sent.texts.at(-1)).not.toContain('¿Confirmás?')
+
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({ tipo_entrega: 'Retira', fecha: 'no', descuento: 'no', domicilio: null }),
+    })
+    await processPedidoMessage(args(db, 'retira, sin fecha y sin descuento', { findClientsFn: async () => [] }))
+    expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
 
     const r = await processPedidoMessage(args(db, 'sí', { findClientsFn: async () => [] }))
     expect(r.createdInvoice).toBeTruthy()
@@ -252,7 +299,7 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     })
   })
 
-  it('al aceptar una cotización pide solo cliente y confirmación; usa defaults del ERP', async () => {
+  it('al aceptar una cotización pide cliente, luego todo junto, y crea', async () => {
     const db = makeDb()
     const parseFn = async () => ({
       cliente: null,
@@ -267,17 +314,38 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     await processPedidoMessage(args(db, 'sí', { parseFn, findClientsFn }))
     expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
 
+    // Cliente nuevo (sin candidatos) → pregunta combinada, no confirmación.
     await processPedidoMessage(args(db, 'Fede', { parseFn, findClientsFn }))
-    expect(sent.texts.at(-1)).toContain('¿Confirmás?')
-    expect(sent.texts.join('\n')).not.toContain('¿Cómo lo entregamos?')
-    expect(sent.texts.join('\n')).not.toContain('¿Fecha de entrega?')
-    expect(sent.texts.join('\n')).not.toContain('¿Descuento?')
+    expect(sent.texts.at(-1)).toContain('Entrega')
+    expect(sent.texts.at(-1)).not.toContain('¿Confirmás?')
     expect(facbal.createInvoice).not.toHaveBeenCalled()
+
+    // Todo junto con fecha, descuento y domicilio nuevo → resumen → crear.
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({
+        tipo_entrega: 'Envio',
+        fecha: '15/11',
+        descuento: { mode: 'percent', value: 10 },
+        domicilio: 'Av Siempre Viva 123',
+      }),
+    })
+    await processPedidoMessage(args(db, 'envío para el 15/11 al taller de siempre viva 123 con 10%', { parseFn, findClientsFn }))
+    expect(sent.texts.at(-1)).toMatch(/¿Confirmás\?/)
+    expect(sent.texts.at(-1)).toContain('Domicilio: Av Siempre Viva 123')
 
     const result = await processPedidoMessage(args(db, 'sí', { parseFn, findClientsFn }))
     expect(result.createdInvoice).toBeTruthy()
     expect(facbal.createClient).toHaveBeenCalledWith({ nombre: 'Fede' })
     expect(facbal.createInvoice).toHaveBeenCalledTimes(1)
+    const payload = facbal.createInvoice.mock.calls[0][0] as {
+      tipo_entrega: string
+      fecha_entrega: string
+      cliente_domicilio: string
+      items: { descripcion: string }[]
+    }
+    expect(payload.tipo_entrega).toBe('Envio')
+    expect(payload.cliente_domicilio).toBe('Av Siempre Viva 123')
+    expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(true)
   })
 
   it('no usa el teléfono del remitente como nombre ni como candidato de cliente', async () => {

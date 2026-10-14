@@ -45,6 +45,7 @@ export async function executePedido(args: {
   clienteNombre: string | null
   clienteId?: number | null
   clienteTelefono?: string | null
+  clienteDomicilio?: string | null
   items: PedidoItem[]
   fecha?: string
   tipoEntrega?: TipoEntrega
@@ -116,6 +117,7 @@ export async function executePedido(args: {
     cliente_id: clienteId,
     cliente_nombre: clienteNombre,
     cliente_telefono: clienteTelefono || undefined,
+    cliente_domicilio: args.clienteDomicilio?.trim() || undefined,
     items: itemsPayload,
     total,
     envio: 0,

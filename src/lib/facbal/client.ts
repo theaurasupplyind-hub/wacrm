@@ -938,6 +938,31 @@ export async function deleteAttendance(employeeId: number, date: string): Promis
   return res.json() as Promise<{ status: string }>
 }
 
+export interface ClientAddress {
+  id: number
+  address: string
+  label: string
+  extra: string
+  is_default: boolean
+}
+
+/** Direcciones del cliente (el backend las ordena: predeterminada primero). */
+export async function getClientAddresses(clientId: number): Promise<ClientAddress[]> {
+  const url = `${apiUrl()}/clients/${clientId}/addresses`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al listar direcciones${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json()
+  return Array.isArray(data) ? (data as ClientAddress[]) : []
+}
+
 export async function listProviders(): Promise<Provider[]> {
   const url = `${apiUrl()}/providers`
   const res = await fetch(url, {

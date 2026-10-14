@@ -138,3 +138,17 @@ todo lo que falta (entrega + fecha + domicilio solo si hace falta: si hay
 predeterminado se propone, si hay varios se listan, si no hay se omite); el
 usuario responde TODO en un mensaje ("envío, viernes, al taller de marcos");
 el bot lo parsea y crea. Ahorra 2-3 turnos por presupuesto.
+
+✅ HECHO 14/10:
+- Sin defaults: `resolveParsedAndAdvance` y `handleQuoteApproval` ya no
+  pre-llenan entrega/fecha/descuento; lo no dicho se pregunta.
+- `askDatosCombinados` (`pedidos/index.ts`): UN mensaje (entrega + fecha +
+  domicilio según direcciones + descuento opcional), flag `awaitingDatos`.
+- `interpret-delivery.ts`: el LLM lo descompone en campos; fallo → preguntas
+  individuales como antes. Fecha se normaliza con `parseDeliveryDate`.
+- Domicilio punta a punta: `getClientAddresses` (facbal) → `OrderContext.
+  clienteDomicilio` → `executePedido` → `createInvoice.cliente_domicilio` →
+  recibo. Dirección nueva en texto libre se usa una vez (no se da de alta
+  sola). Si es envío sin dirección, pregunta puntual (`awaitingDomicilio`).
+- Resumen muestra `Domicilio:` cuando hay. Tests: `interpret-delivery.test.ts`
+  + 3 flujos en `index.test.ts` reescritos al nuevo spec.

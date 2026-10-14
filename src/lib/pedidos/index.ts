@@ -10,7 +10,9 @@ import {
   getPreciosReferencia,
   getPricingRules,
   findClientMatches,
+  getClientAddresses,
   type InvoiceCreatedResult,
+  type ClientAddress,
 } from '@/lib/facbal/client'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
@@ -41,6 +43,7 @@ import {
   wantsGlossaryReview,
 } from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
+import { interpretDeliveryReply } from './interpret-delivery'
 import { interpretOrderReply } from './interpret-reply'
 import { buildKnownVocab, classifyItem } from './classify-item'
 import {
@@ -290,6 +293,93 @@ async function saveCtx(args: ProcessPedidoMessageArgs, state: OrderContext): Pro
   await saveOrderContext(args.db, args.conversationId, state)
 }
 
+/** Direcciones del cliente (best-effort; [] si no hay o falla). */
+async function loadAddresses(
+  args: ProcessPedidoMessageArgs,
+  clienteId: number | null | undefined,
+): Promise<ClientAddress[]> {
+  if (clienteId == null) return []
+  try {
+    // typeof-guard: en tests el módulo facbal va mockeado sin este export.
+    if (typeof getClientAddresses !== 'function') return []
+    return (await getClientAddresses(clienteId)).filter((a) => a.address?.trim())
+  } catch (err) {
+    console.error('[pedido] addresses error:', err instanceof Error ? err.message : String(err))
+    return []
+  }
+}
+
+/**
+ * Pregunta combinada de datos de entrega (Caso 3): entrega + fecha +
+ * domicilio (si aplica) + descuento en UN mensaje. La respuesta la parsea
+ * `handleDatosAnswer` de una vez; lo que falte lo pide `advance`.
+ */
+async function askDatosCombinados(
+  args: ProcessPedidoMessageArgs,
+  state: OrderContext,
+  opts: { includeSummary?: boolean },
+): Promise<ProcessPedidoResult> {
+  const prompt = (text: string): string =>
+    opts.includeSummary ? buildOrderSummary(state, { confirm: false, prompt: text }) : text
+  const addresses = await loadAddresses(args, state.clienteId)
+  const lines = [
+    'Para cerrarlo decime todo junto:',
+    '• Entrega: ¿Retira, Envío o Retira y Envío?',
+    '• Fecha: ¿para cuándo? (o "no")',
+  ]
+  if (addresses.length === 0) {
+    lines.push('• Dirección (si es envío): ¿a dónde lo mando?')
+  } else if (addresses.length === 1) {
+    lines.push(`• Dirección: ¿al de siempre (${addresses[0].address})? (o decime otra)`)
+  } else {
+    lines.push(
+      `• Dirección: ¿a cuál? ${addresses.map((a, i) => `${i + 1}) ${a.address}`).join(' ')} (o decime otra)`,
+    )
+  }
+  lines.push('• ¿Descuento? (monto, % o "no")')
+  const updated = { ...state, awaitingDatos: true }
+  await saveCtx(args, updated)
+  const q = prompt(lines.join('\n'))
+  await sendText(args, q)
+  return { handled: true, text: q }
+}
+
+/** Resuelve la respuesta combinada y sigue con lo que falte. */
+async function handleDatosAnswer(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+): Promise<ProcessPedidoResult> {
+  const text = (args.text || '').trim()
+  if (!text) return { handled: false }
+  const addresses = await loadAddresses(args, ctx.clienteId)
+  const info = await interpretDeliveryReply(
+    text,
+    addresses.map((a) => ({ address: a.address, is_default: a.is_default })),
+  )
+  const updated: OrderContext = { ...ctx, awaitingDatos: false }
+  if (info.tipoEntrega) updated.tipoEntrega = info.tipoEntrega
+  if (info.fechaRaw) {
+    if (/^no\b/i.test(info.fechaRaw)) {
+      updated.fechaEntrega = ''
+    } else {
+      const parsed = parseDeliveryDate(info.fechaRaw)
+      if (parsed) updated.fechaEntrega = serializeFechaEntrega(parsed)
+    }
+  }
+  if (info.descuento === 'no') {
+    updated.descuento = null
+  } else if (info.descuento) {
+    const neto = pedidoItemsNeto(ctx.items)
+    const amount =
+      info.descuento.mode === 'percent'
+        ? Math.round((neto * info.descuento.value) / 100)
+        : Math.round(info.descuento.value)
+    updated.descuento = { mode: info.descuento.mode, value: info.descuento.value, amount: Math.min(amount, neto) }
+  }
+  if (info.domicilio) updated.clienteDomicilio = info.domicilio
+  return advance(args, updated)
+}
+
 async function cancelOrder(args: ProcessPedidoMessageArgs): Promise<ProcessPedidoResult> {
   await clearOrderContext(args.db, args.conversationId)
   const msg = 'Listo, cancelé el pedido.'
@@ -351,6 +441,12 @@ async function advance(
   }
   state = { ...state, awaitingClienteChoice: false }
 
+  // 2b. Datos combinados (Caso 3): si falta entrega+fecha+descuento, UNA sola
+  // pregunta en vez de tres turnos. Lo que quede sin decir lo pide advance.
+  if (!state.tipoEntrega && state.fechaEntrega === undefined && state.descuento === undefined && !state.awaitingDatos) {
+    return askDatosCombinados(args, state, opts)
+  }
+
   // 3. Tipo de entrega.
   if (!state.tipoEntrega) {
     const updated = { ...state, awaitingEntrega: true }
@@ -385,6 +481,24 @@ async function advance(
   }
   state = { ...state, awaitingDescuento: false }
 
+  // 5b. Domicilio: solo si es envío y falta (lo común ya vino combinado).
+  if (
+    (state.tipoEntrega === 'Envio' || state.tipoEntrega === 'Retiro y Envio') &&
+    !state.clienteDomicilio &&
+    !state.awaitingDomicilio
+  ) {
+    const addresses = await loadAddresses(args, state.clienteId)
+    const updated = { ...state, awaitingDomicilio: true }
+    await saveCtx(args, updated)
+    const q =
+      addresses.length > 0
+        ? prompt(`¿A qué dirección lo enviamos? ${addresses.map((a, i) => `${i + 1}) ${a.address}`).join(' ')} (o decime otra)`)
+        : prompt('¿A qué dirección lo enviamos?')
+    await sendText(args, q)
+    return { handled: true, text: q }
+  }
+  state = { ...state, awaitingDomicilio: false }
+
   // 6. Todo listo → resumen final + confirmación.
   const final = withTotal(state)
   await saveCtx(args, final)
@@ -402,6 +516,7 @@ async function executeConfirmed(
       clienteNombre: ctx.clienteNombre,
       clienteId: ctx.clienteId ?? null,
       clienteTelefono: ctx.clienteTelefono ?? null,
+      clienteDomicilio: ctx.clienteDomicilio ?? null,
       items: ctx.items,
       tipoEntrega: ctx.tipoEntrega,
       fechaEntrega: ctx.fechaEntrega,
@@ -546,11 +661,12 @@ async function resolveParsedAndAdvance(
     clienteTelefono: clienteChanged || invalidExistingClient ? undefined : existing?.clienteTelefono,
     clienteId: clienteChanged || invalidExistingClient ? undefined : existing?.clienteId,
     clienteCandidatos: clienteChanged || invalidExistingClient ? [] : existing?.clienteCandidatos,
-    // Alineado con Facturacion.svelte: Retira/no date/no discount are defaults;
-    // only ask for these details when the user explicitly supplies/corrects them.
-    tipoEntrega: parsed.tipoEntrega ?? existing?.tipoEntrega ?? 'Retira',
-    fechaEntrega: nextFecha ?? '',
-    descuento: descuento ?? null,
+    // Caso 3: SIN defaults. Lo no dicho lo pregunta advance (combinado si
+    // falta todo, individual si falta algo). Solo se conserva lo que ya estaba
+    // (null = "sin descuento" explícito, se respeta).
+    tipoEntrega: parsed.tipoEntrega ?? existing?.tipoEntrega,
+    fechaEntrega: nextFecha,
+    descuento: descuento,
     total: resolved.total,
     faltantes: resolved.faltantes,
     notaSupuestos: resolved.notaSupuestos,
@@ -968,13 +1084,12 @@ async function handleQuoteApproval(
   }
 
   if (reply === 'confirm' || isExplicitBudgetCreationRequest(text)) {
+    // Caso 3: SIN defaults. Lo no seteado lo pregunta advance (combinado si
+    // falta todo, individual si falta algo puntual).
     const readyToCreate: OrderContext = {
       ...ctx,
       awaitingQuoteApproval: false,
       quoteText: null,
-      tipoEntrega: ctx.tipoEntrega ?? 'Retira',
-      fechaEntrega: ctx.fechaEntrega ?? '',
-      descuento: ctx.descuento ?? null,
     }
     await saveCtx(args, readyToCreate)
     return advance(args, readyToCreate, { includeSummary: true })
@@ -1004,6 +1119,18 @@ async function handlePending(
   // Esperando la medida/variante de un ítem reconocido (también antes de cotizar).
   if (ctx.awaitingItemAttr) {
     return handleItemAttrAnswer(args, ctx)
+  }
+
+  // Respuesta combinada de datos de entrega (Caso 3).
+  if (ctx.awaitingDatos) {
+    return handleDatosAnswer(args, ctx)
+  }
+
+  // Solo el domicilio (envío sin dirección).
+  if (ctx.awaitingDomicilio) {
+    const domicilio = text.trim()
+    if (!domicilio) return { handled: false }
+    return advance(args, { ...ctx, clienteDomicilio: domicilio, awaitingDomicilio: false })
   }
 
   if (ctx.awaitingQuoteApproval) {
@@ -1215,9 +1342,6 @@ export async function processPedidoMessage(
         stage: 'confirming',
         items: [],
         clienteNombre: null,
-        tipoEntrega: 'Retira',
-        fechaEntrega: '',
-        descuento: null,
         total: 0,
         faltantes: [],
         notaSupuestos: [],

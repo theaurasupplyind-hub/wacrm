@@ -67,6 +67,8 @@ export interface OrderContext {
    * candidatos); `null` = confirmado como cliente nuevo (se crea al ejecutar).
    */
   clienteId?: number | null
+  /** Domicilio de entrega elegido (texto libre; puede no estar en el padrón). */
+  clienteDomicilio?: string | null
   /** Candidatos del catálogo cuando el nombre es ambiguo (para elegir). */
   clienteCandidatos?: ClienteCandidato[]
   tipoEntrega?: TipoEntrega
@@ -96,6 +98,13 @@ export interface OrderContext {
   awaitingFecha?: boolean
   /** True cuando esperamos el descuento (monto, % o "no"). */
   awaitingDescuento?: boolean
+  /**
+   * True cuando se preguntó todo junto (entrega+fecha+domicilio+descuento,
+   * Caso 3): la respuesta se parsea de una vez con `interpretDeliveryReply`.
+   */
+  awaitingDatos?: boolean
+  /** True cuando esperamos solo el domicilio (envío sin dirección). */
+  awaitingDomicilio?: boolean
   /**
    * True mientras esperamos que el usuario explique un término desconocido
    * (glosario). Guarda los términos y el texto original del pedido para

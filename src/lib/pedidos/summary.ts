@@ -35,6 +35,7 @@ function buildDeliveryBlock(ctx: OrderContext): string[] {
     lines.push(`${ctx.clienteId === null ? 'Cliente nuevo' : 'Cliente'}: ${ctx.clienteNombre}`)
   }
   if (ctx.tipoEntrega) lines.push(`Entrega: ${ctx.tipoEntrega}`)
+  if (ctx.clienteDomicilio) lines.push(`Domicilio: ${ctx.clienteDomicilio}`)
   const fecha = formatFechaEntregaDisplay(ctx.fechaEntrega)
   if (fecha) lines.push(`Fecha de entrega: ${fecha}`)
   if (ctx.descuento) {
