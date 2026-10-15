@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { extractBotMessage } from '@/lib/bot-llm/extract-bot-message'
 import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
@@ -111,6 +111,40 @@ export interface UnifiedRunResult {
   logs: { step: string; data: unknown }[]
   dummyConversationId: string | null
   transcription?: string
+  /** Modo agente pedido por el caller (toggle /bot-beta). */
+  agentModeRequested?: boolean
+  /** Si el loop del agente corrió de verdad (false = fallback a legacy). */
+  agentModeActive?: boolean
+  /** Motivo del fallback cuando se pidió pero no corrió. */
+  agentModeReason?: string | null
+}
+
+/**
+ * Resuelve el account_id del usuario para Bot Beta. Primero con el cliente
+ * autenticado; si RLS lo bloquea, con service-role acotado a SU user_id
+ * (seguro: nunca adivina cuenta ajena).
+ */
+export async function resolveBetaAccountId(args: {
+  supabase: SupabaseClient | null
+  admin: SupabaseClient | null
+  userId: string
+}): Promise<string | null> {
+  const pick = async (client: SupabaseClient | null): Promise<string | null> => {
+    if (!client) return null
+    try {
+      const { data } = await client
+        .from('account_members')
+        .select('account_id')
+        .eq('user_id', args.userId)
+        .limit(1)
+        .maybeSingle()
+      const v = (data as { account_id: unknown } | null)?.account_id
+      return typeof v === 'string' && v ? v : null
+    } catch {
+      return null
+    }
+  }
+  return (await pick(args.supabase)) ?? (await pick(args.admin))
 }
 
 export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRunResult> {
@@ -537,6 +571,8 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
         knowledge: agentResult.knowledge,
         logs: [...agentLogs, { step: 'botbeta_agent_mode', data: { dummyConversationId } }],
         dummyConversationId,
+        agentModeRequested: true,
+        agentModeActive: true,
       }
     } catch (err) {
       logs.push({ step: 'botbeta_agent_mode_error', data: { error: err instanceof Error ? err.message : String(err) } })
@@ -565,5 +601,13 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
     knowledge: assistantResult.knowledge,
     logs: allLogs,
     dummyConversationId,
+    agentModeRequested: args.agentMode === true,
+    agentModeActive: false,
+    agentModeReason:
+      args.agentMode === true
+        ? !hasSupabase
+          ? 'no-supabase (sin cuenta: logueate en el dashboard)'
+          : 'no-dummy-context'
+        : null,
   }
 }

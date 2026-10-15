@@ -544,6 +544,18 @@ export default function BotBetaPage() {
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Conversación — Unificado</span>
                 <div className="flex items-center gap-2">
                   {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px]">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason}</Badge>}
+                  {(unifiedDebug as { agentModeActive?: boolean; agentModeReason?: string | null } | null)?.agentModeActive === true && (
+                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Agente ON</Badge>
+                  )}
+                  {unifiedAgentMode && (unifiedDebug as { agentModeActive?: boolean; agentModeReason?: string | null } | null)?.agentModeActive !== true && unifiedDebug && (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] bg-red-500/10 text-red-400 border-red-500/30"
+                      title={(unifiedDebug as { agentModeReason?: string | null }).agentModeReason || 'cayó a legacy'}
+                    >
+                      Agente OFF (legacy)
+                    </Badge>
+                  )}
                   <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer" title="Loop con tools REALES (gate, undo, escrituras en backend_gal con la conversación dummy). Sin WhatsApp.">
                     <input type="checkbox" checked={unifiedAgentMode} onChange={(e) => setUnifiedAgentMode(e.target.checked)} disabled={unifiedSending} className="h-3.5 w-3.5 accent-primary" />
                     Modo agente{unifiedAgentMode ? ' (escribe de verdad)' : ''}

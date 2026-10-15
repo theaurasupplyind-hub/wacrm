@@ -1,10 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { runUnifiedBotBeta } from '@/lib/bot-beta/unified-handler'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { runUnifiedBotBeta, resolveBetaAccountId } from '@/lib/bot-beta/unified-handler'
 import { transcribeAudio } from '@/lib/audio/transcribe'
 import { extractVoucherData } from '@/lib/ai/voucher-extraction'
 
 export const maxDuration = 60
+
+/** Cuenta del usuario: cliente autenticado + fallback service-role por RLS. */
+async function resolveAccountId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<string | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const admin = url && key ? createAdminClient(url, key) : null
+  return resolveBetaAccountId({ supabase, admin, userId })
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -47,8 +59,7 @@ export async function POST(req: NextRequest) {
         const { data: { user } } = await supabase.auth.getUser()
         let accountId: string | null = null
         if (user) {
-          const { data: member } = await supabase.from('account_members').select('account_id').eq('user_id', user.id).limit(1).maybeSingle()
-          accountId = (member as { account_id: string } | null)?.account_id ?? null
+          accountId = await resolveAccountId(supabase, user.id)
         }
         const result = await runUnifiedBotBeta({
           text: textForRouter,
@@ -79,8 +90,7 @@ export async function POST(req: NextRequest) {
         const { data: { user } } = await supabase.auth.getUser()
         let accountId: string | null = null
         if (user) {
-          const { data: member } = await supabase.from('account_members').select('account_id').eq('user_id', user.id).limit(1).maybeSingle()
-          accountId = (member as { account_id: string } | null)?.account_id ?? null
+          accountId = await resolveAccountId(supabase, user.id)
         }
 
         const result = await runUnifiedBotBeta({ text, accountId, userId: user?.id ?? null, history, agentMode })
@@ -107,8 +117,7 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     let accountId: string | null = null
     if (user) {
-      const { data: member } = await supabase.from('account_members').select('account_id').eq('user_id', user.id).limit(1).maybeSingle()
-      accountId = (member as { account_id: string } | null)?.account_id ?? null
+      accountId = await resolveAccountId(supabase, user.id)
     }
 
     const result = await runUnifiedBotBeta({
