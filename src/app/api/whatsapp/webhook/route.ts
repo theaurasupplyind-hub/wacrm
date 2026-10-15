@@ -36,7 +36,7 @@ import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
 import { detectFailureSignal } from '@/lib/bot-assistant/failure-detect'
 import { logFailureSignal } from '@/lib/bot-assistant/failure-trace'
 import { processPedidoMessage } from '@/lib/pedidos'
-import { loadOrderContext, isOrderContextActive, clearOrderContext, getStaleQuote } from '@/lib/pedidos/context'
+import { loadOrderContext, isOrderContextActive, isResumableQuote, clearOrderContext, getStaleQuote } from '@/lib/pedidos/context'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import {
@@ -1015,6 +1015,8 @@ async function processMessage(
   // Cargar estado de pedido (order_context) para el flujo de presupuestos.
   const orderCtx = await loadOrderContext(supabaseAdmin(), conversation.id)
   const hasPendingOrder = isOrderContextActive(orderCtx)
+  // Cotización descartada (soft-cancel): recordable para retomarla.
+  const hasResumableQuote = isResumableQuote(orderCtx)
   // El pedido está esperando un dato puntual (cliente/entrega/fecha/descuento):
   // la respuesta corta debe ir al pedido y no a otro dominio.
   const orderAwaiting =
@@ -1500,6 +1502,7 @@ async function processMessage(
     hasPendingAttendance,
     hasPendingVoucher,
     hasPendingOrder,
+    hasResumableQuote,
     orderAwaiting,
     voucherCandidates: voucherPendingCandidates,
     captionIsForcedVoucher,

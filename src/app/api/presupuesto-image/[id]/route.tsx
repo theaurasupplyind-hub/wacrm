@@ -12,8 +12,8 @@ const SCALE = RECEIPT_DEFAULT_SCALE
 const WIDTH = RECEIPT_BASE_WIDTH * SCALE
 
 // satori no auto-sizea el canvas: estimamos sobre el layout lógico y escalamos.
-function estimatedHeight(itemCount: number, faltantes: number): number {
-  return Math.max(520, 380 + itemCount * 44 + faltantes * 18) * SCALE
+function estimatedHeight(itemCount: number, faltantes: number, hasDomicilio: boolean): number {
+  return Math.max(520, 380 + itemCount * 44 + faltantes * 18 + (hasDomicilio ? 20 : 0)) * SCALE
 }
 
 export async function GET(
@@ -35,7 +35,7 @@ export async function GET(
     const data = invoiceToReceipt(invoice)
     return new ImageResponse(receiptElement(data, { scale: SCALE }), {
       width: WIDTH,
-      height: estimatedHeight(data.items.length, data.faltantes.length),
+      height: estimatedHeight(data.items.length, data.faltantes.length, !!data.clienteDomicilio),
       fonts: await getReceiptFonts(),
     })
   } catch (err) {

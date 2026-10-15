@@ -354,3 +354,80 @@ describe('decideDispatch clarifyAnsweredIntent', () => {
     expect(r.dispatchedTo).toBe('interactive')
   })
 })
+
+describe('decideDispatch — cotización descartada reanudable (incidente 15/10)', () => {
+  const base = {
+    hasPendingExpense: false,
+    hasPendingAttendance: false,
+    hasPendingVoucher: false,
+    hasResumableQuote: true,
+    flowConsumed: false,
+    interactiveReplyId: null,
+    mediaConsumedByVoucher: false,
+  }
+
+  it('"perdón, sí, quiero que hagas presupuesto" reanuda → pedido (no assistant)', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'perdon, si quiero que llo hagas presupuesto',
+      extraction: extraction({ intent: 'otro', confianza: 'alta' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+    expect(r.dispatchReason).toBe('pending_multiturn')
+  })
+
+  it('una respuesta corta de confirmación reanuda → pedido', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'dale',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+  })
+
+  it('una corrección con ítems reanuda → pedido', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'cambiá el bastidor 142 x 195',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+  })
+
+  it('una respuesta de slot (cliente/entrega) reanuda → pedido', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'el cliente es Federico, es envio',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+  })
+
+  it('"armalo a nombre de X" reanuda → pedido', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'es nuevo, y armalo a nombre de federico',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('pedido')
+  })
+
+  it('una consulta ajena (deuda) NO la secuestra → assistant', () => {
+    const r = decideDispatch({
+      ...base,
+      inboundText: 'cuánto debe Aldo',
+      extraction: extraction({ intent: 'otro', confianza: 'alta' }),
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+
+  it('sin cotización descartada el mismo texto va al assistant', () => {
+    const r = decideDispatch({
+      ...base,
+      hasResumableQuote: false,
+      inboundText: 'dale',
+      extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+})

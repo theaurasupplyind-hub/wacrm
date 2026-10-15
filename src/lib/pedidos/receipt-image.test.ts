@@ -52,4 +52,8 @@ describe('receiptElement', () => {
   it('respeta una escala custom', async () => {
     await render(receiptElement(data, { scale: 1 }), { width: RECEIPT_BASE_WIDTH, height: 700 })
   })
+
+  it('renderiza con domicilio de entrega', async () => {
+    await render(receiptElement({ ...data, clienteDomicilio: 'Monte 930' }))
+  })
 })

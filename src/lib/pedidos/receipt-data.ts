@@ -9,6 +9,7 @@ export function invoiceToReceipt(invoice: InvoiceDetail, faltantes: string[] = [
     fecha: invoice.fecha,
     clienteNombre: invoice.cliente_nombre || 'Consumidor Final',
     clienteTelefono: invoice.cliente_telefono,
+    clienteDomicilio: invoice.cliente_domicilio,
     items: (invoice.items || []).map(it => ({
       cantidad: it.cantidad,
       descripcion: it.descripcion,

@@ -37,4 +37,9 @@ describe('invoiceToReceipt', () => {
     const r = invoiceToReceipt({ ...invoice, numero_presupuesto: null, numero_factura: null })
     expect(r.numeroPresupuesto).toBe('#42')
   })
+
+  it('mapea el domicilio de entrega', () => {
+    const r = invoiceToReceipt({ ...invoice, cliente_domicilio: 'Monte 930' })
+    expect(r.clienteDomicilio).toBe('Monte 930')
+  })
 })

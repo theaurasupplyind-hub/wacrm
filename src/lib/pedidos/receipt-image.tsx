@@ -23,6 +23,7 @@ export interface ReceiptData {
   fecha: string
   clienteNombre: string
   clienteTelefono: string | null
+  clienteDomicilio?: string | null
   items: ReceiptItem[]
   total: number
   faltantes: string[]
@@ -120,6 +121,11 @@ export function receiptElement(data: ReceiptData, options: ReceiptRenderOptions 
           </span>
           {data.clienteTelefono ? (
             <span style={{ fontSize: px(13), color: '#666666' }}>{data.clienteTelefono}</span>
+          ) : null}
+          {data.clienteDomicilio ? (
+            <span style={{ fontSize: px(13), color: '#666666', marginTop: px(2) }}>
+              {data.clienteDomicilio}
+            </span>
           ) : null}
         </div>
 

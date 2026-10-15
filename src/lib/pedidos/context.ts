@@ -61,9 +61,23 @@ export async function clearOrderContext(db: SupabaseClient, conversationId: stri
 /** True si el pedido pendiente está en etapa de confirmación y no expiró. */
 export function isOrderContextActive(ctx: OrderContext | null, now = Date.now()): boolean {
   if (!ctx || ctx.stage !== 'confirming') return false
+  // Una cotización descartada (soft-cancel) NO es un pendiente activo: se
+  // conserva para retomarla vía `isResumableQuote`, pero no secuestra mensajes.
+  if (ctx.quoteCancelled) return false
   if (!ctx.updatedAt) return true
   const ttl = ctx.awaitingQuoteApproval ? QUOTE_TTL_MS : PENDING_ORDER_TTL_MS
   return now - ctx.updatedAt <= ttl
+}
+
+/**
+ * Cotización descartada pero recordable (soft-cancel): el flujo de pedidos la
+ * puede reanudar si el usuario la retoma ("hacelo", "cambiá el precio"). TTL de
+ * recall (7 días), más largo que el de un pendiente activo.
+ */
+export function isResumableQuote(ctx: OrderContext | null, now = Date.now()): boolean {
+  if (!ctx || ctx.stage !== 'confirming' || !ctx.quoteCancelled) return false
+  if (!ctx.updatedAt) return true
+  return now - ctx.updatedAt <= STALE_QUOTE_RECALL_MS
 }
 
 /**
@@ -73,6 +87,7 @@ export function isOrderContextActive(ctx: OrderContext | null, now = Date.now())
  */
 export function getStaleQuote(ctx: OrderContext | null, now = Date.now()): OrderContext | null {
   if (!ctx || ctx.stage !== 'confirming') return null
+  if (ctx.quoteCancelled) return null
   if (!ctx.updatedAt) return null
   if (isOrderContextActive(ctx, now)) return null
   if (now - ctx.updatedAt > STALE_QUOTE_RECALL_MS) return null

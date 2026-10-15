@@ -23,6 +23,7 @@ import {
   saveOrderContext,
   clearOrderContext,
   isOrderContextActive,
+  isResumableQuote,
 } from './context'
 import { executePedido, pedidoItemsNeto } from './execute'
 import { sendPedidoReceipt } from './send-receipt'
@@ -46,11 +47,11 @@ import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
 import { interpretDeliveryReply } from './interpret-delivery'
 import { interpretOrderReply } from './interpret-reply'
 import {
-  interpretQuoteModification,
-  applyQuoteModification,
+  interpretQuoteChanges,
+  applyQuoteChanges,
   type QuoteLine,
-  type QuoteModification,
-} from './interpret-modification'
+  type ChangeResult,
+} from './interpret-changes'
 import { buildKnownVocab, classifyItem } from './classify-item'
 import {
   isPhoneLikeClientName,
@@ -59,7 +60,7 @@ import {
   isSenderPhoneCandidate,
   normalizeClientNameReply,
 } from './client-identity'
-import { isExplicitBudgetCreationRequest, mentionsOrderItems } from './intent'
+import { isExplicitBudgetCreationRequest, mentionsOrderItems, looksLikeOrderSlotReply } from './intent'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import type {
@@ -91,8 +92,8 @@ export interface ProcessPedidoMessageArgs {
   parseFn?: (text: string, context: OrderContext | null) => Promise<ParsedOrder>
   /** Inyección para tests: búsqueda de clientes (evita llamar a FacBal). */
   findClientsFn?: (nombre: string, telefono?: string) => Promise<ClienteCandidato[]>
-  /** Inyección para tests: interpretación de modificación de línea (evita llamar al LLM). */
-  modifyFn?: (text: string, lines: QuoteLine[]) => Promise<QuoteModification | null>
+  /** Inyección para tests: interpretación de cambio de línea (evita llamar al LLM). */
+  modifyFn?: (text: string, lines: QuoteLine[]) => Promise<ChangeResult>
 }
 
 export interface ProcessPedidoResult {
@@ -1085,8 +1086,13 @@ async function handleQuoteApproval(
       .slice(0, 300),
   })
   if (reply === 'cancel') {
-    await clearOrderContext(args.db, args.conversationId)
-    const msg = 'Listo. Era solo una cotización; no guardé ni creé ningún presupuesto.'
+    // Soft-cancel: NO borramos la cotización; la marcamos descartada para poder
+    // retomarla ("perdón, sí, hacelo") dentro del TTL de recall. Se limpia del
+    // todo recién si el usuario cancela otra vez sobre la cotización descartada.
+    const cancelled: OrderContext = { ...ctx, quoteCancelled: true, awaitingQuoteApproval: false }
+    await saveCtx(args, cancelled)
+    const msg =
+      'Listo. No la guardé ni creé nada. Si la querés, decí "hacé el presupuesto" y la retomo; si no, la dejo.'
     await sendText(args, msg)
     return { handled: true, text: msg }
   }
@@ -1103,19 +1109,24 @@ async function handleQuoteApproval(
     return advance(args, readyToCreate, { includeSummary: true })
   }
 
-  // A correction while the quote is open updates the preview; unrelated prose
-  // cannot be mistaken for the customer's name at this stage.
-  // Primero: modificación de una línea (descuento %, quitar, cantidad). El LLM
-  // solo resuelve a qué línea apuntan; la aritmética es determinística.
+  // Corrección de la cotización abierta: intérprete general de cambios
+  // (precio/cantidad/quitar). El LLM solo resuelve a qué línea apuntan; la
+  // aritmética es determinística. Lo que no es cambio de línea (agregar ítems,
+  // variantes, cliente, entrega) → `none` y sigue el flujo de re-cotización.
   const quoteLines: QuoteLine[] = ctx.items
     .filter((it) => !it.faltante)
     .map((it, i) => ({ n: i + 1, descripcion: it.descripcion, cantidad: it.cantidad, precio: it.precio_unitario }))
   if (quoteLines.length > 0) {
-    const mod: QuoteModification | null = args.modifyFn
+    const changes: ChangeResult = args.modifyFn
       ? await args.modifyFn(text, quoteLines)
-      : await interpretQuoteModification(text, quoteLines)
-    if (mod) {
-      const applied = applyQuoteModification(ctx.items, mod)
+      : await interpretQuoteChanges(text, quoteLines)
+    if (changes.kind === 'unsupported') {
+      const msg = `No pude aplicar ese cambio (${changes.motivo}). La cotización sigue igual; si querés, decímelo de otra forma o la creamos así.`
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
+    if (changes.kind === 'ops') {
+      const applied = applyQuoteChanges(ctx.items, changes.ops)
       if ('error' in applied) {
         await sendText(args, `${applied.error} Si querés cambiar otra cosa, decime.`)
         return { handled: true, text: applied.error }
@@ -1134,7 +1145,7 @@ async function handleQuoteApproval(
         descuento: desc && desc.mode === 'percent' ? { ...desc, amount: descAmount } : desc,
       }
       await saveCtx(args, updated)
-      const msg = `${applied.note}\n\n${buildOrderSummary(updated, {
+      const msg = `${applied.notes.join(' ')}\n\n${buildOrderSummary(updated, {
         confirm: false,
         title: 'Cotización actualizada:',
         prompt: '¿Querés que la convierta en presupuesto?',
@@ -1144,6 +1155,63 @@ async function handleQuoteApproval(
     }
   }
   return presentQuote(args, text, ctx)
+}
+
+/**
+ * Cotización descartada (soft-cancel). El usuario puede retomarla, cancelarla
+ * del todo, o pedir un cambio. Nunca se pierde: los ítems quedaron guardados.
+ */
+async function handleCancelledQuote(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  text: string,
+): Promise<ProcessPedidoResult> {
+  const { decision } = await interpretOrderReply(text, {
+    waitingFor: `una cotización descartada (total $${ctx.total.toLocaleString('es-AR')}); el usuario puede retomarla ("hacelo"), dejar de lado de nuevo, o pedir un cambio`,
+    itemsText: ctx.items
+      .filter((it) => !it.faltante)
+      .map((it) => `${it.cantidad}x ${it.descripcion}`)
+      .join('; ')
+      .slice(0, 300),
+  })
+
+  // Cancelar de nuevo → descartar del todo.
+  if (decision === 'cancel') {
+    await clearOrderContext(args.db, args.conversationId)
+    const msg = 'Listo, la descarté del todo.'
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+
+  // Retomar: equivale a aprobar la cotización (mismos pasos de entrega/cliente).
+  if (decision === 'confirm') {
+    const ready: OrderContext = {
+      ...ctx,
+      quoteCancelled: false,
+      awaitingQuoteApproval: false,
+      quoteText: null,
+    }
+    await saveCtx(args, ready)
+    return advance(args, ready, { includeSummary: true })
+  }
+
+  // Un cambio (o algo que menciona el pedido): reabrir y pasar por el flujo
+  // normal de cotización/corrección, sin perder los ítems.
+  if (mentionsOrderItems(text) || /\d/.test(text) || looksLikeOrderSlotReply(text)) {
+    const reopened: OrderContext = { ...ctx, quoteCancelled: false, awaitingQuoteApproval: true }
+    await saveCtx(args, reopened)
+    return handleQuoteApproval(args, reopened, text)
+  }
+
+  // Otra cosa: no secuestramos; recordamos la cotización descartada y dejamos
+  // que el usuario decida (el ruteo pudo haberla traído por una respuesta corta).
+  const msg = buildOrderSummary(ctx, {
+    confirm: false,
+    title: 'Cotización descartada:',
+    prompt: 'Si la querés, decí "hacela presupuesto"; si no, la dejo.',
+  })
+  await sendText(args, msg)
+  return { handled: true, text: msg }
 }
 
 async function handlePending(
@@ -1177,6 +1245,11 @@ async function handlePending(
     const domicilio = text.trim()
     if (!domicilio) return { handled: false }
     return advance(args, { ...ctx, clienteDomicilio: domicilio, awaitingDomicilio: false })
+  }
+
+  // Cotización descartada (soft-cancel): retomar / descartar del todo / corregir.
+  if (ctx.quoteCancelled) {
+    return handleCancelledQuote(args, ctx, text)
   }
 
   if (ctx.awaitingQuoteApproval) {
@@ -1379,7 +1452,7 @@ export async function processPedidoMessage(
   }
 
   let result: ProcessPedidoResult
-  if (active) {
+  if (active || isResumableQuote(ctx)) {
     result = await handlePending(args, ctx as OrderContext)
   } else if (isExplicitBudgetCreationRequest(args.text)) {
     result = await resolveAndSave(args, null)

@@ -86,6 +86,11 @@ export interface OrderContext {
   awaitingCliente?: boolean
   /** Estamos mostrando una cotización, aún no se inició la creación/guardado. */
   awaitingQuoteApproval?: boolean
+  /**
+   * El usuario descartó la cotización pero se conserva para retomarla (soft-cancel).
+   * Mientras esté dentro del TTL de recall, un "hacelo" la reanuda.
+   */
+  quoteCancelled?: boolean
   /** Texto original usado para reconstruir el presupuesto si el usuario acepta. */
   quoteText?: string | null
   /** El dueño pidió crear un presupuesto pero todavía no indicó los ítems. */

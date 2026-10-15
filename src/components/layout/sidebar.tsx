@@ -26,6 +26,7 @@ import {
   UserCog,
   Users,
   UsersRound,
+  Waypoints,
   Workflow,
   X,
   Zap,
@@ -107,6 +108,7 @@ const navItems: NavItem[] = [
   { href: "/bot-debug", label: "Bot Debug", icon: FlaskConical },
   { href: "/glosario", label: "Glosario", icon: BookMarked },
   { href: "/bot-flow", label: "Bot Flow", icon: Network, beta: true },
+  { href: "/bot-map", label: "Mapa del sistema", icon: Waypoints, beta: true },
   { href: "/bot-beta", label: "Bot Beta", icon: FlaskConical, beta: true },
 ];
 

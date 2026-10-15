@@ -48,6 +48,9 @@ describe('agent tool registry', () => {
     // cubierto) y ayuda meta. Voucher sigue fuera hasta el gate de Fase 2.
     const kinds = Object.fromEntries(AGENT_TOOLS.map((t) => [t.name, t.kind]))
     expect(kinds['consultar_asistencia']).toBe('read')
+    expect(kinds['consultar_estado_pedido']).toBe('read')
+    expect(kinds['consultar_confirmaciones_pendientes']).toBe('read')
+    expect(kinds['consultar_ultima_escritura']).toBe('read')
     expect(kinds['pedir_ayuda']).toBe('meta')
     expect(kinds['registrar_gasto']).toBe('write')
     expect(kinds['registrar_asistencia']).toBe('write')
@@ -75,5 +78,48 @@ describe('agent tool registry', () => {
     expect(data.lecturas).toContain('consultar_asistencia')
     expect(data.escrituras).toContain('registrar_gasto')
     expect(data.ayuda.length).toBeGreaterThan(10)
+  })
+
+  it('consultar_estado_pedido devuelve el estado fresco de la conversación', async () => {
+    const order = {
+      stage: 'confirming',
+      items: [
+        {
+          cantidad: 2,
+          categoria: 'BASTIDOR',
+          medida: '60x40',
+          variante: 'Sin Tela',
+          precio_unitario: 18000,
+          faltante: false,
+          descripcion: 'BASTIDOR 60 x 40 Sin Tela',
+          regla_aplicada: null,
+        },
+      ],
+      clienteNombre: 'Fede',
+      total: 36000,
+      faltantes: [],
+      notaSupuestos: [],
+      awaitingQuoteApproval: true,
+      updatedAt: Date.now(),
+    }
+    const db = {
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { order_context: order } }) }) }),
+      }),
+    }
+    const tool = findAgentTool('consultar_estado_pedido')!
+    const out = await tool.execute({}, { db, conversationId: 'conv' } as unknown as ToolContext)
+    const data = out.data as {
+      abierto: boolean
+      items: unknown[]
+      total: number
+      esperando: string | null
+      cliente: string | null
+    }
+    expect(data.abierto).toBe(true)
+    expect(data.items).toHaveLength(1)
+    expect(data.total).toBe(36000)
+    expect(data.cliente).toBe('Fede')
+    expect(data.esperando).toContain('apruebe')
   })
 })

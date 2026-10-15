@@ -5,7 +5,8 @@ import { looksLikeExpense } from '@/lib/expenses'
 import { looksLikeAttendance } from '@/lib/attendance'
 import { looksLikePedido } from '@/lib/bot-llm/fallback'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
-import { isExplicitBudgetCreationRequest, mentionsOrderItems } from '@/lib/pedidos/intent'
+import { isExplicitBudgetCreationRequest, mentionsOrderItems, looksLikeOrderSlotReply } from '@/lib/pedidos/intent'
+import { classifyReply } from '@/lib/bot-llm/reply-intent'
 
 export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'pedido' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
 export type DispatchReason =
@@ -54,6 +55,12 @@ export interface RouterState {
   /** Hay un pedido en `order_context` esperando confirmación/corrección. */
   hasPendingOrder?: boolean
   /**
+   * Hay una cotización descartada (soft-cancel) recordable. No secuestra todo:
+   * solo el mensaje que la retoma, la corrige o pide crear el presupuesto vuelve
+   * al flujo de pedidos.
+   */
+  hasResumableQuote?: boolean
+  /**
    * El pedido pendiente está esperando un dato puntual (nombre de cliente,
    * tipo de entrega, fecha o descuento). Fuerza el ruteo a `pedido` para que la
    * respuesta corta ("envío", "10%", "no") no se la lleve otro dominio.
@@ -96,7 +103,7 @@ function resolveClarifyIntent(intent: BotIntent): RouterDecision {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, orderAwaiting, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, hasResumableQuote, orderAwaiting, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -161,6 +168,21 @@ export function decideDispatch(state: RouterState): RouterDecision {
     !isAsistenciaIntent(intent) &&
     intent !== 'voucher' &&
     intent !== 'multi_expense'
+  ) {
+    return { dispatchedTo: 'pedido', dispatchReason: 'pending_multiturn' }
+  }
+  // Cotización descartada (soft-cancel) recordable: si el mensaje la retoma
+  // ("perdón, sí, hacelo"), la corrige o pide crear el presupuesto, vuelve al
+  // flujo determinístico en vez de caer al asistente (incidente 15/10). Los
+  // dominios explícitos de arriba (gasto/asistencia/voucher/consulta) ya ganaron.
+  if (
+    !flowConsumed &&
+    !interactiveReplyId &&
+    hasResumableQuote &&
+    (isExplicitBudgetCreationRequest(inboundText) ||
+      mentionsOrderItems(inboundText) ||
+      looksLikeOrderSlotReply(inboundText) ||
+      classifyReply(inboundText) !== 'other')
   ) {
     return { dispatchedTo: 'pedido', dispatchReason: 'pending_multiturn' }
   }

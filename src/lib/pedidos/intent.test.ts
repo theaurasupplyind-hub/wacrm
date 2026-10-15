@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isExplicitBudgetCreationRequest } from './intent'
+import { isExplicitBudgetCreationRequest, looksLikeOrderSlotReply } from './intent'
 
 describe('isExplicitBudgetCreationRequest', () => {
   it.each([
@@ -20,5 +20,21 @@ describe('isExplicitBudgetCreationRequest', () => {
     'No quiero un presupuesto',
   ])('does not treat a query/quote as permission to create: %s', (text) => {
     expect(isExplicitBudgetCreationRequest(text)).toBe(false)
+  })
+})
+
+describe('looksLikeOrderSlotReply', () => {
+  it.each([
+    'el cliente es Federico, es envio',
+    'armalo a nombre de federico',
+    'es nuevo, y armalo a nombre de federico',
+    'ponelo para mañana, sin descuento',
+    'retira',
+  ])('detecta respuesta de slot del pedido: %s', (text) => {
+    expect(looksLikeOrderSlotReply(text)).toBe(true)
+  })
+
+  it.each(['hola', 'gracias', 'cuánto debo', ''])('no confunde charla/consulta: %s', (text) => {
+    expect(looksLikeOrderSlotReply(text)).toBe(false)
   })
 })

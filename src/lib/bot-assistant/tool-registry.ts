@@ -41,6 +41,8 @@ import {
 import { processExpenseMessage } from '@/lib/expenses'
 import { processAttendanceMessage } from '@/lib/attendance'
 import { previewPedido } from '@/lib/pedidos/preview'
+import { loadOrderContext, isOrderContextActive, isResumableQuote } from '@/lib/pedidos/context'
+import type { OrderContext } from '@/lib/pedidos/types'
 import { evaluateGate, type OperationKind, type MatchInfo } from './effect-gate'
 import {
   recordWrite,
@@ -52,7 +54,7 @@ import {
   type UndoHandle,
 } from './undo-log'
 import { resolveLatestPending } from './failure-trace'
-import { createPendingConfirm, hasRecentConfirmation } from './pending-confirm'
+import { createPendingConfirm, hasRecentConfirmation, peekFreshPending } from './pending-confirm'
 
 export interface ToolContext {
   db: SupabaseClient
@@ -101,6 +103,22 @@ export function todayISO(offsetDays = 0): string {
   const d = new Date()
   d.setDate(d.getDate() + offsetDays)
   return d.toISOString().slice(0, 10)
+}
+
+/** En qué paso está un pedido a medio armar (para el estado fresco del agente). */
+function describeOrderAwaiting(s: OrderContext): string | null {
+  if (s.awaitingOrderItems) return 'esperando los productos/medidas'
+  if (s.awaitingQuoteApproval) return 'esperando que el usuario apruebe la cotización'
+  if (s.awaitingGlossary) return 'esperando que explique un término del glosario'
+  if (s.awaitingItemAttr) return 'esperando una medida/variante'
+  if (s.awaitingCliente) return 'esperando el nombre del cliente'
+  if (s.awaitingClienteChoice) return 'esperando que elija el cliente candidato'
+  if (s.awaitingDatos) return 'esperando entrega + fecha + descuento'
+  if (s.awaitingEntrega) return 'esperando el tipo de entrega'
+  if (s.awaitingFecha) return 'esperando la fecha de entrega'
+  if (s.awaitingDescuento) return 'esperando el descuento'
+  if (s.awaitingDomicilio) return 'esperando el domicilio'
+  return null
 }
 
 // ── Queries compartidas (fuente única) ──────────────────────────────
@@ -280,6 +298,71 @@ export const AGENT_TOOLS: AgentTool[] = [
       const preview = await previewPedido(texto)
       if (!preview) return { data: null, summary: 'No se detectaron ítems para cotizar.' }
       return { data: preview, summary: preview.text }
+    },
+  },
+  {
+    name: 'consultar_estado_pedido',
+    kind: 'read',
+    description:
+      'Devuelve el estado REAL del pedido/presupuesto de ESTA conversación (ítems cotizados, total, cliente, entrega, fecha, descuento, si está esperando algo, o si está descartado y es reanudable). Usala SIEMPRE antes de hablar de un presupuesto en curso. NUNCA reconstruyas este estado desde el historial.',
+    parameters: { type: 'object', properties: {} },
+    execute: async (_args, ctx) => {
+      const state = await loadOrderContext(ctx.db, ctx.conversationId)
+      if (!state || state.stage !== 'confirming') {
+        return {
+          data: { abierto: false, reanudable: false, descartado: false, items: [] },
+          summary: 'No hay un pedido abierto en esta conversación.',
+        }
+      }
+      const abierto = isOrderContextActive(state)
+      const reanudable = isResumableQuote(state)
+      const items = state.items
+        .filter((i) => !i.faltante)
+        .map((i) => ({ cantidad: i.cantidad, descripcion: i.descripcion, precio_unitario: i.precio_unitario }))
+      const data = {
+        abierto,
+        reanudable,
+        descartado: !!state.quoteCancelled,
+        items,
+        faltantes: state.faltantes,
+        total: state.total,
+        cliente: state.clienteNombre ?? null,
+        tipoEntrega: state.tipoEntrega ?? null,
+        fechaEntrega: state.fechaEntrega ?? null,
+        descuento: state.descuento ?? null,
+        esperando: describeOrderAwaiting(state),
+      }
+      const estado = abierto ? 'abierto' : reanudable ? 'descartado (reanudable)' : 'inactivo'
+      return { data, summary: `Pedido ${estado}: ${items.length} ítem(s), total ${state.total}.` }
+    },
+  },
+  {
+    name: 'consultar_confirmaciones_pendientes',
+    kind: 'read',
+    description:
+      'Devuelve la confirmación pendiente de esta conversación (operación + preview), si hay. Usala antes de decir que algo quedó pendiente de confirmar.',
+    parameters: { type: 'object', properties: {} },
+    execute: async (_args, ctx) => {
+      const p = await peekFreshPending(ctx.db, ctx.conversationId)
+      return p
+        ? { data: { pendiente: true, tool: p.tool, preview: p.preview }, summary: `Pendiente de confirmar: ${p.preview ?? p.tool}` }
+        : { data: { pendiente: false }, summary: 'No hay confirmaciones pendientes.' }
+    },
+  },
+  {
+    name: 'consultar_ultima_escritura',
+    kind: 'read',
+    description:
+      'Devuelve la última operación que el bot REGISTRÓ en esta conversación (dentro de 24h): entidad y resumen. Usala para no afirmar algo que no se registró.',
+    parameters: { type: 'object', properties: {} },
+    execute: async (_args, ctx) => {
+      const row = await latestUndoableWrite(ctx.db, ctx.conversationId)
+      return row
+        ? {
+            data: { entidad: row.entity, resumen: row.summary, id: row.id, creada: row.created_at },
+            summary: `Última operación registrada: ${row.summary ?? row.entity}`,
+          }
+        : { data: { ninguna: true }, summary: 'No hay escrituras recientes (24h).' }
     },
   },
   {

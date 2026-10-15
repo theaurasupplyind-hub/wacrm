@@ -19,6 +19,7 @@ webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 | [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) | Plan del extractor unificado LLM (intents + parseo de asistencia/gastos, fallback regex) — implementado | Implementado |
 | [`plan-mejora-asistente-whatsapp.md`](./plan-mejora-asistente-whatsapp.md) | Estado de mejoras: whitelist/UX/herramientas implementadas; piloto DeepSeek y tareas pendientes | Mixto |
 | [`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md) | Motor de turno puro en producción (`engine.ts`) + planner LLM opt-in (Fases 1-5); migración de Bot Beta fuera de alcance | Parcial |
+| [`plan-orquestador-llm-bots-rigidos.md`](./plan-orquestador-llm-bots-rigidos.md) | LLM orquestador con estado fresco + bots rígidos que ejecutan; intérprete general y guards anti-invención (incidente 15/10) | Planificado |
 | [`plan-asistente-conversacional-bot-beta.md`](./plan-asistente-conversacional-bot-beta.md) | Especificación histórica del asistente en Beta; superada por el asistente productivo | Superado |
 | [`plan-bot-beta-a-produccion-asistente.md`](./plan-bot-beta-a-produccion-asistente.md) | Plan histórico de promoción a producción; no ejecutar literalmente contra los módulos actuales | Superado |
 | [`archive/README.md`](./archive/README.md) | Índice de planes e integraciones históricas | Archivo |

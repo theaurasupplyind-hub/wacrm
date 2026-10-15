@@ -39,6 +39,8 @@ export interface TurnState {
   hasPendingAttendance: boolean
   hasPendingVoucher: boolean
   hasPendingOrder: boolean
+  /** Cotización descartada (soft-cancel) recordable (ver router). */
+  hasResumableQuote?: boolean
   orderAwaiting: boolean
   /** Candidatas de vouchers pendientes (para no robar la respuesta con un clarify). */
   voucherCandidates: MatchVoucherCandidate[]
@@ -220,6 +222,7 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
           hasPendingAttendance,
           hasPendingVoucher,
           hasPendingOrder,
+          hasResumableQuote: state.hasResumableQuote ?? false,
           orderAwaiting,
           flowConsumed,
           interactiveReplyId: clarifyTapConsumed ? null : interactiveReplyId,

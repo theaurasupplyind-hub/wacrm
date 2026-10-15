@@ -8,6 +8,7 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runAssistant } from './orchestrator'
 import { runAssistantAgent } from './agent'
 import { ASSISTANT_SYSTEM_PROMPT } from './prompts'
+import { guardAssistantReply } from './reply-guard'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
 import { recordBotTrace } from '@/lib/bot-trace/record'
 import { isPhoneAllowed } from '@/lib/bot/whitelist'
@@ -156,7 +157,12 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
           readonlyExpensePreview: true,
         })
 
-    const reply = (result.reply || '').trim()
+    const rawReply = (result.reply || '').trim()
+    const guard = guardAssistantReply(rawReply)
+    const reply = guard.text
+    if (guard.blocked) {
+      console.warn('[assistant production] G3 guard: respuesta con formato de presupuesto bloqueada conv=%s', conversationId.slice(0, 8))
+    }
     console.log('[assistant production] replyPreview=%s toolLogs=%s', reply.slice(0, 200), JSON.stringify(result.toolLogs?.map((t) => `${t.tool}:${t.error ? 'ERR:'+t.error.slice(0,40) : 'OK'}`)))
 
     // Persist assistant tool debug for bot-debug UI. Se enriquece la MISMA

@@ -238,7 +238,7 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     })
   })
 
-  it('"no lo creas, era una prueba" cierra la cotización sin buscar clientes ni escribir', async () => {
+  it('"no lo creas, era una prueba" descarta la cotización (soft-cancel) sin buscar clientes ni escribir', async () => {
     const db = makeDb()
     const findClientsFn = vi.fn(async () => [])
     const parseFn = async () => ({
@@ -255,11 +255,55 @@ describe('processPedidoMessage — creación de presupuesto', () => {
       findClientsFn,
     }))
 
-    expect(result.text).toContain('no guardé ni creé ningún presupuesto')
-    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toEqual({})
+    expect(result.text).toContain('No la guardé ni creé nada')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      quoteCancelled: true,
+      awaitingQuoteApproval: false,
+    })
     expect(findClientsFn).not.toHaveBeenCalled()
     expect(facbal.createClient).not.toHaveBeenCalled()
     expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('tras descartar, "perdón, sí, hacelo" reanuda la cotización (incidente 15/10)', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+
+    await processPedidoMessage(args(db, 'Quería saber si tienen bastidores de 20x20', { parseFn, findClientsFn }))
+    await processPedidoMessage(args(db, 'no lo creas, era una prueba', { parseFn, findClientsFn }))
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({ quoteCancelled: true })
+
+    // El LLM juzga la respuesta natural como confirmación (retomar).
+    ai.callOpenRouter.mockResolvedValueOnce({ text: JSON.stringify({ decision: 'confirm' }) })
+    const result = await processPedidoMessage(
+      args(db, 'perdon, si quiero que llo hagas presupuesto', { parseFn, findClientsFn }),
+    )
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+    const ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as { quoteCancelled?: boolean }
+    expect(ctx.quoteCancelled).toBeFalsy()
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('descartar de nuevo sobre una cotización descartada la borra del todo', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [])
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 1, texto: 'bastidor 20x20 lienzo profesional' }],
+    })
+
+    await processPedidoMessage(args(db, 'Quería saber si tienen bastidores de 20x20', { parseFn, findClientsFn }))
+    await processPedidoMessage(args(db, 'no lo creas, era una prueba', { parseFn, findClientsFn }))
+
+    const result = await processPedidoMessage(args(db, 'cancelar', { parseFn, findClientsFn }))
+    expect(result.text).toContain('descarté del todo')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toEqual({})
   })
 
   it('una corrección que empieza con "no" actualiza la cotización, no la cancela', async () => {
@@ -606,12 +650,47 @@ describe('processPedidoMessage - modificacion de linea en cotizacion abierta', (
     await processPedidoMessage(args(db, 'dos bastidores', { parseFn: parseDos }))
     expect(sent.texts.at(-1)).toContain('Cotizaci')
 
-    const modifyFn = async () => ({ line: 2, op: 'remove' as const, value: 0 })
+    const modifyFn = async () => ({ kind: 'ops' as const, ops: [{ op: 'remove' as const, line: 2 }] })
     const result = await processPedidoMessage(
       args(db, 'saca el segundo', { parseFn: parseDos, modifyFn }),
     )
     expect(result.handled).toBe(true)
     expect(sent.texts.at(-1)).toContain('Cotizaci')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('set_price: cambia el precio de una línea por nombre (intérprete general)', async () => {
+    const db = makeDb()
+    await processPedidoMessage(args(db, 'bastidor 60x60 sin tela', { parseFn: parseBastidor }))
+
+    const modifyFn = async () => ({
+      kind: 'ops' as const,
+      ops: [{ op: 'set_price' as const, line: 1, mode: 'absolute' as const, value: 300000 }],
+    })
+    const result = await processPedidoMessage(
+      args(db, 'cambiale el precio al bastidor de 142 x 195 a 300mil', { parseFn: parseBastidor, modifyFn }),
+    )
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('Cotización actualizada:')
+    expect(sent.texts.at(-1)).toContain('300.000')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+
+  it('un cambio que no puede aplicar lo dice sin repetir y sin escribir', async () => {
+    const db = makeDb()
+    await processPedidoMessage(args(db, 'bastidor 60x60 sin tela', { parseFn: parseBastidor }))
+
+    const modifyFn = async () => ({ kind: 'unsupported' as const, motivo: 'no sé a qué línea' })
+    const result = await processPedidoMessage(
+      args(db, 'cambiale el precio a esa', { parseFn: parseBastidor, modifyFn }),
+    )
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('No pude aplicar ese cambio')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+    })
     expect(facbal.createInvoice).not.toHaveBeenCalled()
   })
 })
