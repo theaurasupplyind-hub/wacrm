@@ -49,4 +49,10 @@ export const INTENT_FIXTURES: IntentCase[] = [
   { text: 'quiero ver las boxy fit lisas', expected: 'otro' },
   { text: 'te pido catalogo', expected: 'otro' },
   { text: 'cuánto debe ursula?', expected: 'factura' },
+
+  // ── deuda con proveedor (deber 3ª persona → factura, NUNCA gasto) ──
+  { text: '2.963.912 es lo que se debe de madera transferencia', expected: 'factura' },
+  { text: 'le debemos 3 millones a Puerto Maderas', expected: 'factura' },
+  { text: 'debemos 50000 a la bulonera', expected: 'factura' },
+  { text: 'debo 98mil al proveedor de maderas', expected: 'factura' },
 ]

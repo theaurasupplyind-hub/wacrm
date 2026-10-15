@@ -168,7 +168,7 @@ export async function runToolsForQuery(args: {
   const pagoMatch = args.text.trim().match(pagoQueryRe)
   const isDebtQuery =
     args.intent === 'factura' ||
-    /cu[aá]nto debe|saldo pendiente|deuda de|tiene (?:alguna )?factura|facturas (?:de|pendientes)|le queda/i.test(args.text) ||
+    /cu[aá]nto debe|saldo pendiente|deuda de|deuda con|saldo con|se debe|debemos|le debo|le debemos|debo a|tiene (?:alguna )?factura|facturas (?:de|pendientes)|le queda/i.test(args.text) ||
     !!pagoMatch
   const confirmedDebtName = extractConfirmedDebtName(args.historyText, args.text)
   const followUpDebtName = confirmedDebtName || extractDebtFollowUp(args.historyText, args.text)
@@ -195,6 +195,38 @@ export async function runToolsForQuery(args: {
     return null
   })())
 
+  // Deuda con PROVEEDOR (plata que DEBEMOS nosotros): si el nombre de la deuda
+  // matchea un proveedor conocido, NO se consulta como cliente (queryFacturas
+  // trae facturas de clientes = nos deben a nosotros, dato invertido).
+  // Se devuelve deuda_proveedor con el balance del proveedor.
+  let supplierDebt: { name: string; providerName: string; balance: number | null } | null = null
+  let providersPrefetch: { name: string; data: unknown; log: ToolLog } | null = null
+  if (isDebtQueryEffective && debtClientName) {
+    try {
+      const r = await fetchProvidersByQuery(debtClientName)
+      providersPrefetch = { name: debtClientName, data: r.data, log: r.log }
+      const list = Array.isArray(r.data) ? (r.data as { name?: unknown; balance?: unknown }[]) : []
+      const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      const target = norm(debtClientName)
+      const hit = list.find(
+        (p) =>
+          p &&
+          typeof p.name === 'string' &&
+          (norm(p.name) === target || norm(p.name).includes(target) || (target.length >= 4 && target.includes(norm(p.name)))),
+      )
+      if (hit && typeof hit.name === 'string') {
+        supplierDebt = {
+          name: debtClientName,
+          providerName: hit.name,
+          balance: typeof hit.balance === 'number' ? hit.balance : null,
+        }
+        console.log('[debt] supplier debt detected name="%s" provider="%s" balance=%s — skipping deuda_cliente', debtClientName, hit.name, String(supplierDebt.balance))
+      }
+    } catch {
+      // Si falla el chequeo, se sigue vía cliente como antes
+    }
+  }
+
   if (needsExpenses) {
     const isYesterday = q.includes('ayer')
     if (isYesterday) {
@@ -219,7 +251,12 @@ export async function runToolsForQuery(args: {
 
   if (needsProviders) {
     if (args.proveedor) {
-      pending.push(fetchProvidersByQuery(args.proveedor).then((r) => ({ key: 'providers', data: r.data, log: r.log })))
+      if (providersPrefetch && providersPrefetch.name === args.proveedor.trim()) {
+        const pre = providersPrefetch
+        pending.push(Promise.resolve({ key: 'providers', data: pre.data, log: pre.log }))
+      } else {
+        pending.push(fetchProvidersByQuery(args.proveedor).then((r) => ({ key: 'providers', data: r.data, log: r.log })))
+      }
     } else if (q.includes('proveedor')) {
       pending.push(fetchAllProviders().then((r) => ({ key: 'providers', data: r.data, log: r.log })))
     }
@@ -237,7 +274,16 @@ export async function runToolsForQuery(args: {
     }
   }
 
-  if (isDebtQueryEffective && debtClientName) {
+  if (supplierDebt) {
+    const sd = supplierDebt
+    pending.push(
+      Promise.resolve({
+        key: 'deuda_proveedor',
+        data: sd,
+        log: { tool: `deuda_proveedor(${sd.name.slice(0, 40)})`, duration_ms: 0, resultCount: 1 },
+      }),
+    )
+  } else if (isDebtQueryEffective && debtClientName) {
     // timeout 5min via historial: si followUp viene de historial viejo >10 turns no se detecta (history slice -10)
     console.log('[debt] dispatch deuda_cliente client="%s" via %s', debtClientName, followUpDebtName ? 'followUp' : 'direct')
     pending.push(fetchDebtByClient(debtClientName).then((r) => {
