@@ -557,3 +557,61 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(sent.texts.at(-1)).toContain('20.000')
   })
 })
+
+describe('processPedidoMessage - modificacion de linea en cotizacion abierta', () => {
+  beforeEach(() => {
+    sent.texts = []
+    sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
+    facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
+  })
+
+  const parseBastidor = async () => ({
+    cliente: null,
+    items: [{ cantidad: 1, texto: 'bastidor 60x60 sin tela' }],
+  })
+
+  it('aplica 10% a la linea via fast-path y re-presenta sin crear', async () => {
+    const db = makeDb()
+    await processPedidoMessage(args(db, 'bastidor 60x60 sin tela', { parseFn: parseBastidor }))
+    expect(sent.texts.at(-1)).toContain('Cotizaci')
+    expect(sent.texts.at(-1)).toContain('21.000')
+
+    const result = await processPedidoMessage(
+      args(db, 'a la línea 1 hacele 10%', { parseFn: parseBastidor }),
+    )
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('Cotización actualizada:')
+    expect(sent.texts.at(-1)).toContain('Apliqué 10% a la línea 1')
+    expect(sent.texts.at(-1)).toContain('19.000')
+    expect(sent.texts.at(-1)).toContain('TOTAL: $19.000')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingQuoteApproval: true,
+    })
+  })
+
+  it('modifyFn inyectado: saca la linea 2 de 2 y re-presenta', async () => {
+    const db = makeDb()
+    const parseDos = async () => ({
+      cliente: null,
+      items: [
+        { cantidad: 1, texto: 'bastidor 60x60 sin tela' },
+        { cantidad: 1, texto: 'bastidor 30x30 sin tela' },
+      ],
+    })
+    await processPedidoMessage(args(db, 'dos bastidores', { parseFn: parseDos }))
+    expect(sent.texts.at(-1)).toContain('Cotizaci')
+
+    const modifyFn = async () => ({ line: 2, op: 'remove' as const, value: 0 })
+    const result = await processPedidoMessage(
+      args(db, 'saca el segundo', { parseFn: parseDos, modifyFn }),
+    )
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('Cotizaci')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+})

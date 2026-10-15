@@ -45,6 +45,12 @@ import {
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
 import { interpretDeliveryReply } from './interpret-delivery'
 import { interpretOrderReply } from './interpret-reply'
+import {
+  interpretQuoteModification,
+  applyQuoteModification,
+  type QuoteLine,
+  type QuoteModification,
+} from './interpret-modification'
 import { buildKnownVocab, classifyItem } from './classify-item'
 import {
   isPhoneLikeClientName,
@@ -85,6 +91,8 @@ export interface ProcessPedidoMessageArgs {
   parseFn?: (text: string, context: OrderContext | null) => Promise<ParsedOrder>
   /** Inyección para tests: búsqueda de clientes (evita llamar a FacBal). */
   findClientsFn?: (nombre: string, telefono?: string) => Promise<ClienteCandidato[]>
+  /** Inyección para tests: interpretación de modificación de línea (evita llamar al LLM). */
+  modifyFn?: (text: string, lines: QuoteLine[]) => Promise<QuoteModification | null>
 }
 
 export interface ProcessPedidoResult {
@@ -1097,6 +1105,44 @@ async function handleQuoteApproval(
 
   // A correction while the quote is open updates the preview; unrelated prose
   // cannot be mistaken for the customer's name at this stage.
+  // Primero: modificación de una línea (descuento %, quitar, cantidad). El LLM
+  // solo resuelve a qué línea apuntan; la aritmética es determinística.
+  const quoteLines: QuoteLine[] = ctx.items
+    .filter((it) => !it.faltante)
+    .map((it, i) => ({ n: i + 1, descripcion: it.descripcion, cantidad: it.cantidad, precio: it.precio_unitario }))
+  if (quoteLines.length > 0) {
+    const mod: QuoteModification | null = args.modifyFn
+      ? await args.modifyFn(text, quoteLines)
+      : await interpretQuoteModification(text, quoteLines)
+    if (mod) {
+      const applied = applyQuoteModification(ctx.items, mod)
+      if ('error' in applied) {
+        await sendText(args, `${applied.error} Si querés cambiar otra cosa, decime.`)
+        return { handled: true, text: applied.error }
+      }
+      const neto = pedidoItemsNeto(applied.items)
+      const desc = ctx.descuento
+      const descAmount = desc
+        ? desc.mode === 'percent'
+          ? Math.round((neto * desc.value) / 100)
+          : Math.min(Math.round(desc.value), neto)
+        : 0
+      const updated: OrderContext = {
+        ...ctx,
+        items: applied.items,
+        total: neto - descAmount,
+        descuento: desc && desc.mode === 'percent' ? { ...desc, amount: descAmount } : desc,
+      }
+      await saveCtx(args, updated)
+      const msg = `${applied.note}\n\n${buildOrderSummary(updated, {
+        confirm: false,
+        title: 'Cotización actualizada:',
+        prompt: '¿Querés que la convierta en presupuesto?',
+      })}`
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
+  }
   return presentQuote(args, text, ctx)
 }
 
