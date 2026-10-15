@@ -94,6 +94,9 @@ export default function BotBetaPage() {
   const [unifiedDebug, setUnifiedDebug] = useState<(AssistantDebug & { dispatchedTo?: string; dispatchReason?: string; dummyConversationId?: string | null }) | null>(null)
   const [unifiedDebugTab, setUnifiedDebugTab] = useState('extraccion')
   const [unifiedAudioBlob, setUnifiedAudioBlob] = useState<Blob | null>(null)
+  // Modo agente: loop con tools REALES (gate, undo, escrituras en backend_gal
+  // con la conversación dummy). Sin WhatsApp.
+  const [unifiedAgentMode, setUnifiedAgentMode] = useState(false)
 
   // ─── Asistente state (legacy, kept for ?legacy) ───
   const [assistantTurns, setAssistantTurns] = useState<Turn[]>([])
@@ -154,6 +157,7 @@ export default function BotBetaPage() {
         body: JSON.stringify({
           text,
           history: nextTurns.map((t) => ({ role: t.role, content: t.content })),
+          agentMode: unifiedAgentMode,
         }),
       })
       const result: AssistantDebug & { dispatchedTo?: string; dispatchReason?: string; error?: string; dummyConversationId?: string | null } = await res.json()
@@ -276,6 +280,7 @@ export default function BotBetaPage() {
       const formData = new FormData()
       formData.append('audio', unifiedAudioBlob, 'audio.webm')
       formData.append('history', JSON.stringify(nextTurns.map((t) => ({ role: t.role, content: t.content }))))
+      if (unifiedAgentMode) formData.append('agentMode', 'true')
 
       const res = await fetch('/api/bot-beta/unified', {
         method: 'POST',
@@ -301,7 +306,7 @@ export default function BotBetaPage() {
       setUnifiedSending(false)
       scrollToBottom(unifiedScrollRef)
     }
-  }, [unifiedAudioBlob, unifiedSending, unifiedTurns])
+  }, [unifiedAudioBlob, unifiedSending, unifiedTurns, unifiedAgentMode])
 
   // ─── Send assistant audio (legacy) ───
   const sendAssistantAudio = useCallback(async () => {
@@ -537,7 +542,13 @@ export default function BotBetaPage() {
             <div className="flex w-1/2 flex-col rounded-xl border border-border bg-card">
               <div className="border-b border-border px-4 py-2 flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Conversación — Unificado</span>
-                {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px]">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason}</Badge>}
+                <div className="flex items-center gap-2">
+                  {unifiedDebug?.dispatchedTo && <Badge variant="outline" className="text-[10px]">{unifiedDebug.dispatchedTo}:{unifiedDebug.dispatchReason}</Badge>}
+                  <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer" title="Loop con tools REALES (gate, undo, escrituras en backend_gal con la conversación dummy). Sin WhatsApp.">
+                    <input type="checkbox" checked={unifiedAgentMode} onChange={(e) => setUnifiedAgentMode(e.target.checked)} disabled={unifiedSending} className="h-3.5 w-3.5 accent-primary" />
+                    Modo agente{unifiedAgentMode ? ' (escribe de verdad)' : ''}
+                  </label>
+                </div>
               </div>
 
               <div ref={unifiedScrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -593,7 +604,7 @@ export default function BotBetaPage() {
                   <FileImage className="h-4 w-4" />
                 </Button>
                 <input ref={unifiedVoucherInputRef} type="file" accept="image/*,application/pdf" onChange={(e) => { const f = e.target.files?.[0]; if (f) setUnifiedVoucherFile(f); if (unifiedVoucherInputRef.current) unifiedVoucherInputRef.current.value = '' }} className="hidden" />
-                <Button size="sm" onClick={() => { if (unifiedVoucherFile) { const f = unifiedVoucherFile; const nextTurns = [...unifiedTurns, { role: 'user' as const, content: `📎 ${f.name}` }]; setUnifiedTurns(nextTurns); const fd = new FormData(); fd.append('file', f); fd.append('caption', unifiedInput); fd.append('history', JSON.stringify(nextTurns.map((t) => ({ role: t.role, content: t.content })))); setUnifiedVoucherFile(null); const capText = unifiedInput; setUnifiedInput(''); setUnifiedSending(true); fetch('/api/bot-beta/unified', { method: 'POST', body: fd }).then(async (res) => { const result = await res.json(); if (!res.ok) { setUnifiedDebug(result); setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${result.error || 'Error'}` }]); setUnifiedDebugTab('logs'); } else { setUnifiedDebug(result); const cap = result.caption ? `[caption: "${result.caption}"] ` : ''; setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `${cap}${result.reply}` }]); setUnifiedDebugTab('extraccion'); } }).catch((err) => setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${err instanceof Error ? err.message : String(err)}` }])).finally(() => setUnifiedSending(false)); } else if (unifiedAudioBlob) { void sendUnifiedAudio(); } else { void sendUnifiedText(); } }} disabled={(!unifiedVoucherFile && !unifiedInput.trim() && !unifiedAudioBlob) || unifiedSending} className="h-9 w-9 shrink-0 p-0">
+                <Button size="sm" onClick={() => { if (unifiedVoucherFile) { const f = unifiedVoucherFile; const nextTurns = [...unifiedTurns, { role: 'user' as const, content: `📎 ${f.name}` }]; setUnifiedTurns(nextTurns); const fd = new FormData(); fd.append('file', f); fd.append('caption', unifiedInput); fd.append('history', JSON.stringify(nextTurns.map((t) => ({ role: t.role, content: t.content })))); if (unifiedAgentMode) fd.append('agentMode', 'true'); setUnifiedVoucherFile(null); const capText = unifiedInput; setUnifiedInput(''); setUnifiedSending(true); fetch('/api/bot-beta/unified', { method: 'POST', body: fd }).then(async (res) => { const result = await res.json(); if (!res.ok) { setUnifiedDebug(result); setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${result.error || 'Error'}` }]); setUnifiedDebugTab('logs'); } else { setUnifiedDebug(result); const cap = result.caption ? `[caption: "${result.caption}"] ` : ''; setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `${cap}${result.reply}` }]); setUnifiedDebugTab('extraccion'); } }).catch((err) => setUnifiedTurns([...nextTurns, { role: 'bot' as const, content: `Error: ${err instanceof Error ? err.message : String(err)}` }])).finally(() => setUnifiedSending(false)); } else if (unifiedAudioBlob) { void sendUnifiedAudio(); } else { void sendUnifiedText(); } }} disabled={(!unifiedVoucherFile && !unifiedInput.trim() && !unifiedAudioBlob) || unifiedSending} className="h-9 w-9 shrink-0 p-0">
                   {unifiedSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>

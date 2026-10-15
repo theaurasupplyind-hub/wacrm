@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
       const voucherFile = (formData.get('file') || formData.get('voucher') || formData.get('image')) as File | null
       const historyRaw = formData.get('history') as string | null
       const captionRaw = (formData.get('caption') || formData.get('text') || '') as string
+      const agentMode = formData.get('agentMode') === 'true'
       let history: { role: string; content: string }[] = []
       if (historyRaw) {
         try {
@@ -54,6 +55,7 @@ export async function POST(req: NextRequest) {
           accountId,
           userId: user?.id ?? null,
           history,
+          agentMode,
           voucherCaption,
           voucherExtractedAmount: extractedAmount,
           voucherExtractedFecha: extractedFecha,
@@ -81,7 +83,7 @@ export async function POST(req: NextRequest) {
           accountId = (member as { account_id: string } | null)?.account_id ?? null
         }
 
-        const result = await runUnifiedBotBeta({ text, accountId, userId: user?.id ?? null, history })
+        const result = await runUnifiedBotBeta({ text, accountId, userId: user?.id ?? null, history, agentMode })
         return NextResponse.json({ ...result, transcription: text })
       }
 
@@ -94,6 +96,7 @@ export async function POST(req: NextRequest) {
       voucherCaption?: string | null
       voucherExtractedAmount?: number | null
       voucherExtractedFecha?: string | null
+      agentMode?: boolean
     }
 
     if (!body.text || !body.text.trim()) {
@@ -113,6 +116,7 @@ export async function POST(req: NextRequest) {
       accountId,
       userId: user?.id ?? null,
       history: body.history || [],
+      agentMode: body.agentMode === true,
       voucherCaption: body.voucherCaption ?? null,
       voucherExtractedAmount: body.voucherExtractedAmount ?? null,
       voucherExtractedFecha: body.voucherExtractedFecha ?? null,

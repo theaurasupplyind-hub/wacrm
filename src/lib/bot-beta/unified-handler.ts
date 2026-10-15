@@ -4,6 +4,9 @@ import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import { decideDispatch } from '@/lib/bot/router'
 import { runAssistant } from '@/lib/bot-assistant/orchestrator'
+import { runAssistantAgent } from '@/lib/bot-assistant/agent'
+import { ASSISTANT_SYSTEM_PROMPT } from '@/lib/bot-assistant/prompts'
+import type { ToolContext } from '@/lib/bot-assistant/tool-registry'
 import { loadExpenseContext } from '@/lib/expenses/context'
 import { loadAttendanceContext } from '@/lib/attendance/context'
 import { loadVoucherContext, saveVoucherContext } from '@/lib/ai/voucher-context'
@@ -89,6 +92,8 @@ export interface UnifiedRunArgs {
   accountId?: string | null
   userId?: string | null
   history?: { role: string; content: string }[]
+  /** Modo agente: loop con tools (gate, undo, escrituras REALES) en vez del orquestador legacy. */
+  agentMode?: boolean
   /** Dummy-only: when image+caption is sent as single message, caption is text here and file contains voucher. But for dummy we handle caption as forced client name + extractedAmount is sole amount. */
   voucherCaption?: string | null
   voucherExtractedAmount?: number | null
@@ -126,6 +131,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
   }
 
   let dummyConversationId: string | null = null
+  let dummyContactId: string | null = null
   let expenseCtx: unknown = null
   let attendanceCtx: unknown = null
   let voucherCtx: unknown = null
@@ -143,6 +149,7 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
       const dummy = await getOrCreateDummyConversation(args.accountId, args.userId)
       if (dummy) {
         dummyConversationId = dummy.conversationId
+        dummyContactId = dummy.contactId
         const [exp, att, vou, ord] = await Promise.all([
           loadExpenseContext(admin!, dummy.conversationId),
           loadAttendanceContext(admin!, dummy.conversationId),
@@ -497,6 +504,44 @@ export async function runUnifiedBotBeta(args: UnifiedRunArgs): Promise<UnifiedRu
 
   // Always run assistant — it internally decides tools + preview deterministically.
   // For deterministic intents it will produce a grounded reply via expense_preview / tools.
+  // Modo agente (toggle en /bot-beta): loop con tools REALES (gate, undo,
+  // escrituras en backend_gal con la conversación dummy). Si falla, cae al legacy.
+  if (args.agentMode && admin && args.accountId && args.userId && dummyConversationId && dummyContactId) {
+    try {
+      const toolCtx: ToolContext = {
+        db: admin,
+        accountId: args.accountId,
+        userId: args.userId,
+        conversationId: dummyConversationId,
+        contactId: dummyContactId,
+        accessToken: '',
+        senderPhone: BOT_BETA_DUMMY_PHONE,
+        senderName: BOT_BETA_DUMMY_NAME,
+      }
+      const agentResult = await runAssistantAgent({
+        text,
+        history: args.history || [],
+        systemPrompt: ASSISTANT_SYSTEM_PROMPT,
+        extraction,
+        conversationContext: contextText || null,
+        ctx: toolCtx,
+      })
+      const agentLogs = [...logs, ...agentResult.logs]
+      return {
+        reply: agentResult.reply,
+        dispatchedTo: 'assistant',
+        dispatchReason: 'agent_mode',
+        extraction: agentResult.extraction ?? extraction,
+        toolResults: agentResult.toolResults,
+        toolLogs: agentResult.toolLogs,
+        knowledge: agentResult.knowledge,
+        logs: [...agentLogs, { step: 'botbeta_agent_mode', data: { dummyConversationId } }],
+        dummyConversationId,
+      }
+    } catch (err) {
+      logs.push({ step: 'botbeta_agent_mode_error', data: { error: err instanceof Error ? err.message : String(err) } })
+    }
+  }
   const assistantResult = await runAssistant({
     text,
     phone: BOT_BETA_DUMMY_PHONE,
