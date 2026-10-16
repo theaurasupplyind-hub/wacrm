@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { fallbackParseOrder } from './parse-order'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { fallbackParseOrder, parseOrder } from './parse-order'
+
+const ai = vi.hoisted(() => ({ callOpenRouter: vi.fn() }))
+vi.mock('@/lib/ai/openrouter', () => ai)
 
 describe('fallbackParseOrder', () => {
   it('una medida simple', () => {
@@ -30,5 +33,41 @@ describe('fallbackParseOrder', () => {
 
   it('sin medidas no devuelve ítems', () => {
     expect(fallbackParseOrder('hola que tal').items).toEqual([])
+  })
+})
+
+describe('parseOrder — modelo y "libre" (Fase 3/4)', () => {
+  const prev = process.env.ORDER_MODEL
+  afterEach(() => {
+    if (prev === undefined) delete process.env.ORDER_MODEL
+    else process.env.ORDER_MODEL = prev
+    ai.callOpenRouter.mockReset()
+  })
+
+  it('usa gemini-2.5-flash por default (no flash-lite) y propaga "libre"', async () => {
+    delete process.env.ORDER_MODEL
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({
+        cliente: null,
+        items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro', precio: null, libre: true }],
+      }),
+    })
+    const r = await parseOrder('y un Bastidor de Muestra con Fibro')
+    expect(ai.callOpenRouter).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'google/gemini-2.5-flash' }),
+    )
+    expect(r.items[0].libre).toBe(true)
+  })
+
+  it('respeta ORDER_MODEL del entorno', async () => {
+    process.env.ORDER_MODEL = 'test/model'
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({
+        cliente: null,
+        items: [{ cantidad: 1, texto: '60x40', precio: null, libre: false }],
+      }),
+    })
+    await parseOrder('bastidor 60x40')
+    expect(ai.callOpenRouter).toHaveBeenCalledWith(expect.objectContaining({ model: 'test/model' }))
   })
 })

@@ -228,11 +228,13 @@ Devolvé EXCLUSIVAMENTE un JSON:
 
 - "grosor": cuando el término indica el grosor/espesor del bastidor. value = número entero en cm (ej: "es de 4 centímetros" → 4).
 - "alias": cuando el término es otra forma de decir un producto/variante del catálogo. value = el texto canónico del catálogo (ej: "doble 4cm", "lienzo profesional", "sin tela", "tapacanto").
+- Si el usuario aclara que NO es un término del catálogo sino un PRODUCTO fuera de catálogo ("no son términos, es un producto que no está en el catálogo", "es un producto nuevo que no venden"), o una muestra, devolvé "meanings": [] (no inventes un alias).
 - Si no podés decidir, devolvé "meanings": [].
 
 Ejemplos:
 "moldura de 4, es grosor 4" → {"meanings":[{"term":"moldura","type":"grosor","value":4}]}
 "moldura quiere decir doble 4cm" → {"meanings":[{"term":"moldura","type":"alias","value":"doble 4cm"}]}
+"no son términos, es un producto que no está en el catálogo, Palos de metal" → {"meanings":[]}
 
 DEVOLVÉ SOLO EL JSON.`
 

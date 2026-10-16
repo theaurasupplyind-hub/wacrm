@@ -76,6 +76,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
  - "qué podés hacer / quién soy / capacidades" → otro (conversacional), NUNCA factura.
 - "pedido"/presupuesto: si el mensaje trae UNA O MÁS medidas ("60x40", "94x81", "56 x 78, 89 x 67") o nombres de producto de la fábrica (bastidor, lienzo, tapacanto, acrílico, marco, lona, circular, rollo) SIN verbo de compra a proveedor ni monto pagado → intent "pedido" con confianza "alta". No es gasto aunque haya números: son medidas, no montos.
 - Diferencia clave pedido vs gasto: "compré 3 bastidores 60x40 a Joaquín por 30000" (verbo comprar + proveedor + monto) → "gasto". "3 bastidores 60x40 para Juan" (solo medidas/producto del pedido) → "pedido".
+- "X vale 0 agregalo", "agregá X a 0 pesos", "poné X gratis", "X es sin cargo": son de "pedido" (agregar/editar un ítem de un presupuesto), NUNCA "gasto". Un gasto del negocio nunca tiene monto 0 ni usa "agregalo".
 - Una lista de medidas separadas por coma ("56 x 78, 89 x 67, 67 x 56 sin tela") → SIEMPRE un solo "pedido", nunca multi_expense.
  - Ante la duda, usá confianza "baja" o "media".
 
@@ -154,6 +155,9 @@ Mensaje: "56 x 78, 89 x 67, 67 x 56 sin tela"
 {"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "hacele a Matías 2 bastidores 60x40 sin tela"
+{"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
+
+Mensaje: "muestra de prueba vale 0 agregalo"
 {"intent":"pedido","confianza":"alta","empleado":null,"hora":null,"estado":null,"monto":null,"categoria":null,"proveedor":null,"empleado_gasto":null,"metodo_pago":null,"fecha":null,"faltan_campos":[],"dudoso":false,"razon_duda":null}
 
 Mensaje: "embastame una pintura 94x81"

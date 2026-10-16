@@ -37,7 +37,8 @@ vi.mock('@/lib/bot-trace/record', () => ({
 const ai = vi.hoisted(() => ({ callOpenRouter: vi.fn() }))
 vi.mock('@/lib/ai/openrouter', () => ai)
 
-import { processPedidoMessage } from './index'
+import { processPedidoMessage, mergePreservedItems } from './index'
+import type { PedidoItem } from './types'
 import { preciosReferencia, pricingRules } from '../precios/__fixtures__/catalogo'
 
 function makeDb(glossaryRows: unknown[] = []) {
@@ -70,6 +71,7 @@ function makeDb(glossaryRows: unknown[] = []) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return Object.assign(db as any, {
     getOrderContext: () => state.order,
+    getGlossary: () => state.glossary,
     setGlossary: (rows: unknown[]) => {
       state.glossary = rows
     },
@@ -805,5 +807,330 @@ describe('processPedidoMessage - modificacion de linea en cotizacion abierta', (
       awaitingQuoteApproval: true,
     })
     expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+})
+
+describe('regresiones c9d6f97 / 010cfe8 (Fase 1)', () => {
+  beforeEach(() => {
+    sent.texts = []
+    sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
+    facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
+    facbal.getClientAddresses.mockResolvedValue([])
+  })
+
+  it('una cotización descartada NO contamina un pedido nuevo (no arrastra ítems ni cliente)', async () => {
+    const db = makeDb()
+    const viejo = async () => ({
+      cliente: 'Jesus',
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'bastidor 60x60' },
+      ],
+    })
+    await processPedidoMessage(args(db, 'dos bastidores 40x89 y uno 60x60 para Jesus', { parseFn: viejo }))
+    await processPedidoMessage(args(db, 'no lo creas, era una prueba', { parseFn: viejo }))
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({ quoteCancelled: true })
+
+    const nuevo = async () => ({ cliente: null, items: [{ cantidad: 2, texto: 'bastidor 200x140 sin tela' }] })
+    const result = await processPedidoMessage(args(db, 'Sin lienzo: 200x140cm (x2)', { parseFn: nuevo }))
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).toContain('Cotización estimada')
+    const ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as {
+      items: { descripcion: string }[]
+      clienteNombre: string | null
+      quoteText?: string | null
+    }
+    expect(ctx.items).toHaveLength(1)
+    expect(ctx.items[0].descripcion).toContain('Sin Tela')
+    expect(JSON.stringify(ctx.items)).not.toContain('40 x 89')
+    expect(JSON.stringify(ctx.items)).not.toContain('60 x 60')
+    expect(ctx.clienteNombre).not.toBe('Jesus')
+    expect(ctx.quoteText ?? '').not.toContain('40x89')
+  })
+
+  it('un pedido nuevo que dice "cambiar el pedido" tampoco se fusiona con la cotización descartada', async () => {
+    const db = makeDb()
+    const viejo = async () => ({
+      cliente: 'Jesus',
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'bastidor 60x60' },
+      ],
+    })
+    await processPedidoMessage(args(db, 'dos bastidores 40x89 y uno 60x60 para Jesus', { parseFn: viejo }))
+    await processPedidoMessage(args(db, 'no lo creas, era una prueba', { parseFn: viejo }))
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({ quoteCancelled: true })
+
+    const nuevo = async () => ({ cliente: null, items: [{ cantidad: 8, texto: 'bastidor 240x120 con lienzo profesional' }] })
+    await processPedidoMessage(args(db, 'Bueno tuve q cambiar el pedido, les paso el nuevo: Con lienzo: 240x120cm (x8)', { parseFn: nuevo }))
+
+    const ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as {
+      items: { descripcion: string }[]
+      quoteText?: string | null
+    }
+    expect(ctx.items).toHaveLength(1)
+    expect(JSON.stringify(ctx.items)).not.toContain('40 x 89')
+    expect(JSON.stringify(ctx.items)).not.toContain('60 x 60')
+    expect(ctx.quoteText ?? '').not.toContain('40x89')
+  })
+
+  it('conserva el precio editado a mano al agregar un ítem y completar su atributo', async () => {
+    const db = makeDb()
+    const parseFn = async (text: string) => ({
+      cliente: null,
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        ...(text.includes('acrilico') ? [{ cantidad: 1, texto: 'acrilico' }] : []),
+      ],
+    })
+
+    // 1. Cotización con 2x BASTIDOR 40x89.
+    await processPedidoMessage(args(db, '2 bastidores 40x89', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('Cotización estimada')
+
+    // 2. El usuario baja la línea 1 a $20.000 (edición manual de precio).
+    const modifyPrecio = async () => ({
+      kind: 'ops' as const,
+      ops: [{ op: 'set_price' as const, target: 1, mode: 'absolute' as const, value: 20000 }],
+    })
+    await processPedidoMessage(args(db, 'la línea 1 a 20000', { parseFn, modifyFn: modifyPrecio }))
+    let ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as {
+      items: { descripcion: string; precio_unitario: number | null }[]
+      total?: number
+    }
+    expect(ctx.items[0].precio_unitario).toBe(20000)
+
+    // 3. "agrega un acrilico" → pide medida (intérprete general → none).
+    const modifyNone = async () => ({ kind: 'none' as const })
+    await processPedidoMessage(args(db, 'agrega un acrilico', { parseFn, modifyFn: modifyNone }))
+    expect(sent.texts.at(-1)).toContain('acrilico')
+
+    // 4. "250cc" → pide variante.
+    await processPedidoMessage(args(db, '250cc', { parseFn }))
+    // 5. "serie 1" → cotiza el acrílico conservando el $20.000 de la línea 1.
+    await processPedidoMessage(args(db, 'serie 1', { parseFn }))
+
+    ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as {
+      items: { descripcion: string; precio_unitario: number | null }[]
+      total: number
+    }
+    expect(ctx.items[0].precio_unitario).toBe(20000)
+    const acrilico = ctx.items.find((it) => it.descripcion.toLowerCase().includes('acrilico'))
+    expect(acrilico?.precio_unitario).toBe(19000)
+    expect(ctx.total).toBe(2 * 20000 + 19000)
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+})
+
+describe('Fase 3 — fin de trampas modales (muestra sin medida / glosario libre)', () => {
+  beforeEach(() => {
+    sent.texts = []
+    sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
+    facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
+    facbal.getClientAddresses.mockResolvedValue([])
+  })
+
+  it('"sin medida" sale de awaitingItemAttr como línea manual (sin loop "Necesito una medida")', async () => {
+    const db = makeDb()
+    const parseFn = vi.fn(async (text: string) =>
+      text.includes('sin medida')
+        ? { cliente: null, items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro', libre: true }] }
+        : { cliente: null, items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro' }] },
+    )
+
+    await processPedidoMessage(args(db, 'y un Bastidor de Muestra con Fibro', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('¿Qué medida para')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingItemAttr: { ask: 'medida' },
+    })
+
+    await processPedidoMessage(args(db, 'sin medida', { parseFn }))
+    expect(sent.texts.at(-1)).not.toContain('Necesito una medida')
+    expect(sent.texts.at(-1)).toContain('Bastidor de Muestra con Fibro')
+    expect(sent.texts.at(-1)).toContain('Sin cotizar')
+    const ctxFinal = (db as ReturnType<typeof makeDb>).getOrderContext() as { awaitingItemAttr?: unknown }
+    expect(ctxFinal.awaitingItemAttr ?? null).toBeNull()
+  })
+
+  it('frase rica "es gratis" resuelve el ítem libre a $0 sin volver a preguntar', async () => {
+    const db = makeDb()
+    const parseFn = vi.fn(async (text: string) =>
+      text.includes('gratis')
+        ? { cliente: null, items: [{ cantidad: 1, texto: 'Muestra con Fibro', libre: true, precio: 0 }] }
+        : { cliente: null, items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro' }] },
+    )
+
+    await processPedidoMessage(args(db, 'y un Bastidor de Muestra con Fibro', { parseFn }))
+    await processPedidoMessage(args(db, 'no tiene medida y es gratis', { parseFn }))
+
+    expect(sent.texts.at(-1)).not.toContain('Necesito una medida')
+    expect(sent.texts.at(-1)).toContain('Muestra con Fibro (manual) — $0')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).not.toMatchObject({
+      awaitingItemAttr: expect.anything(),
+    })
+  })
+
+  it('glosario sin términos reconocidos ("es un producto fuera de catálogo") → ítem libre, sin guardar glosario', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({ cliente: null, items: [{ cantidad: 1, texto: 'florero' }] })
+
+    await processPedidoMessage(args(db, 'florero', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('necesito entender')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingGlossary: { terms: ['florero'] },
+    })
+
+    ai.callOpenRouter.mockResolvedValueOnce({ text: JSON.stringify({ meanings: [] }) })
+    await processPedidoMessage(
+      args(db, 'no son términos, es un producto que no está en el catálogo', { parseFn }),
+    )
+
+    expect(sent.texts.at(-1)).not.toContain('necesito entender')
+    expect(sent.texts.at(-1)).toContain('Sin cotizar')
+    expect(sent.texts.at(-1)).toContain('florero')
+    expect((db as ReturnType<typeof makeDb>).getGlossary()).toEqual([])
+  })
+})
+
+describe('Fase 5 — candidatos de cliente, ítems sin precio y escape de Gastos', () => {
+  beforeEach(() => {
+    sent.texts = []
+    sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
+    facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
+    facbal.getClientAddresses.mockResolvedValue([])
+  })
+
+  it('elige el candidato por nombre con typo ("Pachecho") sin crear un cliente nuevo', async () => {
+    const db = makeDb()
+    const findClientsFn = vi.fn(async () => [
+      { id: 1, nombre: 'Cesar Details', telefono: null, score: 0.9 },
+      { id: 2, nombre: 'Cesar Pacheco', telefono: null, score: 0.8 },
+    ])
+    const parseFn = async () => ({
+      cliente: 'Cesar',
+      items: [{ cantidad: 1, texto: 'bastidor 60x60 sin tela' }],
+    })
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto para Cesar 60x60', { parseFn, findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('Encontré varios clientes')
+
+    await processPedidoMessage(args(db, 'Pachecho', { parseFn, findClientsFn }))
+    expect(sent.texts.at(-1)).toContain('Entrega')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({ clienteId: 2 })
+    expect(facbal.createClient).not.toHaveBeenCalled()
+  })
+
+  it('pregunta por ítems sin precio antes de crear; "seguí" continúa sin bloquear', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'palos de metal' },
+      ],
+    })
+
+    await processPedidoMessage(args(db, '2 bastidores 40x89 y palos de metal', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('Sin cotizar')
+
+    ai.callOpenRouter.mockResolvedValueOnce({ text: JSON.stringify({ decision: 'confirm' }) })
+    await processPedidoMessage(args(db, 'si conviertelo', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('sin precio')
+    expect(sent.texts.at(-1)).toContain('sacalo')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({ awaitingFaltante: true })
+
+    await processPedidoMessage(args(db, 'segui', { parseFn }))
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).not.toMatchObject({ awaitingFaltante: true })
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+    expect(facbal.createInvoice).not.toHaveBeenCalled()
+  })
+})
+
+describe('regresiones en vivo — bugs críticos (sin medida / modelo / precios por posición)', () => {
+  beforeEach(() => {
+    sent.texts = []
+    sent.buttons = []
+    ai.callOpenRouter.mockReset()
+    ai.callOpenRouter.mockResolvedValue({
+      text: JSON.stringify({ meanings: [{ term: 'moldura', type: 'grosor', value: 4 }] }),
+    })
+    facbal.nextInvoiceNumber.mockResolvedValue('F-1001')
+    facbal.getClientAddresses.mockResolvedValue([])
+  })
+
+  function pitem(over: Partial<PedidoItem> = {}): PedidoItem {
+    return {
+      cantidad: 1,
+      categoria: 'BASTIDOR',
+      medida: '40x89',
+      variante: 'Sin Tela',
+      precio_unitario: 18000,
+      faltante: false,
+      descripcion: 'BASTIDOR 40 x 89 Sin Tela',
+      regla_aplicada: null,
+      ...over,
+    }
+  }
+
+  it('Bug 2 — "sin medida" conserva los demás ítems del pedido (no pierde 7 de 8)', async () => {
+    const db = makeDb()
+    const bastidores = ['40x60', '50x60', '60x60', '60x70', '60x80', '60x90', '60x100', '60x120'].map(
+      (m) => ({ cantidad: 1, texto: `bastidor ${m} sin tela` }),
+    )
+    const parseFn = vi.fn(async (text: string) =>
+      text.includes('sin medida')
+        ? { cliente: null, items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro', libre: true }] }
+        : { cliente: null, items: [...bastidores, { cantidad: 1, texto: 'Bastidor de Muestra con Fibro' }] },
+    )
+
+    await processPedidoMessage(args(db, 'esos 8 bastidores y un Bastidor de Muestra con Fibro', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('¿Qué medida para')
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
+      awaitingItemAttr: { ask: 'medida' },
+    })
+
+    await processPedidoMessage(args(db, 'sin medida', { parseFn }))
+
+    const ctx = (db as ReturnType<typeof makeDb>).getOrderContext() as {
+      items: { descripcion: string; medida: string | null }[]
+      awaitingItemAttr?: unknown
+    }
+    expect(ctx.awaitingItemAttr ?? null).toBeNull()
+    // Los 8 bastidores + la muestra: nada se pierde.
+    expect(ctx.items).toHaveLength(9)
+    expect(ctx.items.filter((it) => it.medida != null)).toHaveLength(8)
+    expect(ctx.items.some((it) => /muestra/i.test(it.descripcion))).toBe(true)
+  })
+
+  it('Bug 3 — NO pisa el precio de un ítem distinto solo por posición', () => {
+    const prev = [pitem({ medida: '40x89', precio_unitario: 20000, precioManual: true })]
+    const next = [
+      pitem({ medida: '120x240', variante: 'Con Lienzo', precio_unitario: 234000, descripcion: 'BASTIDOR 120 x 240 Con Lienzo' }),
+    ]
+    const merged = mergePreservedItems(next, prev)
+    expect(merged[0].precio_unitario).toBe(234000)
+    expect(merged[0].precioManual).toBeUndefined()
+  })
+
+  it('Bug 3 — conserva el precio manual cuando ES el mismo ítem', () => {
+    const prev = [pitem({ medida: '40x89', precio_unitario: 20000, precioManual: true })]
+    const next = [pitem({ medida: '40x89', precio_unitario: 18000 })]
+    const merged = mergePreservedItems(next, prev)
+    expect(merged[0].precio_unitario).toBe(20000)
+    expect(merged[0].precioManual).toBe(true)
   })
 })

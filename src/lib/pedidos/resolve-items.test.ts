@@ -155,4 +155,30 @@ describe('resolveItems', () => {
     expect(r.items[0].libre).toBeFalsy()
     expect(r.items[0].faltante).toBe(true)
   })
+
+  it('ítem marcado libre SIN medida → línea manual (no toma la regla "Fibro")', () => {
+    const r = resolveItems({
+      ...base,
+      items: [{ cantidad: 1, texto: 'Bastidor de Muestra con Fibro', libre: true }],
+    })
+    const it = r.items[0]
+    expect(it.libre).toBe(true)
+    expect(it.categoria).toBe('LIBRE')
+    expect(it.faltante).toBe(true)
+    expect(it.descripcion).toBe('Bastidor de Muestra con Fibro')
+    expect(it.regla_aplicada).toBeNull()
+  })
+
+  it('ítem libre con precio 0 → $0 y entra al total sin quedar "sin cotizar"', () => {
+    const r = resolveItems({
+      ...base,
+      items: [{ cantidad: 1, texto: 'Muestra con Fibro', libre: true, precio: 0 }],
+    })
+    const it = r.items[0]
+    expect(it.libre).toBe(true)
+    expect(it.faltante).toBe(false)
+    expect(it.precio_unitario).toBe(0)
+    expect(r.total).toBe(0)
+    expect(r.faltantes).toEqual([])
+  })
 })

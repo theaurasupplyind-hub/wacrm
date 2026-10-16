@@ -7,6 +7,13 @@ export interface ParsedOrderItem {
   texto: string
   /** Precio unitario que dio el usuario (ítem fuera de catálogo); null si no dijo. */
   precio?: number | null
+  /**
+   * Ítem manual/fuera de catálogo: una muestra sin medida, un producto que no
+   * está en el catálogo ("Palos de metal"), o uno que el usuario aclara que no
+   * se mide. Se cotiza como línea manual (con o sin precio) y no se cuestiona
+   * su medida. Lo decide el parser (`parseOrder`), no una heurística ciega.
+   */
+  libre?: boolean
 }
 
 /** Tipo de entrega (mismos valores que galv2 / backend_gal). */
@@ -57,6 +64,12 @@ export interface PedidoItem {
   aRevisar?: boolean
   /** Línea manual: producto fuera de catálogo (no cotizado por el motor). */
   libre?: boolean
+  /**
+   * Precio editado a mano por el usuario (descuento %, precio fijo). Se
+   * conserva al re-resolver la cotización (agregar ítems/completar atributos)
+   * para no pisarlo con el precio de catálogo.
+   */
+  precioManual?: boolean
 }
 
 /** Estado del pedido guardado en `conversations.order_context`. */
@@ -90,6 +103,12 @@ export interface OrderContext {
   awaitingCliente?: boolean
   /** Estamos mostrando una cotización, aún no se inició la creación/guardado. */
   awaitingQuoteApproval?: boolean
+  /**
+   * True cuando el usuario pidió convertir la cotización en presupuesto pero
+   * quedaron ítems "Sin cotizar" (libres) sin precio: preguntamos una vez si
+   * darles precio o sacarlos antes de crear.
+   */
+  awaitingFaltante?: boolean
   /**
    * El usuario descartó la cotización pero se conserva para retomarla (soft-cancel).
    * Mientras esté dentro del TTL de recall, un "hacelo" la reanuda.

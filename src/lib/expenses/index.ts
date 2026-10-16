@@ -198,6 +198,24 @@ function parseFloatSafe(reply: string): number | null {
   return Number.isFinite(num) && num > 0 ? num : null
 }
 
+/**
+ * El usuario quiere SALIR del flujo de gastos (no aportar el dato que falta):
+ * "cancelar", "no", "salir", o un reclamo conversacional ("que estas haciendo",
+ * "no es un gasto", "estoy haciendo un presupuesto"). Antes esto quedaba
+ * atrapado repitiendo "Sigo sin entender el monto" (regresión R7).
+ */
+const EXPENSE_ESCAPE_RE =
+  /\b(?:cancel[aoá]r?|cancel[aá]|salir|dej[aá]lo|dejalo|olvidalo|olvídalo|olvidate|no era|no es un gasto|no es gasto|que estas haciendo|qu[eé] est[aá]s haciendo|qu[eé] haces|estoy haciendo un presupuesto|era un presupuesto|me equivoqu[eé])\b/i
+
+function isExpenseEscape(reply: string): boolean {
+  const t = (reply || '').trim().toLowerCase()
+  if (!t) return false
+  if (t === 'no' || t === 'nop' || t === 'nope' || t === 'salir' || t === 'cancelar' || t === 'cancela') {
+    return true
+  }
+  return EXPENSE_ESCAPE_RE.test(t)
+}
+
 async function handleCollectingReply(
   args: ProcessExpenseMessageArgs,
   ctx: ExpenseContextState,
@@ -210,6 +228,13 @@ async function handleCollectingReply(
   }
 
   if (ctx.missingField === 'amount') {
+    // Escape conversacional: el usuario no está dando un monto, quiere salir.
+    if (isExpenseEscape(reply)) {
+      await clearExpenseContext(args.db, args.conversationId)
+      const msg = 'Listo, cancelé el registro de gasto.'
+      await sendTextResponse(args, msg)
+      return { handled: true, text: msg }
+    }
     const num = parseFloatSafe(reply)
     if (!num) {
       await saveExpenseContext(args.db, args.conversationId, { ...ctx })

@@ -124,12 +124,14 @@ export function resolveItems(args: {
         continue
       }
       // Ítem FUERA DE CATÁLOGO: nombre propio no reconocido (2+ términos) o con
-      // precio explícito del usuario. Se cotiza como LÍNEA MANUAL; nunca se
-      // asume "BASTIDOR" por default (bug "Palos de metal").
+      // precio explícito del usuario, o marcado `libre` por el parser (muestra
+      // sin medida / producto fuera de catálogo). Se cotiza como LÍNEA MANUAL;
+      // nunca se asume "BASTIDOR" por default (bug "Palos de metal" / R3).
       const isFree =
-        cls.categoria === DEFAULT_CATEGORIA &&
-        !cls.regla &&
-        (cls.unknownTerms.length >= 2 || (raw.precio != null && cls.unknownTerms.length >= 1))
+        raw.libre === true ||
+        (cls.categoria === DEFAULT_CATEGORIA &&
+          !cls.regla &&
+          (cls.unknownTerms.length >= 2 || (raw.precio != null && cls.unknownTerms.length >= 1)))
       if (isFree) {
         const precio =
           typeof raw.precio === 'number' && Number.isFinite(raw.precio) && raw.precio >= 0

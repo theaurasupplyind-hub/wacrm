@@ -4,6 +4,7 @@ import {
   isGreetingRecipientName,
   isPhoneLikeClientName,
   isSenderPhoneCandidate,
+  matchClienteCandidato,
   normalizeClientNameReply,
 } from './client-identity'
 
@@ -61,5 +62,38 @@ describe('customer identity safety', () => {
     expect(explicitClientFromText('2 de 60x40 para Fede')).toBe('Fede')
     expect(explicitClientFromText('a Joaquín')).toBe('Joaquín')
     expect(explicitClientFromText('2 bastidores 60x40')).toBeNull()
+  })
+})
+
+describe('matchClienteCandidato (nombre con typo)', () => {
+  const cands = [
+    { id: 1, nombre: 'Cesar Details' },
+    { id: 2, nombre: 'Cesar Pacheco' },
+  ]
+
+  it('"Pachecho" (typo) matchea "Cesar Pacheco"', () => {
+    expect(matchClienteCandidato('Pachecho', cands)?.id).toBe(2)
+  })
+
+  it('coincidencia exacta de un token', () => {
+    expect(matchClienteCandidato('Details', cands)?.id).toBe(1)
+  })
+
+  it('"test de direccion" matchea el candidato más largo', () => {
+    const tests = [
+      { id: 1, nombre: 'Test' },
+      { id: 2, nombre: 'Test de direccion 1 ' },
+      { id: 3, nombre: 'test 2' },
+    ]
+    expect(matchClienteCandidato('test de direccion', tests)?.id).toBe(2)
+  })
+
+  it('un nombre realmente nuevo no matchea (token extra sin coincidencia)', () => {
+    expect(matchClienteCandidato('Pacheco Nuevo Cliente', cands)).toBeNull()
+  })
+
+  it('sin candidatos o texto vacío → null', () => {
+    expect(matchClienteCandidato('', cands)).toBeNull()
+    expect(matchClienteCandidato('Pacheco', [])).toBeNull()
   })
 })

@@ -35,6 +35,7 @@ export type ChangeOp =
   | { op: 'set_price'; target: ChangeTarget; mode: 'absolute' | 'percent'; value: number }
   | { op: 'set_quantity'; target: number | { text: string }; value: number }
   | { op: 'remove'; target: number | { text: string } }
+  | { op: 'rename'; target: ChangeTarget; name: string; price?: number }
 
 export type ChangeResult =
   | { kind: 'ops'; ops: ChangeOp[] }
@@ -53,16 +54,20 @@ Operaciones válidas (usá "line" para el número visible, o "ref" con el texto 
 - {"op":"set_price","ref":"bastidor 40 x 89","mode":"absolute"|"percent","value":number}
 - {"op":"set_quantity","line":N,"value":number}  o  {"op":"set_quantity","ref":"el chico","value":number}
 - {"op":"remove","line":N}  o  {"op":"remove","ref":"el tapacanto"}
+- {"op":"rename","line":N|"ref":"...","name":"Nuevo nombre","price":number|null} (renombra una línea y, si "price" viene, le fija el precio)
 
 Reglas:
 - set_price "absolute": fija el precio ("poné el bastidor en 300000", "a la pintura dejalo en 50000", "vale 250mil"). "300mil"=300000, "300k"=300000.
+- GRATIS / SIN CARGO: "gratis", "sin cargo", "bonificado", "a 0", "ponle 0", "vale 0", "que salga 0" sobre una línea → {"op":"set_price", ..., "mode":"absolute", "value":0}. Nunca es "none".
 - set_price "percent": baja un porcentaje ("descontale 10%", "hacele 15%", "bajale 5% a todo"). value 1-99.
 - set_quantity: cambia cantidad ("la línea 1 ponela x3", "que sean 2 del chico"). value 1-99.
-- remove: saca una línea ("sacá la 2", "quitá el tapacanto", "el rollo no va").
-- Preferí "ref" con el texto EXACTO que usó el usuario cuando nombra por medida o producto ("40 x 89", "bastidor lienzo profesional", "palos de metal"). Usá "line" solo si dijo un número.
+- remove: saca una línea ("sacá la 2", "quitá el tapacanto", "el rollo no va"). Si el usuario numera varias ("eliminá el 1, el 2 y el 3" / "elimina estos: 1. X 2. Y 3. Z"), devolvé UNA operación remove por cada número.
+- rename: renombra una línea y opcionalmente fija su precio ("cambialo que se llame Muestra con Fibro y es gratis" → {"op":"rename","ref":"el bastidor de muestra","name":"Muestra con Fibro","price":0}).
+- NUMERACIÓN: las "line" son los números que ve el usuario (1..N de las líneas cotizadas). Si el usuario se refiere a una de esas líneas —aunque escriba la medida con un error de tipeo ("95 x 149" para la línea "95 x 140") o un nombre parcial ("el bastidor de muestra")— devolvé "line": N cuando sea claro e inequívoco. Usá "ref" para un ítem "Sin cotizar" o cuando quieras referirte por texto en vez de por número.
 - Un ítem que está "Sin cotizar" (fuera de catálogo) también se puede cotizar: devolvé set_price con "ref" a ese nombre.
 - Si nombra algo que no está en la lista → {"unsupported":"no encuentro ese ítem"}.
 - Agregar ítems, cambiar cliente/entrega/fecha/descuento general, confirmar o cancelar → {"none":true}.
+- Si el mensaje trae una lista de medidas o productos nuevos (ej. "240x120cm (x8)\n60x120cm (x2)"), es un pedido nuevo → {"none":true}. NUNCA uses rename ni set_quantity para reemplazar líneas viejas por un pedido nuevo.
 DEVOLVÉ SOLO EL JSON.`
 
 const STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'y', 'a', 'en', 'con', 'para', 'al', 'unos', 'unas'])
@@ -101,6 +106,16 @@ export function findTargets(items: PedidoItem[], text: string): PedidoItem[] {
   if (mk) {
     const byMedida = items.filter((it) => medidaKey(itemBlob(it)) === mk)
     if (byMedida.length > 0) return byMedida
+    // Fallback tolerante a typos: si un lado de la medida coincide exacto con un
+    // único ítem (ej. "95 x 149" → la línea "95 x 140"), lo tomamos.
+    const [ms, ml] = mk.split('x').map(Number)
+    const near = items.filter((it) => {
+      const k = medidaKey(itemBlob(it))
+      if (!k) return false
+      const [s, l] = k.split('x').map(Number)
+      return s === ms || s === ml || l === ms || l === ml
+    })
+    if (near.length === 1) return near
   }
   const toks = refTokens(text)
   if (toks.length === 0) return []
@@ -169,7 +184,15 @@ function parseTarget(o: { line?: unknown; ref?: unknown }): ChangeTarget | null 
 
 function validOp(raw: unknown): ChangeOp | null {
   if (!raw || typeof raw !== 'object') return null
-  const o = raw as { op?: unknown; line?: unknown; ref?: unknown; mode?: unknown; value?: unknown }
+  const o = raw as {
+    op?: unknown
+    line?: unknown
+    ref?: unknown
+    mode?: unknown
+    value?: unknown
+    name?: unknown
+    price?: unknown
+  }
   const target = parseTarget(o)
   if (target === null) return null
   const value = typeof o.value === 'number' ? o.value : Number(o.value)
@@ -182,9 +205,17 @@ function validOp(raw: unknown): ChangeOp | null {
       ? null
       : { op: 'set_quantity', target, value }
   }
+  if (o.op === 'rename') {
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!name) return null
+    const priceRaw = o.price == null ? null : typeof o.price === 'number' ? o.price : Number(o.price)
+    const price = priceRaw != null && Number.isFinite(priceRaw) && priceRaw >= 0 ? Math.round(priceRaw) : undefined
+    return { op: 'rename', target, name, price }
+  }
   if (o.op === 'set_price') {
     if (o.mode !== 'absolute' && o.mode !== 'percent') return null
-    if (!Number.isFinite(value) || value <= 0) return null
+    // "gratis"/"a 0" es un precio absoluto válido ($0).
+    if (!Number.isFinite(value) || value < 0) return null
     if (o.mode === 'percent' && (value < 1 || value > 99)) return null
     return { op: 'set_price', target, mode: o.mode, value: Math.round(value) }
   }
@@ -224,7 +255,7 @@ export async function interpretQuoteChanges(
       jsonMode: true,
       temperature: 0,
       maxTokens: 200,
-      model: process.env.EXTRACTOR_MODEL || undefined,
+      model: process.env.ORDER_MODEL || 'google/gemini-2.5-flash',
     })
     const block = res.text.match(/\{[\s\S]*\}/)
     if (!block) return NONE
@@ -253,15 +284,30 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
   let next = items
   const notes: string[] = []
 
+  // La numeración visible se fija al INICIO del turno: si se borran varias
+  // líneas, los números siguen apuntando a las líneas originales (no se
+  // corren). Bug "elimina 1, 2 y 3" borraba 1, 3 y 5 (regresión c9d6f97).
+  const initialCotizables = items.filter((it) => !it.faltante)
+  const lineOf = (t: PedidoItem): number | null => {
+    const idx = initialCotizables.indexOf(t)
+    return idx >= 0 ? idx + 1 : null
+  }
+  const labelFor = (t: PedidoItem, lineNo: number | null): string =>
+    lineNo != null ? `la línea ${lineNo} (${t.descripcion})` : describeTarget(next, t)
+
   for (const op of ops) {
     const cotizables = () => next.filter((it) => !it.faltante)
     let targets: PedidoItem[]
+    let lineNo: number | null = null
 
     if (op.target === 'all') {
       targets = cotizables()
     } else if (typeof op.target === 'number') {
-      const t = cotizables()[op.target - 1]
-      if (!t) return { error: 'Esa línea no existe en la cotización. Decime el número tal como aparece arriba.' }
+      const t = initialCotizables[op.target - 1]
+      if (!t || !next.includes(t)) {
+        return { error: 'Esa línea no existe en la cotización. Decime el número tal como aparece arriba.' }
+      }
+      lineNo = op.target
       targets = [t]
     } else {
       const found = findTargets(next, op.target.text)
@@ -276,14 +322,18 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
           },
         }
       }
+      lineNo = lineOf(found[0])
       targets = [found[0]]
     }
 
     if (targets.length === 0) return { error: 'No hay líneas para cambiar.' }
 
     // Guardas: percent/cantidad/quitar necesitan precio; fijar precio absoluto
-    // sí puede completar un ítem "a cotizar a mano".
-    const needsPrice = !(op.op === 'set_price' && op.mode === 'absolute')
+    // (o un rename con precio) sí puede completar un ítem "a cotizar a mano".
+    const needsPrice = !(
+      (op.op === 'set_price' && op.mode === 'absolute') ||
+      (op.op === 'rename' && op.price != null)
+    )
     if (needsPrice) {
       const bad = targets.find((t) => t.precio_unitario == null)
       if (bad) return { error: `El ítem "${bad.descripcion}" está sin precio, no puedo calcular. Dale un precio o la vemos a mano.` }
@@ -296,7 +346,7 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
       if (!target.faltante && cotizables().length <= 1) {
         return { error: 'No puedo dejar la cotización sin líneas. Si no va nada, la cancelamos.' }
       }
-      const label = describeTarget(next, target)
+      const label = labelFor(target, lineNo)
       next = next.filter((it) => it !== target)
       notes.push(`Saqué ${label}.`)
       continue
@@ -304,16 +354,37 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
 
     if (op.op === 'set_quantity') {
       const target = targets[0]
-      const label = describeTarget(next, target)
+      const label = labelFor(target, lineNo)
       next = next.map((it) => (it === target ? { ...it, cantidad: op.value } : it))
       notes.push(`${cap(label)} quedó x${op.value}.`)
+      continue
+    }
+
+    if (op.op === 'rename') {
+      const target = targets[0]
+      const label = labelFor(target, lineNo)
+      const name = cap(op.name)
+      const precio = op.price != null ? roundCatalogPrice(op.price) : null
+      next = next.map((it) =>
+        it === target
+          ? {
+              ...it,
+              descripcion: name,
+              libre: true,
+              ...(precio != null
+                ? { precio_unitario: precio, faltante: false, precioManual: true }
+                : {}),
+            }
+          : it,
+      )
+      notes.push(`${cap(label)} ahora es "${name}"${precio != null ? ` y quedó en ${money(precio)}` : ''}.`)
       continue
     }
 
     // set_price
     if (op.mode === 'percent') {
       const before = targets.reduce((a, t) => a + (t.precio_unitario ?? 0) * t.cantidad, 0)
-      const label = op.target === 'all' ? null : describeTarget(next, targets[0])
+      const label = op.target === 'all' ? null : labelFor(targets[0], lineNo)
       const newUnits = new Map<PedidoItem, number>()
       for (const t of targets) {
         newUnits.set(t, roundCatalogPrice((t.precio_unitario ?? 0) * (1 - op.value / 100)))
@@ -321,7 +392,9 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
       if ([...newUnits.values()].some((v) => v <= 0)) {
         return { error: 'Ese descuento deja el ítem en $0. Revisemos el número.' }
       }
-      next = next.map((it) => (newUnits.has(it) ? { ...it, precio_unitario: newUnits.get(it)! } : it))
+      next = next.map((it) =>
+        newUnits.has(it) ? { ...it, precio_unitario: newUnits.get(it)!, precioManual: true } : it,
+      )
       const after = [...newUnits.entries()].reduce((a, [t, unit]) => a + unit * t.cantidad, 0)
       if (op.target === 'all') {
         notes.push(`Apliqué ${op.value}% a toda la cotización: ${money(before)} → ${money(after)}.`)
@@ -332,16 +405,25 @@ export function applyQuoteChanges(items: PedidoItem[], ops: ChangeOp[]): ApplyCh
       continue
     }
 
-    // set_price absolute
-    const label = op.target === 'all' ? null : describeTarget(next, targets[0])
+    // set_price absolute (acepta 0 = gratis)
+    const label = op.target === 'all' ? null : labelFor(targets[0], lineNo)
     const wasPending = targets.some((t) => t.faltante)
+    const precio = roundCatalogPrice(op.value)
     next = next.map((it) =>
-      targets.includes(it) ? { ...it, precio_unitario: roundCatalogPrice(op.value), faltante: false } : it,
+      targets.includes(it)
+        ? {
+            ...it,
+            precio_unitario: precio,
+            faltante: false,
+            libre: it.libre ?? true,
+            precioManual: true,
+          }
+        : it,
     )
     if (op.target === 'all') {
-      notes.push(`Puse todas las líneas en ${money(roundCatalogPrice(op.value))}.`)
+      notes.push(`Puse todas las líneas en ${money(precio)}.`)
     } else {
-      notes.push(`${cap(label!)} quedó en ${money(roundCatalogPrice(op.value))}${wasPending ? ' (entra al total)' : ''}.`)
+      notes.push(`${cap(label!)} quedó en ${money(precio)}${wasPending ? ' (entra al total)' : ''}.`)
     }
   }
 

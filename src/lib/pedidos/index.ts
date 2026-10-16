@@ -58,6 +58,7 @@ import {
   isGreetingRecipientName,
   isSenderPhone,
   isSenderPhoneCandidate,
+  matchClienteCandidato,
   normalizeClientNameReply,
 } from './client-identity'
 import { isExplicitBudgetCreationRequest, mentionsOrderItems, looksLikeOrderSlotReply } from './intent'
@@ -69,6 +70,8 @@ import type {
   OrderContext,
   ParsedDescuento,
   ParsedOrder,
+  ParsedOrderItem,
+  PedidoItem,
   TipoEntrega,
 } from './types'
 
@@ -176,6 +179,34 @@ function withTotal(state: OrderContext): OrderContext {
   const neto = itemsNeto(state)
   const amount = state.descuento?.amount ?? 0
   return { ...state, total: Math.max(0, neto - amount) }
+}
+
+/**
+ * Conserva los precios editados a mano (`precioManual`) de una cotización
+ * abierta al re-resolver los ítems (agregar un ítem o completar un atributo),
+ * para que el catálogo no los pise. `skipIndex` es el ítem que el usuario acaba
+ * de completar: ese toma el precio de catálogo.
+ */
+export function mergePreservedItems(
+  next: PedidoItem[],
+  prev: PedidoItem[] | undefined | null,
+  skipIndex?: number,
+): PedidoItem[] {
+  if (!prev || prev.length === 0) return next
+  return next.map((it, i) => {
+    if (skipIndex != null && i === skipIndex) return it
+    const p = prev[i]
+    // Solo conservamos el precio manual si `prev[i]` es REALMENTE el mismo ítem
+    // (misma categoría/medida/variante). Si no, es una línea vieja distinta y
+    // pisaría el precio del ítem nuevo por posición (bug real).
+    const sameItem =
+      p != null &&
+      p.categoria === it.categoria &&
+      p.medida === it.medida &&
+      p.variante === it.variante
+    if (!sameItem || !p.precioManual || p.faltante || p.precio_unitario == null) return it
+    return { ...it, precio_unitario: p.precio_unitario, faltante: false, precioManual: true }
+  })
 }
 
 function resolveDescuento(pd: ParsedDescuento, base: number): DescuentoState {
@@ -613,6 +644,7 @@ async function resolveParsedAndAdvance(
   existing: OrderContext | null,
   parsed: ParsedOrder,
   text: string,
+  preserveSkip?: number,
 ): Promise<ProcessPedidoResult> {
   const { refs, rules } = await loadCatalog(args)
   const glossary = await loadGlossary(args.db, args.accountId)
@@ -628,7 +660,7 @@ async function resolveParsedAndAdvance(
   if (blockingTerms.length > 0) {
     const state: OrderContext = {
       stage: 'confirming',
-      items: [],
+      items: existing?.items ?? [],
       clienteNombre: resolveClientGuess(parsed.cliente, text, existing?.clienteNombre, args.senderPhone).value,
       total: 0,
       faltantes: [],
@@ -651,6 +683,7 @@ async function resolveParsedAndAdvance(
       orderText: text,
       awaitingQuoteApproval: false,
       clienteNombre: resolveClientGuess(parsed.cliente, text, existing?.clienteNombre, args.senderPhone).value,
+      existingItems: existing?.items,
     })
   }
 
@@ -662,7 +695,10 @@ async function resolveParsedAndAdvance(
   const nextClienteNombre = parsedCliente || existingClienteNombre || null
   const clienteChanged = !!parsedCliente && parsedCliente !== existingClienteNombre
 
-  const baseNeto = resolved.total
+  // Conserva los precios editados a mano de la cotización abierta (p. ej. al
+  // agregar un ítem o completar la medida de otro).
+  const items = mergePreservedItems(resolved.items, existing?.items, preserveSkip)
+  const baseNeto = pedidoItemsNeto(items)
   let descuento: DescuentoState | null | undefined = existing?.descuento
   if (parsed.descuento) {
     descuento = resolveDescuento(parsed.descuento, baseNeto)
@@ -676,7 +712,7 @@ async function resolveParsedAndAdvance(
 
   const state: OrderContext = {
     stage: 'confirming',
-    items: resolved.items,
+    items,
     clienteNombre: nextClienteNombre,
     clienteTelefono: clienteChanged || invalidExistingClient ? undefined : existing?.clienteTelefono,
     clienteId: clienteChanged || invalidExistingClient ? undefined : existing?.clienteId,
@@ -687,7 +723,7 @@ async function resolveParsedAndAdvance(
     tipoEntrega: parsed.tipoEntrega ?? existing?.tipoEntrega,
     fechaEntrega: nextFecha,
     descuento: descuento,
-    total: resolved.total,
+    total: baseNeto,
     faltantes: resolved.faltantes,
     notaSupuestos: resolved.notaSupuestos,
   }
@@ -735,12 +771,16 @@ async function askItemAttr(
     orderText: string
     awaitingQuoteApproval: boolean
     clienteNombre: string | null
+    /** Ítems ya resueltos de la cotización abierta (se conservan al completar). */
+    existingItems?: PedidoItem[]
   },
 ): Promise<ProcessPedidoResult> {
   const { missing } = opts
   const state: OrderContext = {
     stage: 'confirming',
-    items: [],
+    // Conservamos los ítems ya cotizados: al responder el atributo se
+    // re-resuelven y `mergePreservedItems` mantiene los precios manuales.
+    items: opts.existingItems ?? [],
     clienteNombre: opts.clienteNombre,
     total: 0,
     faltantes: [],
@@ -813,7 +853,7 @@ async function handleItemAttrAnswer(
   }
   if (chosen === null) return reask('No entendí esa opción.')
   if (slot.ask === 'medida' && slot.options.length === 0 && !/\d/.test(chosen)) {
-    return reask('Necesito una medida.')
+    return handleItemAttrWithoutMeasure(args, ctx, slot, text)
   }
 
   const items = slot.parsed.items.map((it, i) =>
@@ -823,9 +863,84 @@ async function handleItemAttrAnswer(
   const cleaned: OrderContext = { ...ctx, awaitingItemAttr: null, awaitingGlossary: null }
 
   if (ctx.awaitingQuoteApproval) {
-    return quoteFromParsed(args, slot.orderText, { ...cleaned, quoteText: null }, parsed)
+    return quoteFromParsed(args, slot.orderText, { ...cleaned, quoteText: null }, parsed, slot.itemIndex)
   }
-  return resolveParsedAndAdvance(args, cleaned, parsed, slot.orderText)
+  return resolveParsedAndAdvance(args, cleaned, parsed, slot.orderText, slot.itemIndex)
+}
+
+/**
+ * Parsea con la inyección de tests si existe (si no, el LLM real). Centraliza
+ * el reuso de `parseOrder` para los caminos que completan un atributo.
+ */
+function parseOrderWith(
+  args: ProcessPedidoMessageArgs,
+  text: string,
+  context: OrderContext | null,
+): Promise<ParsedOrder> {
+  return args.parseFn ? args.parseFn(text, context) : parseOrder(text, { context })
+}
+
+/** Contexto mínimo para reenviar ítems ya parseados a `parseOrder`. */
+function parsedItemsAsContext(items: ParsedOrderItem[]): PedidoItem[] {
+  return items.map((it) => ({
+    cantidad: it.cantidad,
+    categoria: 'BASTIDOR',
+    medida: null,
+    variante: null,
+    precio_unitario: it.precio ?? null,
+    faltante: it.precio == null,
+    descripcion: it.texto,
+    regla_aplicada: null,
+    libre: it.libre,
+  }))
+}
+
+/**
+ * Responde "sin medida"/"no tiene medida"/una frase que redefine el ítem en la
+ * pregunta de medida. Reusa `parseOrder` (CERO parsers nuevos): le envía los
+ * ítems actuales como contexto; si el usuario no da una medida, el ítem queda
+ * como LÍNEA MANUAL (`libre`) y NO se vuelve a preguntar "Necesito una medida"
+ * (regresión R3).
+ */
+async function handleItemAttrWithoutMeasure(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  slot: NonNullable<OrderContext['awaitingItemAttr']>,
+  text: string,
+): Promise<ProcessPedidoResult> {
+  const idx = slot.itemIndex >= 0 && slot.itemIndex < slot.parsed.items.length ? slot.itemIndex : 0
+  const targetItem = slot.parsed.items[idx]
+  // Le pasamos SOLO el ítem objetivo como contexto para que el parser no pueda
+  // "perder" los demás ítems del pedido (bug real: devolvía 1 ítem y borraba 7).
+  const contexto: OrderContext = {
+    ...ctx,
+    awaitingItemAttr: null,
+    items: targetItem ? parsedItemsAsContext([targetItem]) : [],
+  }
+  let singleParsed: ParsedOrder
+  try {
+    singleParsed = await parseOrderWith(args, text, contexto)
+  } catch (err) {
+    console.error('[pedido] parseOrder (sin medida) error:', err)
+    singleParsed = { cliente: null, items: targetItem ? [targetItem] : [] }
+  }
+  // Si el parser no marcó el ítem objetivo como libre, lo marcamos: es una
+  // muestra/producto sin medida que se cotiza a mano.
+  const updatedItem: ParsedOrderItem = singleParsed.items[0]
+    ? { ...singleParsed.items[0], libre: true }
+    : { ...(targetItem ?? { cantidad: 1, texto: slot.term }), libre: true }
+
+  // Reemplazamos SOLO la posición objetivo; los demás ítems quedan intactos.
+  const parsed: ParsedOrder = {
+    ...slot.parsed,
+    items: slot.parsed.items.map((it, i) => (i === idx ? updatedItem : it)),
+  }
+
+  const cleaned: OrderContext = { ...ctx, awaitingItemAttr: null, awaitingGlossary: null }
+  if (ctx.awaitingQuoteApproval) {
+    return quoteFromParsed(args, slot.orderText, { ...cleaned, quoteText: null }, parsed, idx)
+  }
+  return resolveParsedAndAdvance(args, cleaned, parsed, slot.orderText, idx)
 }
 
 async function handleGlossaryAnswer(
@@ -840,9 +955,11 @@ async function handleGlossaryAnswer(
   const catalog = await loadCatalog(args)
   const interpretations = await parseGlossaryMeanings(pending.terms, args.text, catalog)
   if (interpretations.length === 0) {
-    const msg = `No entendí. ${buildGlossaryQuestion(pending.terms)}`
-    await sendText(args, msg)
-    return { handled: true, text: msg }
+    // El usuario aclaró que no son términos del catálogo (ej. "no son términos,
+    // es un producto que no está en el catálogo, Palos de metal"). No inventamos
+    // un alias: marcamos como LIBRES los ítems que contenían esos términos y
+    // re-cotizamos como líneas manuales, sin guardar nada en order_glossary.
+    return requoteWithFreeTerms(args, ctx, pending.terms, pending.orderText)
   }
 
   for (const it of interpretations) {
@@ -859,6 +976,51 @@ async function handleGlossaryAnswer(
     return presentQuote(args, pending.orderText, { ...ctx, awaitingGlossary: null, quoteText: null })
   }
   return resolveAndSave(args, ctx, pending.orderText)
+}
+
+/** Marca como `libre` los ítems cuyo texto contiene alguno de los términos. */
+function markTermsLibre(parsed: ParsedOrder, normTerms: string[]): ParsedOrder {
+  if (normTerms.length === 0) return parsed
+  return {
+    ...parsed,
+    items: parsed.items.map((it) => {
+      const key = normalizeTerm(it.texto)
+      return normTerms.some((t) => t && key.includes(t)) ? { ...it, libre: true } : it
+    }),
+  }
+}
+
+/**
+ * El usuario aclaró que los términos del glosario NO son términos de catálogo
+ * (producto fuera de catálogo). Marca esos ítems como libres y re-cotiza sin
+ * guardar en `order_glossary`. Reusa `parseOrder` (sin parser nuevo).
+ */
+async function requoteWithFreeTerms(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  terms: string[],
+  orderText: string,
+): Promise<ProcessPedidoResult> {
+  const normTerms = terms.map(normalizeTerm).filter(Boolean)
+  let parsed: ParsedOrder
+  try {
+    parsed = await parseOrderWith(args, orderText, ctx)
+  } catch (err) {
+    console.error('[pedido] parseOrder (término libre) error:', err)
+    parsed = { cliente: ctx.clienteNombre, items: [] }
+  }
+  const marked = markTermsLibre(parsed, normTerms)
+  if (marked.items.length === 0) {
+    // No pudimos reconstruir el pedido: no dejamos mudo, volvemos a preguntar.
+    const msg = `No entendí. ${buildGlossaryQuestion(terms)}`
+    await sendText(args, msg)
+    return { handled: true, text: msg }
+  }
+  const cleaned: OrderContext = { ...ctx, awaitingGlossary: null }
+  if (ctx.awaitingQuoteApproval) {
+    return quoteFromParsed(args, orderText, { ...cleaned, quoteText: null }, marked)
+  }
+  return resolveParsedAndAdvance(args, cleaned, marked, orderText)
 }
 
 /** Maneja un tap de botón interactivo del flujo de pedidos. */
@@ -969,6 +1131,21 @@ async function handleClienteChoiceText(
     return advance(args, { ...ctx, clienteId: null, clienteTelefono: null, clienteCandidatos: [], awaitingClienteChoice: false })
   }
 
+  // Nombre con typo/parcial contra los candidatos mostrados (R7): "Pachecho"
+  // matchea "Cesar Pacheco"; "test de direccion" matchea "Test de direccion 1".
+  // Se elige directo sin crear un cliente duplicado ni repetir la lista.
+  const candidatoElegido = matchClienteCandidato(text, cands)
+  if (candidatoElegido) {
+    return advance(args, {
+      ...ctx,
+      clienteId: candidatoElegido.id,
+      clienteNombre: candidatoElegido.nombre,
+      clienteTelefono: candidatoElegido.telefono,
+      clienteCandidatos: [],
+      awaitingClienteChoice: false,
+    })
+  }
+
   // Escribió un nombre nuevo: lo tomamos como cliente (y re-buscamos candidatos).
   const nombreNuevo = normalizeClientNameReply(text, args.senderPhone)
   if (nombreNuevo) {
@@ -1001,6 +1178,7 @@ async function quoteFromParsed(
   text: string,
   context: OrderContext | null,
   parsed: ParsedOrder,
+  preserveSkip?: number,
 ): Promise<ProcessPedidoResult> {
   const quoteText = context?.quoteText ? `${context.quoteText}\n${text}` : text
 
@@ -1050,6 +1228,7 @@ async function quoteFromParsed(
       orderText: quoteText,
       awaitingQuoteApproval: true,
       clienteNombre: context?.clienteNombre ?? null,
+      existingItems: context?.items,
     })
   }
 
@@ -1061,11 +1240,12 @@ async function quoteFromParsed(
     args.senderPhone,
   ).value
 
+  const items = mergePreservedItems(resolved.items, context?.items, preserveSkip)
   const state: OrderContext = {
     stage: 'confirming',
-    items: resolved.items,
+    items,
     clienteNombre,
-    total: resolved.total,
+    total: pedidoItemsNeto(items),
     faltantes: resolved.faltantes,
     notaSupuestos: resolved.notaSupuestos,
     awaitingQuoteApproval: true,
@@ -1085,6 +1265,7 @@ async function handleQuoteApproval(
   args: ProcessPedidoMessageArgs,
   ctx: OrderContext,
   text: string,
+  opts: { freshFallback?: boolean } = {},
 ): Promise<ProcessPedidoResult> {
   // Anti-keywords: lo obvio va por listas; lo ambiguo lo entiende el LLM con
   // el contexto de la cotización (nunca keywords nuevas).
@@ -1109,11 +1290,27 @@ async function handleQuoteApproval(
   }
 
   if (reply === 'confirm' || isExplicitBudgetCreationRequest(text)) {
+    // Ítems "Sin cotizar" (libres) sin precio: preguntar UNA vez antes de crear
+    // para que no queden mudos (R7/5.2). Con `awaitingFaltante` ya pedido, un
+    // "sí"/"seguí" crea igual (no bloquea en loop).
+    const pendientes = ctx.items.filter((it) => it.faltante && it.libre)
+    if (pendientes.length > 0 && !ctx.awaitingFaltante) {
+      const preguntar: OrderContext = { ...ctx, awaitingFaltante: true }
+      await saveCtx(args, preguntar)
+      const list = pendientes.map((it) => `• "${it.descripcion}"`).join('\n')
+      const msg =
+        `Antes de crearlo tenés ítems sin precio:\n${list}\n\n` +
+        `Decime a qué precio va cada uno (poné 0 si es gratis) o decí "sacalo". ` +
+        `Si querés dejarlos así, respondé "seguí".`
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
     // Caso 3: SIN defaults. Lo no seteado lo pregunta advance (combinado si
     // falta todo, individual si falta algo puntual).
     const readyToCreate: OrderContext = {
       ...ctx,
       awaitingQuoteApproval: false,
+      awaitingFaltante: false,
       quoteText: null,
     }
     await saveCtx(args, readyToCreate)
@@ -1182,7 +1379,38 @@ async function handleQuoteApproval(
       return { handled: true, text: msg }
     }
   }
-  return presentQuote(args, text, ctx)
+  // Fallback: re-cotizar. `freshFallback` (cotización descartada + pedido nuevo)
+  // cotiza desde cero, sin concatenar el texto ni los ítems anteriores.
+  return presentQuote(args, text, opts.freshFallback ? null : ctx)
+}
+
+// "Seguí"/"así está bien" en la pregunta de ítems sin precio → crear con lo que
+// hay (los ítems libres quedan fuera del total, como "Sin cotizar").
+const FALTANTE_CONTINUE_RE =
+  /\b(?:segu[ií]|seguir|continuar|contin[uú]a|dale|ok|listo|dejal[oa]s?|as[ií] nomas|as[ií] est[aá] bien|creal[oa]|hacel[oa]|con eso|sin precio|ninguno|ninguna|nada|no importa)\b/i
+
+/**
+ * Respuesta a "ítems sin precio antes de crear". "Seguí"/"sí" crea igual; un
+ * precio o "sacalo" lo resuelve el intérprete de cambios de la cotización.
+ */
+async function handleFaltanteAnswer(
+  args: ProcessPedidoMessageArgs,
+  ctx: OrderContext,
+  text: string,
+): Promise<ProcessPedidoResult> {
+  const t = (text || '').trim()
+  if (!t) return { handled: false }
+  if (classifyOrderReply(t) === 'cancel') return cancelOrder(args)
+
+  const tienePrecio = /\d/.test(t)
+  if (!tienePrecio && FALTANTE_CONTINUE_RE.test(t)) {
+    const ready: OrderContext = { ...ctx, awaitingFaltante: false, awaitingQuoteApproval: false, quoteText: null }
+    await saveCtx(args, ready)
+    return advance(args, ready, { includeSummary: true })
+  }
+
+  // Precio / "sacalo": reusar el flujo normal de la cotización abierta.
+  return handleQuoteApproval(args, { ...ctx, awaitingFaltante: false }, t)
 }
 
 /**
@@ -1212,7 +1440,7 @@ async function handleCancelledQuote(
   }
 
   // Retomar: equivale a aprobar la cotización (mismos pasos de entrega/cliente).
-  if (decision === 'confirm') {
+  if (decision === 'confirm' || isExplicitBudgetCreationRequest(text)) {
     const ready: OrderContext = {
       ...ctx,
       quoteCancelled: false,
@@ -1223,9 +1451,29 @@ async function handleCancelledQuote(
     return advance(args, ready, { includeSummary: true })
   }
 
-  // Un cambio (o algo que menciona el pedido): reabrir y pasar por el flujo
-  // normal de cotización/corrección, sin perder los ítems.
-  if (mentionsOrderItems(text) || /\d/.test(text) || looksLikeOrderSlotReply(text)) {
+  // El mensaje trae productos/medidas: puede ser un CAMBIO sobre la cotización
+  // descartada (precio/cantidad/quitar/renombrar) o un PEDIDO NUEVO. Lo decide
+  // el intérprete de cambios: con `ops` se aplica sobre la cotización; con
+  // `none` es un pedido nuevo y se cotiza DESDE CERO (sin concatenar el texto ni
+  // arrastrar ítems/cliente). Así "cambiar el pedido, les paso el nuevo: 240x120"
+  // no se fusiona con la cotización cancelada (regresión c9d6f97/R1).
+  if (mentionsOrderItems(text)) {
+    const reopened: OrderContext = { ...ctx, quoteCancelled: false, awaitingQuoteApproval: true }
+    await saveCtx(args, reopened)
+    return handleQuoteApproval(args, reopened, text, { freshFallback: true })
+  }
+
+  // Respuesta a un slot de entrega/cliente sobre la cotización descartada
+  // ("el cliente es Federico, es envío"): la retomamos y aplicamos los datos.
+  if (looksLikeOrderSlotReply(text)) {
+    const reopened: OrderContext = { ...ctx, quoteCancelled: false, awaitingQuoteApproval: false }
+    await saveCtx(args, reopened)
+    return handleDatosAnswer(args, reopened)
+  }
+
+  // Un cambio puntual sobre la cotización (precio/cantidad) → reabrir y pasar
+  // por el flujo normal, sin perder los ítems.
+  if (/\d/.test(text)) {
     const reopened: OrderContext = { ...ctx, quoteCancelled: false, awaitingQuoteApproval: true }
     await saveCtx(args, reopened)
     return handleQuoteApproval(args, reopened, text)
@@ -1278,6 +1526,11 @@ async function handlePending(
   // Cotización descartada (soft-cancel): retomar / descartar del todo / corregir.
   if (ctx.quoteCancelled) {
     return handleCancelledQuote(args, ctx, text)
+  }
+
+  // Ítems sin precio antes de crear (preguntados en la cotización abierta).
+  if (ctx.awaitingFaltante) {
+    return handleFaltanteAnswer(args, ctx, text)
   }
 
   if (ctx.awaitingQuoteApproval) {
