@@ -331,11 +331,16 @@ async function askDatosCombinados(
   const prompt = (text: string): string =>
     opts.includeSummary ? buildOrderSummary(state, { confirm: false, prompt: text }) : text
   const addresses = await loadAddresses(args, state.clienteId)
-  const lines = [
-    'Para cerrarlo decime todo junto:',
-    '• Entrega: ¿Retira, Envío o Retira y Envío?',
-    '• Fecha: ¿para cuándo? (o "no")',
-  ]
+  const missingCliente = !state.clienteNombre
+  const lines: string[] = []
+  if (missingCliente) {
+    lines.push('¿A nombre de quién armo el presupuesto?')
+    lines.push('Y decime también:')
+  } else {
+    lines.push('Para cerrarlo decime todo junto:')
+  }
+  lines.push('• Entrega: ¿Retira, Envío o Retira y Envío?')
+  lines.push('• Fecha: ¿para cuándo? (o "no")')
   if (addresses.length === 0) {
     lines.push('• Dirección (si es envío): ¿a dónde lo mando?')
   } else if (addresses.length === 1) {
@@ -366,6 +371,28 @@ async function handleDatosAnswer(
     addresses.map((a) => ({ address: a.address, is_default: a.is_default })),
   )
   const updated: OrderContext = { ...ctx, awaitingDatos: false }
+  // Cliente (si lo dijo en la misma respuesta; puede venir solo "Fede").
+  if (info.cliente) {
+    const name = normalizeClientNameReply(info.cliente, args.senderPhone) ?? info.cliente.trim()
+    updated.clienteNombre = name
+    updated.clienteId = undefined
+    updated.clienteTelefono = undefined
+    updated.clienteCandidatos = []
+  } else if (!info.tipoEntrega && !info.fechaRaw && !info.descuento && !info.domicilio) {
+    if (isPhoneLikeClientName(text, args.senderPhone)) {
+      const msg =
+        'Ese es el teléfono desde el que me escribís; no lo voy a guardar como cliente. ¿A nombre de quién armo el presupuesto?'
+      await sendText(args, msg)
+      return { handled: true, text: msg }
+    }
+    const asName = normalizeClientNameReply(text, args.senderPhone)
+    if (asName) {
+      updated.clienteNombre = asName
+      updated.clienteId = undefined
+      updated.clienteTelefono = undefined
+      updated.clienteCandidatos = []
+    }
+  }
   if (info.tipoEntrega) updated.tipoEntrega = info.tipoEntrega
   if (info.fechaRaw) {
     if (/^no\b/i.test(info.fechaRaw)) {
@@ -410,14 +437,10 @@ async function advance(
   const prompt = (text: string): string =>
     opts.includeSummary ? buildOrderSummary(state, { confirm: false, prompt: text }) : text
 
-  // 1. Nombre del cliente.
+  // 1. Cliente y entrega en UNA sola pregunta si falta alguno (menos pasos).
   const clienteNombre = state.clienteNombre
   if (!clienteNombre) {
-    const updated = withTotal({ ...state, awaitingCliente: true })
-    await saveCtx(args, updated)
-    const q = '¿A nombre de quién armo el presupuesto?'
-    await sendText(args, prompt(q))
-    return { handled: true, text: prompt(q) }
+    return askDatosCombinados(args, { ...state, awaitingCliente: false }, opts)
   }
   state = { ...state, awaitingCliente: false }
 
@@ -470,24 +493,12 @@ async function advance(
   }
   state = { ...state, awaitingEntrega: false }
 
-  // 4. Fecha de entrega (opcional).
-  if (state.fechaEntrega === undefined) {
-    const updated = { ...state, awaitingFecha: true }
-    await saveCtx(args, updated)
-    const q = prompt('¿Fecha de entrega? (ej: "el viernes", "15/11", o "no")')
-    await sendText(args, q)
-    return { handled: true, text: q }
-  }
+  // 4. Fecha de entrega (opcional): si no la dijo, se asume SIN fecha (no bloquea).
+  if (state.fechaEntrega === undefined) state = { ...state, fechaEntrega: '' }
   state = { ...state, awaitingFecha: false }
 
-  // 5. Descuento (opcional).
-  if (state.descuento === undefined) {
-    const updated = { ...state, awaitingDescuento: true }
-    await saveCtx(args, updated)
-    const q = prompt('¿Descuento? Escribí un monto ($), un porcentaje (ej: 10%) o "no".')
-    await sendText(args, q)
-    return { handled: true, text: q }
-  }
+  // 5. Descuento (opcional): si no lo dijo, se asume SIN descuento.
+  if (state.descuento === undefined) state = { ...state, descuento: null }
   state = { ...state, awaitingDescuento: false }
 
   // 5b. Domicilio: solo si es envío y falta (lo común ya vino combinado).
@@ -1113,13 +1124,18 @@ async function handleQuoteApproval(
   // (precio/cantidad/quitar). El LLM solo resuelve a qué línea apuntan; la
   // aritmética es determinística. Lo que no es cambio de línea (agregar ítems,
   // variantes, cliente, entrega) → `none` y sigue el flujo de re-cotización.
-  const quoteLines: QuoteLine[] = ctx.items
-    .filter((it) => !it.faltante)
-    .map((it, i) => ({ n: i + 1, descripcion: it.descripcion, cantidad: it.cantidad, precio: it.precio_unitario }))
-  if (quoteLines.length > 0) {
+  const cotizableItems = ctx.items.filter((it) => !it.faltante)
+  const pendingItems = ctx.items.filter((it) => it.faltante)
+  const quoteLines: QuoteLine[] = cotizableItems.map((it, i) => ({
+    n: i + 1,
+    descripcion: it.descripcion,
+    cantidad: it.cantidad,
+    precio: it.precio_unitario,
+  }))
+  if (quoteLines.length > 0 || pendingItems.length > 0) {
     const changes: ChangeResult = args.modifyFn
       ? await args.modifyFn(text, quoteLines)
-      : await interpretQuoteChanges(text, quoteLines)
+      : await interpretQuoteChanges(text, quoteLines, pendingItems.map((it) => it.descripcion))
     if (changes.kind === 'unsupported') {
       const msg = `No pude aplicar ese cambio (${changes.motivo}). La cotización sigue igual; si querés, decímelo de otra forma o la creamos así.`
       await sendText(args, msg)
@@ -1127,6 +1143,14 @@ async function handleQuoteApproval(
     }
     if (changes.kind === 'ops') {
       const applied = applyQuoteChanges(ctx.items, changes.ops)
+      if ('ambiguous' in applied) {
+        const opts = applied.ambiguous.options
+          .map((o) => (o.n != null ? `${o.n}) ${o.descripcion}` : `• ${o.descripcion}`))
+          .join('\n')
+        const msg = `Hay más de un ítem que coincide con "${applied.ambiguous.text}":\n${opts}\n\nDecime el número.`
+        await sendText(args, msg)
+        return { handled: true, text: msg }
+      }
       if ('error' in applied) {
         await sendText(args, `${applied.error} Si querés cambiar otra cosa, decime.`)
         return { handled: true, text: applied.error }
@@ -1138,9 +1162,13 @@ async function handleQuoteApproval(
           ? Math.round((neto * desc.value) / 100)
           : Math.min(Math.round(desc.value), neto)
         : 0
+      const faltantes = applied.items
+        .filter((it) => it.faltante)
+        .map((it) => `${it.cantidad > 1 ? `${it.cantidad}× ` : ''}"${it.descripcion}"`)
       const updated: OrderContext = {
         ...ctx,
         items: applied.items,
+        faltantes,
         total: neto - descAmount,
         descuento: desc && desc.mode === 'percent' ? { ...desc, amount: descAmount } : desc,
       }

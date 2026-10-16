@@ -12,7 +12,7 @@ const SYSTEM_PROMPT = `Sos un extractor de pedidos de una fábrica de bastidores
 
 {
   "cliente": string|null,
-  "items": [ { "cantidad": number, "texto": string } ],
+  "items": [ { "cantidad": number, "texto": string, "precio": number|null } ],
   "tipo_entrega": "Retira"|"Envio"|"Retiro y Envio"|null,
   "fecha_entrega": string|null
 }
@@ -25,6 +25,8 @@ Reglas:
 - "dos más, 58x29, 184x95" → 2 ítems (58x29 y 184x95). Nunca dupliques una medida por una palabra de cantidad.
 - Medidas sin categoría quedan tal cual (la categoría por defecto se resuelve después).
 - NO inventes precios ni medidas.
+- Si el usuario fija un precio para un ítem ("a 0 pesos", "a 20mil", "$50000", "puesto 20000"), devolvé ese precio en "precio" (number, sin símbolo). Si no lo dice, "precio": null.
+- Un producto con nombre propio que no conocés ("palos de metal", "soporte X") va como ítem con su texto tal cual y su precio si lo dieron; NO lo cambies por "bastidor".
 - cliente: sólo el nombre del cliente si aparece explicito como destinatario ("para Juan", "a Joaquín", "hacele a Matías", "a nombre de Ana"); si no, null. NUNCA tomes el nombre de un saludo ("Hola Jorge..." → Jorge es a quien se saluda, no el cliente → null).
 - tipo_entrega: sólo si el usuario lo dice ("retira", "envío", "lo paso a buscar", "te lo mando") → "Retira" | "Envio" | "Retiro y Envio"; si no, null.
 - fecha_entrega: sólo si el usuario menciona una fecha de entrega, devolvé el texto tal cual lo dijo (ej: "el viernes", "15/11", "la semana que viene"); si no, null. NO la confundas con medidas.
@@ -77,10 +79,12 @@ function parseOrderJson(raw: string): ParsedOrder {
   const items: ParsedOrderItem[] = []
   for (const it of rawItems) {
     if (!it || typeof it !== 'object') continue
-    const obj = it as { cantidad?: unknown; texto?: unknown }
+    const obj = it as { cantidad?: unknown; texto?: unknown; precio?: unknown }
     const texto = typeof obj.texto === 'string' ? obj.texto.trim() : ''
     if (!texto) continue
-    items.push({ cantidad: parseCantidad(obj.cantidad), texto })
+    const precioNum = obj.precio == null ? null : Number(obj.precio)
+    const precio = precioNum != null && Number.isFinite(precioNum) && precioNum >= 0 ? precioNum : null
+    items.push({ cantidad: parseCantidad(obj.cantidad), texto, precio })
   }
 
   const tipoRaw = typeof parsed.tipo_entrega === 'string' ? parsed.tipo_entrega.trim() : ''

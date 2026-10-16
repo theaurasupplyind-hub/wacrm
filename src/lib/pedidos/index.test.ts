@@ -413,7 +413,7 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(findClientsFn).not.toHaveBeenCalled()
     expect((db as ReturnType<typeof makeDb>).getOrderContext()).toMatchObject({
       clienteNombre: null,
-      awaitingCliente: true,
+      awaitingDatos: true,
     })
     expect(facbal.createClient).not.toHaveBeenCalled()
     expect(facbal.createInvoice).not.toHaveBeenCalled()
@@ -600,6 +600,119 @@ describe('processPedidoMessage — creación de presupuesto', () => {
     expect(sent.texts.at(-1)).toContain('Cotización estimada:')
     expect(sent.texts.at(-1)).toContain('20.000')
   })
+
+  it('un producto fuera de catálogo se cotiza como línea manual (sin alucinar bastidores)', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: 'Jesus',
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'palos de metal', precio: 0 },
+      ],
+    })
+
+    await processPedidoMessage(
+      args(db, 'cuánto salen para Jesus 2 bastidores 40 x 89 y Palos de metal a 0 pesos', { parseFn }),
+    )
+
+    const t = sent.texts.at(-1)!
+    expect(t).toContain('Cotización estimada:')
+    expect(t).toContain('Palos de metal (manual)')
+    // El ítem libre NO se convierte en un bastidor extra.
+    expect((t.match(/BASTIDOR/g) || []).length).toBe(1)
+    expect((db as ReturnType<typeof makeDb>).getOrderContext()).not.toMatchObject({
+      awaitingGlossary: expect.anything(),
+    })
+  })
+
+  it('permite cotizar a mano: le da precio a un ítem "a cotizar" por nombre', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: 'Jesus',
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'palos de metal' },
+      ],
+    })
+
+    await processPedidoMessage(args(db, 'cuánto salen 2 bastidores 40x89 y palos de metal', { parseFn }))
+    expect(sent.texts.at(-1)).toContain('Sin cotizar')
+    expect(sent.texts.at(-1)).toContain('palos de metal')
+
+    const modifyFn = async () => ({
+      kind: 'ops' as const,
+      ops: [{ op: 'set_price' as const, target: { text: 'palos de metal' }, mode: 'absolute' as const, value: 5000 }],
+    })
+    await processPedidoMessage(args(db, 'el palos de metal vale 5000', { parseFn, modifyFn }))
+
+    expect(sent.texts.at(-1)).toContain('Cotización actualizada:')
+    expect(sent.texts.at(-1)).toContain('Palos de metal (manual) — $5.000')
+    expect(sent.texts.at(-1)).not.toContain('Sin cotizar')
+  })
+
+  it('creación corta: una sola pregunta de datos y asume sin fecha/descuento', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: 'Fede',
+      items: [{ cantidad: 1, texto: 'bastidor sin tela 60x40' }],
+    })
+    const findClientsFn = vi.fn(async () => [])
+
+    await processPedidoMessage(args(db, 'Armame un presupuesto para Fede 60x40', { parseFn, findClientsFn }))
+    // Falta entrega → UNA pregunta combinada.
+    expect(sent.texts.at(-1)).toContain('Entrega')
+
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({ cliente: null, tipo_entrega: 'Retira', fecha: null, descuento: null, domicilio: null }),
+    })
+    await processPedidoMessage(args(db, 'retira', { parseFn, findClientsFn }))
+    // Asume sin fecha y sin descuento → resumen directo.
+    expect(sent.texts.at(-1)).toContain('¿Confirmás?')
+    expect(sent.texts.at(-1)).toContain('Entrega: Retira')
+    expect(sent.texts.at(-1)).not.toContain('Fecha de entrega')
+
+    const r = await processPedidoMessage(args(db, 'sí', { parseFn, findClientsFn }))
+    expect(r.createdInvoice).toBeTruthy()
+    const payload = facbal.createInvoice.mock.calls[0][0] as {
+      tipo_entrega: string
+      fecha_entrega: string
+      items: { descripcion: string }[]
+    }
+    expect(payload.tipo_entrega).toBe('Retira')
+    expect(payload.fecha_entrega).toBe('')
+    expect(payload.items.some(i => i.descripcion === 'DESCUENTO')).toBe(false)
+  })
+
+  it('toma cliente y entrega de una sola respuesta', async () => {
+    const db = makeDb()
+    const parseFn = async () => ({
+      cliente: null,
+      items: [{ cantidad: 2, texto: 'bastidor sin tela 60x40' }],
+    })
+    const findClientsFn = vi.fn(async () => [])
+
+    await processPedidoMessage(
+      args(db, 'Armame un presupuesto: 2 bastidores 60x40 sin tela', { parseFn, findClientsFn }),
+    )
+    expect(sent.texts.at(-1)).toContain('¿A nombre de quién armo el presupuesto?')
+
+    ai.callOpenRouter.mockResolvedValueOnce({
+      text: JSON.stringify({
+        cliente: 'Fede',
+        tipo_entrega: 'Envio',
+        fecha: null,
+        descuento: null,
+        domicilio: 'Av Siempre Viva 123',
+      }),
+    })
+    await processPedidoMessage(
+      args(db, 'a nombre de Fede y es envío a Av Siempre Viva 123', { parseFn, findClientsFn }),
+    )
+
+    expect(sent.texts.at(-1)).toContain('Cliente nuevo: Fede')
+    expect(sent.texts.at(-1)).toContain('Entrega: Envio')
+    expect(sent.texts.at(-1)).toContain('Domicilio: Av Siempre Viva 123')
+  })
 })
 
 describe('processPedidoMessage - modificacion de linea en cotizacion abierta', () => {
@@ -650,7 +763,7 @@ describe('processPedidoMessage - modificacion de linea en cotizacion abierta', (
     await processPedidoMessage(args(db, 'dos bastidores', { parseFn: parseDos }))
     expect(sent.texts.at(-1)).toContain('Cotizaci')
 
-    const modifyFn = async () => ({ kind: 'ops' as const, ops: [{ op: 'remove' as const, line: 2 }] })
+    const modifyFn = async () => ({ kind: 'ops' as const, ops: [{ op: 'remove' as const, target: 2 }] })
     const result = await processPedidoMessage(
       args(db, 'saca el segundo', { parseFn: parseDos, modifyFn }),
     )
@@ -665,7 +778,7 @@ describe('processPedidoMessage - modificacion de linea en cotizacion abierta', (
 
     const modifyFn = async () => ({
       kind: 'ops' as const,
-      ops: [{ op: 'set_price' as const, line: 1, mode: 'absolute' as const, value: 300000 }],
+      ops: [{ op: 'set_price' as const, target: 1, mode: 'absolute' as const, value: 300000 }],
     })
     const result = await processPedidoMessage(
       args(db, 'cambiale el precio al bastidor de 142 x 195 a 300mil', { parseFn: parseBastidor, modifyFn }),

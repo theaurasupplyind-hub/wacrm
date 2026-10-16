@@ -65,7 +65,7 @@ export function comprehendOrder(input: ComprehendInput): ComprehendResult {
   const seenTerms = new Set<string>()
 
   resolved.items.forEach((item, idx) => {
-    if (!item.faltante) return
+    if (!item.faltante || item.libre) return
     const texto = items[idx]?.texto ?? ''
     const cls = classifyItem(texto, vocab, glossary)
     const recognized = cls.categoria !== DEFAULT_CATEGORIA || cls.regla !== null

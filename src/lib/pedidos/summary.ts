@@ -14,7 +14,8 @@ function buildItemsBlock(ctx: OrderContext, title: string): string[] {
     const cant = it.cantidad > 1 ? `${it.cantidad} x ` : ''
     const unit = it.cantidad > 1 && it.precio_unitario != null ? ` (${money(it.precio_unitario)} c/u)` : ''
     const flag = it.aRevisar ? ' ⚠️ a revisar' : ''
-    lines.push(`${i + 1}. ${cant}${it.descripcion} — ${money(it.precio_unitario ?? 0)}${unit}${flag}`)
+    const manual = it.libre ? ' (manual)' : ''
+    lines.push(`${i + 1}. ${cant}${it.descripcion}${manual} — ${money(it.precio_unitario ?? 0)}${unit}${flag}`)
   })
 
   lines.push('')

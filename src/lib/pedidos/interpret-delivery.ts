@@ -15,6 +15,8 @@ export interface KnownAddress {
 }
 
 export interface DeliveryInfo {
+  /** Nombre del cliente si lo dijo junto con los datos ("a nombre de Fede"). */
+  cliente?: string | null
   tipoEntrega?: TipoEntrega | null
   /** Texto crudo de fecha ("el viernes", "15/11", "no") o null si no dijo. */
   fechaRaw?: string | null
@@ -27,7 +29,8 @@ export interface DeliveryInfo {
   domicilio?: string | null
 }
 
-const DELIVERY_PROMPT = `Sos el parser de datos de entrega de un presupuesto en un taller. Devolvé EXCLUSIVAMENTE un JSON: {"tipo_entrega": "Retira" | "Envio" | "Retiro y Envio" | null, "fecha": string | null, "descuento": {"mode": "amount" | "percent", "value": number} | "no" | null, "domicilio": string | null}.
+const DELIVERY_PROMPT = `Sos el parser de datos de entrega de un presupuesto en un taller. Devolvé EXCLUSIVAMENTE un JSON: {"cliente": string | null, "tipo_entrega": "Retira" | "Envio" | "Retiro y Envio" | null, "fecha": string | null, "descuento": {"mode": "amount" | "percent", "value": number} | "no" | null, "domicilio": string | null}.
+- "cliente": el nombre del cliente si lo dice ("a nombre de Fede", "para Juan", "el cliente es X") o si el mensaje es SÓLO un nombre (ej. "Fede"). Si no, null. Nunca tomes un saludo como nombre.
 - "tipo_entrega": lo que pida (retira/envío/retiro y envío y variantes). null si no dice.
 - "fecha": el texto tal cual ("el viernes", "15/11"); "no" si dice que no; null si no dice.
 - "descuento": objeto si da monto o %; "no" si dice que no; null si no dice.
@@ -58,6 +61,9 @@ export async function interpretDeliveryReply(
     const block = res.text.match(/\{[\s\S]*\}/)
     const parsed = JSON.parse(block ? block[0] : res.text) as Record<string, unknown>
     const out: DeliveryInfo = {}
+    if (typeof parsed.cliente === 'string' && parsed.cliente.trim()) {
+      out.cliente = parsed.cliente.trim()
+    }
     if (typeof parsed.tipo_entrega === 'string' && VALID_ENTREGA.has(parsed.tipo_entrega)) {
       out.tipoEntrega = parsed.tipo_entrega as TipoEntrega
     }

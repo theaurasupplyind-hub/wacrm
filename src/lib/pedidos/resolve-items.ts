@@ -123,6 +123,34 @@ export function resolveItems(args: {
         total += byAttr.total
         continue
       }
+      // Ítem FUERA DE CATÁLOGO: nombre propio no reconocido (2+ términos) o con
+      // precio explícito del usuario. Se cotiza como LÍNEA MANUAL; nunca se
+      // asume "BASTIDOR" por default (bug "Palos de metal").
+      const isFree =
+        cls.categoria === DEFAULT_CATEGORIA &&
+        !cls.regla &&
+        (cls.unknownTerms.length >= 2 || (raw.precio != null && cls.unknownTerms.length >= 1))
+      if (isFree) {
+        const precio =
+          typeof raw.precio === 'number' && Number.isFinite(raw.precio) && raw.precio >= 0
+            ? Math.round(raw.precio)
+            : null
+        resolved.push({
+          cantidad,
+          categoria: 'LIBRE',
+          medida: null,
+          variante: null,
+          precio_unitario: precio,
+          faltante: precio == null,
+          descripcion: cap(texto),
+          regla_aplicada: null,
+          asumido: 'ítem fuera de catálogo',
+          libre: true,
+        })
+        if (precio == null) faltantes.push(etiqueta(cantidad, texto))
+        else total += precio * cantidad
+        continue
+      }
       pushFaltante(cantidad, texto)
       continue
     }

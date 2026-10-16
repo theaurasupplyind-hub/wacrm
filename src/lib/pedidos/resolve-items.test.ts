@@ -120,4 +120,39 @@ describe('resolveItems', () => {
     expect(it.descripcion).toContain('Sin Tela')
     expect(it.descripcion).not.toContain('Lienzo Profesional')
   })
+
+  it('producto fuera de catálogo con precio → línea manual (no bastidor)', () => {
+    const r = resolveItems({
+      ...base,
+      items: [
+        { cantidad: 2, texto: 'bastidor 40x89' },
+        { cantidad: 1, texto: 'palos de metal', precio: 0 },
+      ],
+    })
+    const libre = r.items[1]
+    expect(libre.libre).toBe(true)
+    expect(libre.faltante).toBe(false)
+    expect(libre.precio_unitario).toBe(0)
+    expect(libre.descripcion).toBe('Palos de metal')
+    expect(libre.categoria).not.toBe('BASTIDOR')
+    expect(r.faltantes).toEqual([])
+  })
+
+  it('producto fuera de catálogo sin precio → manual a cotizar a mano (nombra el producto real)', () => {
+    const r = resolveItems({
+      ...base,
+      items: [{ cantidad: 1, texto: 'palos de metal' }],
+    })
+    const it = r.items[0]
+    expect(it.libre).toBe(true)
+    expect(it.faltante).toBe(true)
+    expect(it.descripcion).toBe('Palos de metal')
+    expect(r.faltantes[0]).toContain('palos de metal')
+  })
+
+  it('un solo término desconocido NO es ítem libre (sigue siendo faltante/glosario)', () => {
+    const r = resolveItems({ ...base, items: [{ cantidad: 1, texto: 'florero' }] })
+    expect(r.items[0].libre).toBeFalsy()
+    expect(r.items[0].faltante).toBe(true)
+  })
 })

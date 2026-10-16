@@ -5,6 +5,8 @@ export interface ParsedOrderItem {
   cantidad: number
   /** Conserva el vocabulario del usuario ("sin tela", "pintura", "60x40"...). */
   texto: string
+  /** Precio unitario que dio el usuario (ítem fuera de catálogo); null si no dijo. */
+  precio?: number | null
 }
 
 /** Tipo de entrega (mismos valores que galv2 / backend_gal). */
@@ -53,6 +55,8 @@ export interface PedidoItem {
   asumido?: string | null
   /** True cuando el precio es provisional y hay que revisarlo a mano. */
   aRevisar?: boolean
+  /** Línea manual: producto fuera de catálogo (no cotizado por el motor). */
+  libre?: boolean
 }
 
 /** Estado del pedido guardado en `conversations.order_context`. */
