@@ -5,8 +5,8 @@
 > (verificado: la ruta no existe). Las rutas `src/app/api/bot-beta/run/route.ts`,
 > `src/app/api/bot-beta/voice-run/route.ts` y `src/app/api/budget-image/*`
 > tampoco existen. El sucesor para pedidos es `src/lib/pedidos/` + el motor de
-> turno (`src/lib/bot/engine.ts`) documentados en [`architecture.md`](./architecture.md)
-> §6 y [`assistant-agent.md`](./assistant-agent.md).
+> turno (`src/lib/bot/engine.ts`) documentados en [`architecture.md`](../architecture.md)
+> §6 y [`assistant-agent.md`](../assistant-agent.md).
 > Todo lo que sigue debajo está en pasado y se conserva sin mantener.
 
 **Propósito (histórico):** tomaba pedidos por voz (audio) o texto vía WhatsApp, transcribía,
@@ -119,6 +119,6 @@ Agregar en `galv2-tauri` una pantalla de confirmación antes de enviar la orden 
 La unificación de este módulo con el resto de los intents del bot ya no sigue
 esta vía: el router unificado de 3 niveles de `archive/bot-personal.md` fue
 reemplazado por el motor de turno puro (`src/lib/bot/engine.ts` → `planTurn`) +
-planner LLM opt-in — ver [`architecture.md`](./architecture.md) §6 y
-[`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md). El flujo de
+planner LLM opt-in — ver [`architecture.md`](../architecture.md) §6 y
+[`plan-unificacion-motor-bot.md`](../plans/plan-unificacion-motor-bot.md). El flujo de
 pedidos vive hoy en `src/lib/pedidos/`.

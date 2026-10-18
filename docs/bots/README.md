@@ -6,24 +6,45 @@
 Este directorio documenta los sistemas de mensajería/bots que se conectan al
 webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 
-## Índice
+## Cómo está organizado
 
-| Documento | Contenido | Estado |
-|-----------|-----------|--------|
-| [`architecture.md`](./architecture.md) | Arquitectura vigente: webhook, router, agente, modelos y conexión con FacBal API | Fuente actual |
-| [`assistant-agent.md`](./assistant-agent.md) | Estado vigente del agente, contexto, herramientas, modelos y evolución segura | Actual |
-| [`../../resumen-bot-beta.md`](../../resumen-bot-beta.md) | Resumen histórico de la etapa Bot Beta | Histórico |
-| [`vouchers.md`](./vouchers.md) | Spec de matching de comprobantes de pago + pipeline actual | Activo |
-| [`voice-orders.md`](./voice-orders.md) | Documentación histórica del pipeline Voice Orders retirado | Histórico |
-| [`plan-mejora-gastos-asistencia.md`](./plan-mejora-gastos-asistencia.md) | Plan de mejora de los bots de gastos y asistencia (llegada/salida) — implementado | Implementado |
-| [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) | Plan del extractor unificado LLM (intents + parseo de asistencia/gastos, fallback regex) — implementado | Implementado |
-| [`plan-mejora-asistente-whatsapp.md`](./plan-mejora-asistente-whatsapp.md) | Estado de mejoras: whitelist/UX/herramientas implementadas; piloto DeepSeek y tareas pendientes | Mixto |
-| [`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md) | Motor de turno puro en producción (`engine.ts`) + planner LLM opt-in (Fases 1-5); migración de Bot Beta fuera de alcance | Parcial |
-| [`plan-orquestador-llm-bots-rigidos.md`](./plan-orquestador-llm-bots-rigidos.md) | LLM orquestador con estado fresco + bots rígidos que ejecutan; intérprete general y guards anti-invención (incidente 15/10) | Implementado |
-| [`plan-items-libres-y-creacion-corta.md`](./plan-items-libres-y-creacion-corta.md) | Ítems fuera de catálogo (línea manual, sin alucinar bastidores) + creación de presupuesto en menos pasos | Implementado |
-| [`plan-asistente-conversacional-bot-beta.md`](./plan-asistente-conversacional-bot-beta.md) | Especificación histórica del asistente en Beta; superada por el asistente productivo | Superado |
-| [`plan-bot-beta-a-produccion-asistente.md`](./plan-bot-beta-a-produccion-asistente.md) | Plan histórico de promoción a producción; no ejecutar literalmente contra los módulos actuales | Superado |
-| [`archive/README.md`](./archive/README.md) | Índice de planes e integraciones históricas | Archivo |
+| Carpeta | Qué contiene |
+|---------|--------------|
+| `docs/bots/` | **Referencia vigente** — fuente de verdad del sistema actual |
+| [`plans/`](./plans) | **Planes activos** — trabajo pendiente o en rollout |
+| [`archive/`](./archive) | **Archivo** — planes implementados o superados e históricos |
+| [`decisiones-y-gotchas.md`](./decisiones-y-gotchas.md) | Decisiones, incidentes y trampas rescatadas de los planes archivados |
+
+## Referencia vigente
+
+| Documento | Contenido |
+|-----------|-----------|
+| [`architecture.md`](./architecture.md) | Arquitectura del ecosistema: webhook, motor de turno, voucher, gastos, asistencia, agente y conexión con FacBal API |
+| [`assistant-agent.md`](./assistant-agent.md) | Estado del agente: contexto, herramientas, modelos y evolución segura |
+| [`vouchers.md`](./vouchers.md) | Spec de matching de comprobantes de pago + pipeline actual (fuente en español) |
+| [`definicion-ambiguedad.md`](./definicion-ambiguedad.md) | Qué cuenta como "ambiguo" y umbrales del gate de auto-guardado |
+| [`catalogo-acciones.md`](./catalogo-acciones.md) | Inventario/roadmap de acciones que el bot podría operar por chat |
+| [`gaps-bot-gastos.md`](./gaps-bot-gastos.md) | Análisis de gaps (G1–G8) del bot de gastos |
+| [`decisiones-y-gotchas.md`](./decisiones-y-gotchas.md) | Decisiones de diseño, incidentes y trampas vigentes |
+
+> Las **herramientas** del agente tienen una única fuente de verdad en el código:
+> `src/lib/bot-assistant/tool-registry.ts`. `catalogo-acciones.md` es un inventario
+> de roadmap, no el listado de lo implementado.
+
+## Planes activos
+
+| Documento | Estado |
+|-----------|--------|
+| [`plans/plan-mejora-asistente-whatsapp.md`](./plans/plan-mejora-asistente-whatsapp.md) | Mixto — whitelist/UX/herramientas implementadas; piloto DeepSeek y política de escrituras pendientes |
+| [`plans/plan-orquestador-llm-bots-rigidos.md`](./plans/plan-orquestador-llm-bots-rigidos.md) | Implementado (Fases 1–7); Fase 8 (planner `on` por dominio) es rollout |
+| [`plans/plan-unificacion-motor-bot.md`](./plans/plan-unificacion-motor-bot.md) | Parcial — motor de turno puro en producción; migración de Bot Beta fuera de alcance |
+| [`plans/plan-jev-bot-beta.md`](./plans/plan-jev-bot-beta.md) | Código listo, sin validar — pendiente spike + shadow de Jev |
+| [`plans/plan-automatizacion-chat-y-asistente-desktop.md`](./plans/plan-automatizacion-chat-y-asistente-desktop.md) | No iniciado — incluye Anexo A (auditoría de `backend_gal`) |
+
+## Archivo histórico
+
+El índice de planes implementados, superados e históricos está en
+[`archive/README.md`](./archive/README.md).
 
 ## Visión de un vistazo
 
@@ -37,7 +58,7 @@ WhatsApp Webhook
    └── backend_gal (FacBal API) ← src/lib/facbal/client.ts
             └── galv2-tauri comparte backend_gal
 
-Voice Orders figura como retirado en el código actual; ver `architecture.md`.
+Voice Orders figura como retirado en el código actual; ver `architecture.md` §2.
 ```
 
 ## Relación con los docs upstream

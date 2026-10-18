@@ -5,7 +5,7 @@
 > id=435-439 + `bot_traces`) — "Palos de metal" (producto fuera de catálogo) y
 > cantidad de pasos al crear.
 > **Para:** el agente ejecutor. TS strict, seguir `src/lib/pedidos/`. Los
-> incidentes de referencia están en `docs/bots/notas-fallos-reales.md`.
+> incidentes de referencia están en `docs/bots/archive/notas-fallos-reales.md`.
 
 ## 1. Qué pasó (evidencia)
 
@@ -146,7 +146,7 @@ Hoy: cotizar → confirmar → `¿A nombre de quién?` → `askDatosCombinados`
 
 - Flujo: `src/lib/pedidos/{parse-order,understand,classify-item,resolve-items,catalog-attrs,summary,interpret-delivery,execute}.ts`.
 - Evidencia: `router_logs` id=435-439, `bot_traces` (conv `05fe8f78…`, 2026-10-15 23:48-23:53).
-- Relacionado: `docs/bots/plan-presupuestos-por-bot.md`, `docs/bots/plan-orquestador-llm-bots-rigidos.md`.
+- Relacionado: `docs/bots/archive/plan-presupuestos-por-bot.md`, `docs/bots/plans/plan-orquestador-llm-bots-rigidos.md`.
 
 ## Notas de implementación (2026-10-15)
 

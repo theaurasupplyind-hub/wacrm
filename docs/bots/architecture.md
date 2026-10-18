@@ -2,7 +2,7 @@
 
 > Documento de arquitectura del ecosistema de bots del fork. Estado: **actual**.
 > Documentos relacionados:
-> - Voucher: [`vouchers.md`](./vouchers.md) · Voice Orders: [`voice-orders.md`](./voice-orders.md)
+> - Voucher: [`vouchers.md`](./vouchers.md) · Voice Orders: [`voice-orders.md`](./archive/voice-orders.md)
 > - Históricos: [`archive/README.md`](./archive/README.md)
 >
 > ⚠️ **Nota de estado (2026-10):** el pipeline de **Voice Orders / pedidos**
@@ -100,14 +100,14 @@ reactivar `chatbot.ts` como atajo para modificar esos flujos.
 ## 2. Voice Orders / Bot de pedidos (RETIRADO)
 
 **Estado:** ⚠️ Retirado del código vigente (nota 2026-10). El documento
-[`voice-orders.md`](./voice-orders.md) queda como referencia histórica; no
+[`voice-orders.md`](./archive/voice-orders.md) queda como referencia histórica; no
 asumir que sus rutas o capacidades siguen desplegadas.
 
 **Propósito histórico:** tomar pedidos por voz o texto vía WhatsApp, resolver
 precios y crear presupuestos/facturas. Esa descripción ya no representa el
 pipeline activo.
 
-> El documento [`voice-orders.md`](./voice-orders.md) describe el módulo
+> El documento [`voice-orders.md`](./archive/voice-orders.md) describe el módulo
 > anterior y se conserva solo como referencia histórica.
 
 ### Base de datos
@@ -263,6 +263,21 @@ defaults existentes (`Retira`, sin fecha, sin descuento) y no usa ni guarda el
 teléfono interno del remitente como teléfono/nombre del cliente. `cancelar` y
 `reiniciar` limpian también `order_context`.
 
+##### Base de datos del motor y observabilidad
+
+| Migración | Objeto | Propósito |
+|---|---|---|
+| `045_bot_debug_logs.sql` | `router_logs` (+ `attendance_extractions`) | Traza de ruteo/extractor |
+| `046_ai_config_assistant_enabled.sql` | `ai_config.assistant_enabled` | Kill switch del asistente |
+| `047_clarify_context.sql` | `conversations.clarify_context` (JSONB) | Estado multi-turn del clarify |
+| `048_bot_traces.sql` | `bot_traces` | Traza de flujo por productor |
+| `049_drop_voice_context.sql` | drop `conversations.voice_context` | Retiro de Voice Orders |
+| `050_bot_allowed_numbers.sql` | `bot_allowed_numbers` | Whitelist de números del bot |
+| `051_order_glossary.sql` | `order_glossary` | Glosario de términos de pedido |
+| `052_bot_write_log.sql` | `bot_write_log` | Ledger de escrituras (undo 24 h) |
+| `053_bot_failure_traces.sql` | `bot_failure_traces` | Fallos para el loop semanal |
+| `054_bot_pending_confirms.sql` | `bot_pending_confirms` | Confirmaciones pendientes |
+
 ### Contexto del agente
 
 - `buildConversationContext()` carga mensajes de texto recientes desde
@@ -278,11 +293,23 @@ teléfono interno del remitente como teléfono/nombre del cliente. `cancelar` y
 
 ### Herramientas y modelo
 
-El registro vive en `src/lib/bot-assistant/tool-registry.ts`: consultar
-facturas/gastos/proveedores/empleados/categorías/productos, cotizar pedidos y
-registrar gastos/asistencia. El agente selecciona herramientas por OpenRouter;
-los handlers existentes ejecutan las operaciones. La mejora de contexto no
-añadió capacidades de negocio.
+El **registro único** de herramientas vive en
+`src/lib/bot-assistant/tool-registry.ts` (`agentToolDefinitions()`); cualquier
+otra lista es orientativa. Hoy expone **18 tools**:
+
+- **Lectura:** `consultar_facturas`, `listar_gastos`, `buscar_proveedores`,
+  `buscar_empleados`, `listar_categorias`, `buscar_productos`,
+  `consultar_asistencia`, `consultar_estado_pedido`,
+  `consultar_confirmaciones_pendientes`, `consultar_ultima_escritura`.
+- **Cotización:** `cotizar_pedido` (preview; no crea).
+- **Escritura** (delegada a los handlers que confirman): `registrar_gasto`,
+  `registrar_asistencia`, `editar_gasto`, `eliminar_gasto`,
+  `eliminar_asistencia`, `deshacer_ultima_operacion` (undo 24 h).
+- **Ayuda:** `pedir_ayuda`.
+- **Vouchers:** siguen en su pipeline separado y **no** se exponen como tool.
+
+El agente selecciona herramientas por OpenRouter; los handlers ejecutan la
+operación.
 
 | Env | Uso | Default actual |
 |---|---|---|
@@ -487,12 +514,12 @@ src/lib/attendance/
 
 > El roadmap anterior (router regex 3 niveles, mejoras Voice Orders) quedó
 > superado por el motor de turno puro (`src/lib/bot/engine.ts`) + planner LLM
-> opt-in (ver §6 y [`plan-unificacion-motor-bot.md`](./plan-unificacion-motor-bot.md)).
+> opt-in (ver §6 y [`plan-unificacion-motor-bot.md`](./plans/plan-unificacion-motor-bot.md)).
 
 ### Corto plazo
 1. **Planner LLM:** medir `shadow` en `router_logs.debug_info.planner_shadow` → `on` + `assistant` → `+pedido` → `+expense` → `+attendance` → `ASSISTANT_PLANNER_WRITES=true`. Vouchers siempre congelados.
 2. **Filtrado del disparo del pipeline de vouchers** — no procesar cualquier imagen; solo comprobantes probables (gate por caption/keywords/contexto).
-3. **Pedidos:** ejecutar [`plan-presupuestos-por-bot.md`](./plan-presupuestos-por-bot.md) (pendiente); no reintroducir `voice-orders`.
+3. **Pedidos:** el motor de precios de galv2 ya está portado ([`plan-presupuestos-por-bot.md`](./archive/plan-presupuestos-por-bot.md), implementado): vive en `src/lib/precios/` + `src/lib/pedidos/`. No reintroducir `voice-orders`.
 4. **Piloto DeepSeek** (`ASSISTANT_MODEL`/`EXTRACTOR_MODEL`) en Preview con comparativa rioplatense/clasificación/latencia/coste; mantener `VOUCHER_AI_MODEL` en Gemini.
 
 ### Mediano plazo

@@ -4,14 +4,14 @@
 > reemplaza al clasificador de intenciones (`classifyIntent`) y a los parsers
 > regex de texto de **asistencia** y **gastos**, con los regex como fallback.
 > Estado: implementado (2026-08).
-> Contexto: [`architecture.md`](./architecture.md) §6 (dispatch), §10 (gastos), §11 (asistencia),
+> Contexto: [`architecture.md`](../architecture.md) §6 (dispatch), §10 (gastos), §11 (asistencia),
 > [`plan-mejora-gastos-asistencia.md`](./plan-mejora-gastos-asistencia.md) (fases A–D ya implementadas).
 
 > **Nota de vigencia:** el estado de implementación del extractor sigue siendo
 > válido, pero varios apartados de abajo describen la situación previa al
 > asistente productivo actual. Son el registro del diseño/rollout de 2026-08;
-> para el dispatch y el agente vigentes, usar [`architecture.md`](./architecture.md)
-> §6 y [`assistant-agent.md`](./assistant-agent.md).
+> para el dispatch y el agente vigentes, usar [`architecture.md`](../architecture.md)
+> §6 y [`assistant-agent.md`](../assistant-agent.md).
 
 ## Decisiones tomadas (confirmadas con el dueño)
 

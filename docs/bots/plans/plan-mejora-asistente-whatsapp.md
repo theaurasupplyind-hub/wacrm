@@ -6,8 +6,8 @@
 > saneamiento básico de nombres de voucher y trazas ya existen en el código.
 > Quedan por validar calidad/cobertura con datos actuales, añadir controles de
 > escritura al runtime y ejecutar el piloto de modelo descrito en §2.
-> Contexto: `docs/bots/architecture.md`, `resumen-bot-beta.md`,
-> `docs/bots/plan-unificacion-motor-bot.md`.
+> Contexto: `docs/bots/architecture.md`, `docs/bots/archive/resumen-bot-beta.md`,
+> `docs/bots/plans/plan-unificacion-motor-bot.md`.
 
 ## Decisiones tomadas (confirmadas)
 
@@ -122,7 +122,7 @@ conjunto vigente antes de cerrar la fase.
 - El tool-calling está activo por defecto; `ASSISTANT_TOOLS_ENABLED=false` usa
   el orquestador anterior.
 - El agente productivo recibe historial con roles, extracción y estado pendiente;
-  ver [`architecture.md`](./architecture.md) §6.
+  ver [`architecture.md`](../architecture.md) §6.
 - Pendiente: piloto DeepSeek según §2 y evaluación con conversaciones reales.
 - Pendiente de seguridad: el loop aún no aplica una política runtime a
   `tool.write`; no ampliar acciones de escritura hasta validarla.

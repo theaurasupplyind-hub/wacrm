@@ -1,12 +1,12 @@
 # Plan: Presupuestos por bot (motor de precios de galv2)
 
-> **Estado:** plan aprobado, pendiente de ejecución.
+> **Estado:** ✅ **Implementado** (archivado). El motor de precios existe en
+> `src/lib/precios/` (con tests) y el flujo de presupuestos en `src/lib/pedidos/`.
+> Los gotchas de precios vigentes están en
+> [`../decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §2.
 > **Autor de la investigación:** sesión de diseño (2026-10).
-> **Para:** el agente ejecutor. TypeScript strict, sin comentarios innecesarios, seguir
-> los patrones de `src/lib/expenses/` y `src/lib/facbal/client.ts`. Antes de escribir
-> rutas/componentes de Next, leer `node_modules/next/dist/docs/` (Next 16 tiene breaking
-> changes respecto a versiones anteriores).
-> **No ejecutar nada de la sección "Fuera de alcance".**
+> **Fuente de verdad actual:** [`../architecture.md`](../architecture.md) §6 y §12.
+> Se conserva como registro de diseño; **no ejecutar como plan**.
 
 ## 1. Objetivo
 

@@ -15,7 +15,7 @@
 
 > **Estado:** Planificado
 > **Alcance:** Bot de WhatsApp personal para un solo usuario (el dueño). Multiuso: pedidos, pagos, gastos, asistencia y consultas. A futuro se separará el bot de pedidos.
-> **Contexto técnico:** [`architecture.md`](../architecture.md) · [`voice-orders.md`](../voice-orders.md) · [`vouchers.md`](../vouchers.md)
+> **Contexto técnico:** [`architecture.md`](../architecture.md) · [`voice-orders.md`](./voice-orders.md) · [`vouchers.md`](../vouchers.md)
 
 ---
 

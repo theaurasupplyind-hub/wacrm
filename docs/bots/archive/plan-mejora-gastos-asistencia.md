@@ -3,8 +3,8 @@
 > Documento para un próximo agente. Implementa la mejora de los bots de
 > **expenses** y **asistencia** de wacrm + el soporte de salida en `backend_gal`.
 > Estado: implementado (fases A–D). Ver estado actual en
-> [`architecture.md`](./architecture.md) §7, §10, §11.
-> Contexto general: [`architecture.md`](./architecture.md) §2 (voice) y §10 (gastos).
+> [`architecture.md`](../architecture.md) §7, §10, §11.
+> Contexto general: [`architecture.md`](../architecture.md) §2 (voice) y §10 (gastos).
 
 ## Alcance
 

@@ -50,16 +50,20 @@ Archivos principales:
 
 ## Herramientas y límites actuales
 
-Las tools conservan las operaciones ya disponibles; la reciente mejora de
-contexto **no añadió capacidades de negocio ni cambió los handlers**.
+La **fuente de verdad** del catálogo es `src/lib/bot-assistant/tool-registry.ts`
+(`agentToolDefinitions()`). Hoy expone **18 tools**:
 
-- **Lectura:** facturas/saldos, gastos, proveedores, empleados, categorías y
-  catálogo de productos.
-- **Cotización:** `cotizar_pedido` genera un preview; no crea por sí misma un
+- **Lectura:** `consultar_facturas`, `listar_gastos`, `buscar_proveedores`,
+  `buscar_empleados`, `listar_categorias`, `buscar_productos`,
+  `consultar_asistencia`, `consultar_estado_pedido`,
+  `consultar_confirmaciones_pendientes`, `consultar_ultima_escritura`.
+- **Cotización:** `cotizar_pedido` genera un preview; **no** crea por sí misma un
   presupuesto.
-- **Escritura:** `registrar_gasto` y `registrar_asistencia` delegan a los
-  handlers determinísticos existentes.
-- **Vouchers:** siguen en su pipeline separado y no se exponen como tool del
+- **Escritura (delegada a los handlers que confirman):** `registrar_gasto`,
+  `registrar_asistencia`, `editar_gasto`, `eliminar_gasto`,
+  `eliminar_asistencia`, `deshacer_ultima_operacion` (undo 24 h).
+- **Ayuda:** `pedir_ayuda`.
+- **Vouchers:** siguen en su pipeline separado y **no** se exponen como tool del
   agente.
 - **Presupuestos:** las consultas no crean registros; el flujo de creación vive
   en `src/lib/pedidos/` y confirma antes de ejecutar.

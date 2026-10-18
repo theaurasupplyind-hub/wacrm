@@ -3,8 +3,8 @@
 > ⚠️ **Este documento quedó superado.** Describe la etapa de asistente aislado
 > en Bot Beta y contiene rutas, capacidades y decisiones de modelo que ya no
 > coinciden con el código. Para el estado vigente consulta
-> [`docs/bots/assistant-agent.md`](docs/bots/assistant-agent.md) y
-> [`docs/bots/architecture.md`](docs/bots/architecture.md). Se conserva debajo
+> [`docs/bots/assistant-agent.md`](../assistant-agent.md) y
+> [`docs/bots/architecture.md`](../architecture.md). Se conserva debajo
 > como contexto histórico; no implementar sus planes literalmente.
 
 > ⚠️ **Nota histórica (2026-10):** el antiguo módulo `src/lib/voice-orders/*`
@@ -183,4 +183,4 @@ Flujo en texto: **usuario → intención (extractBotMessage) → respuesta (gene
 - **Writes reales vs dummy:** `runAssistant` es read-only (tools + preview no escriben). `processTextOrder(commit:false)` es dryRun; `commit:true` o `respuesta_confirmacion + pendingInvoice` sí escribe vía `createPresupuesto` en `backend_gal` (mismo que lee `galv2-tauri`). Env vars `OPENROUTER_API_KEY`, `FACBAL_API_URL/KEY` ya viven en prod.
 - **KB hoy vacío:** `orchestrator.ts:61 knowledge=[]` (hook Fase 3 comentado `:63`). En prod se integra `retrieveKnowledge` — Beta puede probar sin KB.
 - **Guard de confirmación:** `hasPendingVoice` (voice_context con `pendingInvoice/pendingVariantItems`) debe ganarle al asistente para que `si/dale` no sea robado — es el fix central del plan productivo.
-- **Planes relacionados:** `docs/bots/plan-bot-beta-a-produccion-asistente.md` (asistente + bloque conversación pegada), `docs/bots/architecture.md` (visión ecosistema).
+- **Planes relacionados:** `docs/bots/archive/plan-bot-beta-a-produccion-asistente.md` (asistente + bloque conversación pegada), `docs/bots/architecture.md` (visión ecosistema).

@@ -3,7 +3,7 @@
 > **Estado:** ❌ Sin implementar — el chatbot está **deshabilitado**
 > (`CHATBOT_ENABLED = false` en `src/lib/ai/chatbot.ts:20`).
 > **Qué lo reemplaza:** el flujo de pedidos lo cubre **Voice Orders**
-> ([`voice-orders.md`](../voice-orders.md)); la arquitectura actual de todos los
+> ([`voice-orders.md`](./voice-orders.md)); la arquitectura actual de todos los
 > sistemas está en [`architecture.md`](../architecture.md).
 >
 > Se conserva como registro del refactor planificado. Si algún día se reactiva

@@ -4,13 +4,13 @@
 > productivo del asistente ya existen. Este plan también describe el módulo
 > legado `src/lib/voice-orders/*`, retirado del código; no ejecutar literalmente.
 > El handler separado `src/lib/pedidos/` sí permanece activo. Para el
-> estado vigente consulta [`assistant-agent.md`](./assistant-agent.md) y
-> [`architecture.md`](./architecture.md).
+> estado vigente consulta [`assistant-agent.md`](../assistant-agent.md) y
+> [`architecture.md`](../architecture.md).
 > **Objetivo:** validar y promover el asistente conversacional del Bot Beta (`runAssistant`) al webhook de WhatsApp reemplazando el bot actual del pipeline, sin quitar nada que ya funciona (Flows, Voucher, gastos, asistencia, pedidos). Agregar detección de conversaciones copiadas/pegadas de clientes (formato WhatsApp export, ambos lados) → propuesta de presupuesto → confirmación → crear presupuesto real en `backend_gal` (lo que lee galv2-tauri) + imagen del presupuesto (ya existe `sendBudgetImage`).
 > **Decisiones confirmadas:** asistente integra KB (sí); asistente primero (responde el asistente, auto-reply solo si calla); `/bot-escalations` queda para después; enablement por **config flag por cuenta** (`assistantEnabled`); pedidos de texto ("2 bastidores 60x40 sin tela") **siguen en el pipeline de voice-orders** (propuesta → "confirmá" → presupuesto + imagen); el formato pegado es **WhatsApp export, ambos lados** (líneas `[14:32, 2/9/2026] Nombre: texto`, los mensajes propios aparecen como "Vos").
 > **Writes reales** tras confirmación (la simulación dummy del Beta pasa a ejecución real; comportamiento igual al de producción actual). Env vars `OPENROUTER_API_KEY`, `FACBAL_API_URL`, `FACBAL_API_KEY` ya viven en el host de producción. Rollback = revert del commit del webhook + flag off.
 
-Contexto: [`architecture.md`](./architecture.md), [`plan-asistente-conversacional-bot-beta.md`](./plan-asistente-conversacional-bot-beta.md), [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md), [`voice-orders.md`](./voice-orders.md).
+Contexto: [`architecture.md`](../architecture.md), [`plan-asistente-conversacional-bot-beta.md`](./plan-asistente-conversacional-bot-beta.md), [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md), [`voice-orders.md`](./voice-orders.md).
 
 ---
 

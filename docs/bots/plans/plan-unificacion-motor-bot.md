@@ -33,14 +33,14 @@ idempotencia durable por `metaMessageId` (hoy por turno).
 > asistente vivan en un único lugar y no se desincronicen.
 >
 > **Relación con otros planes:**
-> - [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) — ya unificó la
+> - [`plan-bot-llm-unificado.md`](../archive/plan-bot-llm-unificado.md) — ya unificó la
 >   **extracción** (un LLM → `UnifiedExtraction`). Este plan unifica la
 >   **orquestación** alrededor del router.
-> - [`plan-bot-beta-a-produccion-asistente.md`](./plan-bot-beta-a-produccion-asistente.md)
+> - [`plan-bot-beta-a-produccion-asistente.md`](../archive/plan-bot-beta-a-produccion-asistente.md)
 >   — plan histórico, superado: el wrapper productivo ya existe. La unificación
 >   descrita aquí sigue pendiente y debe preservar el agente/handlers actuales.
-> - Contexto base: [`architecture.md`](./architecture.md) §6 (orden de dispatch),
->   [`resumen-bot-beta.md`](../../resumen-bot-beta.md).
+> - Contexto base: [`architecture.md`](../architecture.md) §6 (orden de dispatch),
+>   [`resumen-bot-beta.md`](../archive/resumen-bot-beta.md).
 
 ---
 
@@ -202,7 +202,7 @@ type TurnAction =
 
 ### Fase 5 — Cierre
 - Actualizar `topology.ts` (nodos/aristas del motor único) y su test.
-- Actualizar `architecture.md` §6 y `resumen-bot-beta.md` (dejar de describir
+- Actualizar `architecture.md` §6 y `docs/bots/archive/resumen-bot-beta.md` (dejar de describir
   "el webhook real sigue con el pipeline legacy").
 - Índice en `docs/bots/README.md`.
 
@@ -221,7 +221,7 @@ type TurnAction =
 | `src/lib/bot/router.ts` | sin cambios de contrato (ya recibe `clarifyAnsweredIntent`) |
 | `src/lib/bot-trace/topology.ts` | reflejar motor único |
 | Tests (`src/lib/bot/*.test.ts`) | caracterización + paridad |
-| `docs/bots/architecture.md`, `resumen-bot-beta.md`, `docs/bots/README.md` | actualizar estado |
+| `docs/bots/architecture.md`, `docs/bots/archive/resumen-bot-beta.md`, `docs/bots/README.md` | actualizar estado |
 
 ---
 

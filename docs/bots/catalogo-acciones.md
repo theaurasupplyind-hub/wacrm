@@ -4,6 +4,8 @@
 > programa (`galv2-tauri` + `backend_gal`).
 > Fuente: inventario 15/10/2026 — `galv2-tauri/src`, `backend_gal/main.py`,
 > `src/lib/bot-assistant/tool-registry.ts`.
+> ⚠️ Es un **inventario de roadmap**, no el listado de lo implementado: la
+> fuente de verdad de las tools es `src/lib/bot-assistant/tool-registry.ts`.
 
 Convenciones:
 
@@ -71,7 +73,7 @@ Hoy es agregación del frontend (`PanelControl.svelte`); el bot replica la unió
 | # | Acción (ejemplo de chat) | R/W | Endpoint | Estado bot | Esfuerzo |
 |---|---|---|---|---|---|
 | 6.1 | *"Gasté 5000 en luz"* — registrar gasto | W | `createExpense` | ✅ `registrar_gasto` | — |
-| 6.2 | *"Le debemos 3M a Puerto Maderas"* — consultar deuda proveedor | R | `searchProviders` (balance) | ✅ `deuda_proveedor` (nuevo) | — |
+| 6.2 | *"Le debemos 3M a Puerto Maderas"* — consultar deuda proveedor | R | `searchProviders` (balance) | ✅ `buscar_proveedores` | — |
 | 6.3 | *"Pagale 900mil a Puerto Maderas"* — pago a proveedor | W | `POST /providers/movements` (PAYMENT) | ❌ | S |
 | 6.4 | *"Cargale una compra de 200mil"* — compra/stock proveedor | W | `POST /providers/movements` (PURCHASE/STOCK_IN) | ❌ | S |
 | 6.5 | *"Gastos de hoy / de la semana"* | R | `listExpenses` | ✅ `listar_gastos` | — |

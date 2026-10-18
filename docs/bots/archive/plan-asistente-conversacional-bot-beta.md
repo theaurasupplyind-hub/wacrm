@@ -3,12 +3,12 @@
 > **Estado: SUPERADO (especificación histórica de Bot Beta).** El asistente y el
 > loop de tools existen también en el webhook productivo. Este plan conserva
 > decisiones de la etapa Beta; no implementarlo literalmente. Ver el estado
-> vigente en [`assistant-agent.md`](./assistant-agent.md) y
-> [`architecture.md`](./architecture.md).
+> vigente en [`assistant-agent.md`](../assistant-agent.md) y
+> [`architecture.md`](../architecture.md).
 > **Objetivo:** convertir el tab `/bot-beta` en un asistente conversacional solo-dueño (rioplatense), que ejecute y consulte datos reales de `backend_gal`, sin alucinar, y sirva como entorno de pruebas antes de promover al webhook de WhatsApp.
 > **Decisiones históricas de la etapa Beta (no vigentes como configuración):** solo dueño, español rioplatense, modelo único `google/gemini-2.5-flash-lite` (sin DeepSeek), implementación aislada en Bot Beta. La decisión de modelo vigente es un piloto DeepSeek por OpenRouter para asistente/extractor; vouchers quedan en Gemini hasta evaluarlos.
 
-Contexto: [`architecture.md`](./architecture.md), [`gaps-bot-gastos.md`](./gaps-bot-gastos.md), [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md), [`voice-orders.md`](./voice-orders.md).
+Contexto: [`architecture.md`](../architecture.md), [`gaps-bot-gastos.md`](../gaps-bot-gastos.md), [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md), [`voice-orders.md`](./voice-orders.md).
 
 ---
 

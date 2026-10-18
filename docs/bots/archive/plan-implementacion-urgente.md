@@ -1,7 +1,9 @@
-# Implementación urgente (pendiente, 14/10/2026)
+# Implementación urgente (snapshot 14/10/2026) — ARCHIVADO
 
-> Estado: Fases 0–5 + fixes #1–#4 + Caso 3 están commiteados en `main` SIN
-> deployar. Esto es lo que falta, en orden.
+> **Estado:** ✅ consumido (archivado). El checklist de deploy y el rollout inicial
+> se completaron; lo que seguía pendiente se consolidó en
+> [`../decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §10.
+> Se conserva como registro del estado al 14/10.
 
 ## 1. Deployar (bloquea todo lo demás)
 

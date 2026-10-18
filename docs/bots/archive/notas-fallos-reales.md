@@ -1,5 +1,9 @@
-# Notas de fallos reales (WhatsApp, 14/10/2026)
+# Notas de fallos reales (WhatsApp, 14/10/2026) — ARCHIVADO
 
+> **Estado:** 🕓 snapshot **pre-fix** (archivado). El cuerpo de abajo describe el
+> código tal como estaba el 14/10; los fixes ya se aplicaron. La regla vigente de
+> confirmar/cancelar está en
+> [`../decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §5.
 > Solo anotación — sin cambios de código. Dos incidentes del mismo familiar:
 > clasificadores determinísticos que exigen input con forma de keyword.
 

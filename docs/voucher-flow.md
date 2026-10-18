@@ -25,49 +25,46 @@ src/lib/ai/voucher-context.ts      ← multi-turn context (pending items)
 
 ## Pipeline Phases
 
+> The source of truth for the phase model is the Spanish spec
+> [`bots/vouchers.md`](./bots/vouchers.md). **Phases 1–3 only add entries to the
+> candidate pool; none of them assigns `matchStatus`.** The decision is taken
+> afterwards by `resolvePoolDecision()`.
+
 ### Phase 1 — Exact amount
-Calls `matchVoucherByName` with tolerance 50. Filters to invoices where
-`saldo_pendiente === voucher.monto` (exact match). Adds exact matches to the
-candidate pool.
+Calls `matchVoucherByName` with tolerance 50. Adds invoices where
+`saldo_pendiente === voucher.monto` to the candidate pool.
 
 ### Phase 2 — Client sum
-Scans all invoices with `saldo_pendiente < voucher.monto`. Groups by client
-name. Finds groups where the **sum** of invoice balances equals the voucher
-amount exactly. Adds matching sum-groups to the candidate pool.
+Groups invoices with `saldo_pendiente < voucher.monto` by client name. Adds the
+groups whose **sum** of balances equals the voucher amount exactly.
 
 ### Phase 3 — Name + amount
-Calls `matchVoucherByName` with the extracted sender/recipient name.
-Filters to candidates with `score >= NAME_MATCH_THRESHOLD (0.5)`. Candidates
-are added to the pool regardless of amount distance (the high name score is
-trusted over exact amount match).
+Calls `matchVoucherByName` with the extracted sender/recipient name. Adds
+candidates with `score >= NAME_MATCH_THRESHOLD (0.5)` regardless of amount
+distance (a high name score is trusted over an exact amount match).
 
-### Phase 4 — Name resolution
-If the pool has entries and a reliable name was extracted, tries to narrow
-down to a single candidate:
-- **Pool > 1 entry + reliable name**: filters pool entries to only those
-  whose invoices have `score >= NAME_MATCH_THRESHOLD` from Phase 3.
-  If exactly 1 remains — auto-select.
-- **Pool empty + reliable name**: adds the best name-matched candidate
-  from Phase 3 to the pool.
-- **Pool empty + no reliable name**: asks the user for the client name
-  directly (skips Phase 5).
+## Decision Logic — `resolvePoolDecision()`
 
-### Phase 5 — Wide search / fallback
-Only runs if Phase 4 left the pool empty. Uses a wide tolerance
-(`min(max(10k, monto * 0.5), 50k)`). Filters to invoices with
-`saldo_pendiente >= monto`. Shows up to 15 candidates to the user.
+The only place that assigns `matchStatus`, evaluating the pool gathered by
+phases 1–3:
 
-## Decision Logic
+| Pool | Rule | Status |
+|------|------|--------|
+| 0 entries | Delegate to phase 4 (wide search) | — |
+| 1 `single`, no name extracted | Single candidate, no contradiction | `matched` |
+| 1 `single`, name extracted and matches | — | `matched` |
+| 1 `single`, name extracted and does NOT match | `name_mismatch` | `ambiguous` |
+| 1 `sum` | Confirm paying several invoices | `multi_invoice` |
+| 2+ entries | Filter by name score; if 1 remains → `matched`/`multi_invoice`, else ask | `ambiguous` |
 
-After phases 1-5, the pool determines the result:
+### Phase 4 — Partial payment / wide search
+Runs **only if the pool is empty** after phases 1–3. Uses `matchVoucherByName`
+with `tolerance = min(max(10k, monto * 0.5), 50k)` and no name. Always shows
+options (never auto-match): 1–15 candidates → `ambiguous`; >15 → ask for the
+exact client name; API timeout → ask for the name; 0 candidates → `no_match`.
 
-| Pool size | Match status | Behavior |
-|-----------|-------------|----------|
-| 0 | `no_match` | Reports no match found |
-| 1 (single) | `matched` | Auto-registers payment |
-| 1 (single, name mismatch) | `ambiguous` | Asks user to confirm |
-| 1 (sum) | `multi_invoice` | Asks user to confirm paying multiple invoices |
-| >1 | `ambiguous` | Shows candidates to user |
+When the user replies with a name, `interpretUserResponse()` is applied over the
+candidates already fetched (no new API call).
 
 ## Candidate Display (Letter Labels)
 
@@ -127,7 +124,7 @@ voucher context for that conversation (pending items + pending texts).
 
 | File | Purpose |
 |------|---------|
-| `src/lib/ai/voucher-pipeline.ts` | Main pipeline (5 matching phases + decision + queue) |
+| `src/lib/ai/voucher-pipeline.ts` | Main pipeline (4 matching phases + decision + queue) |
 | `src/lib/ai/voucher-extraction.ts` | AI extraction from receipt images/PDFs |
 | `src/lib/ai/voucher-matching.ts` | Tolerance functions and sum matching |
 | `src/lib/ai/voucher-context.ts` | Multi-turn context storage (pending items) |
