@@ -191,6 +191,7 @@ export function resolveItems(args: {
           stripOtherVariants(texto, rule?.baseVariante, vocab),
           chosen.description,
           rule,
+          vocab.knownWords,
         ),
         regla_aplicada: chosen.description,
         asumido: null,

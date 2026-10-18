@@ -808,6 +808,20 @@ describe('processPedidoMessage - modificacion de linea en cotizacion abierta', (
     })
     expect(facbal.createInvoice).not.toHaveBeenCalled()
   })
+
+  it('un cambio que nombra una regla del catálogo re-cotiza en vez de fallar', async () => {
+    const db = makeDb()
+    await processPedidoMessage(args(db, 'bastidor 60x60 sin tela', { parseFn: parseBastidor }))
+
+    const modifyFn = async () => ({ kind: 'unsupported' as const, motivo: 'no encuentro ese ítem' })
+    const result = await processPedidoMessage(
+      args(db, 'el bastidor de 60 x 60 es Cambio de tela', { parseFn: parseBastidor, modifyFn }),
+    )
+
+    expect(result.handled).toBe(true)
+    expect(sent.texts.at(-1)).not.toContain('No pude aplicar ese cambio')
+    expect(sent.texts.at(-1)).toContain('Cotización estimada:')
+  })
 })
 
 describe('regresiones c9d6f97 / 010cfe8 (Fase 1)', () => {

@@ -71,6 +71,33 @@ function capFirst(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
+// Palabras funcionales/unidades que nunca describen un producto.
+const DESC_STOPWORDS = new Set([
+  'de', 'del', 'con', 'sin', 'para', 'y', 'e', 'a', 'el', 'la', 'los', 'las',
+  'un', 'una', 'unos', 'unas', 'en', 'por', 'cm', 'cms', 'mm', 'mts', 'm',
+  'aprox', 'tipo', 'grosor', 'medida', 'color', 'atras', 'adelante',
+])
+
+/** Palabras de contenido (sin unidades/stopwords) de un texto. */
+function contentWords(text: string): string[] {
+  return normalizeText(text)
+    .split(/[^a-z0-9]+/)
+    .filter(w => w.length >= 3 && !/^\d/.test(w) && !DESC_STOPWORDS.has(w))
+}
+
+/** ¿`word` corresponde a alguna palabra conocida del catálogo? */
+function matchesKnownWord(word: string, knownWords: string[]): boolean {
+  const w = normalizeText(word)
+  if (!w) return false
+  const ws = singularize(w)
+  return knownWords.some(k => {
+    const kn = normalizeText(k)
+    if (!kn) return false
+    if (kn === w || singularize(kn) === ws) return true
+    return w.length >= 4 && kn.length >= 4 && (kn.startsWith(w) || w.startsWith(kn))
+  })
+}
+
 // ── Matching de reglas por tokens (normalizado, no-estricto) ──
 // Niveles: exacto (100) > singular/pegado (90) > frase contenida (80) >
 // prefijo >=2 letras en ambos sentidos (60-79, más largo = más score).
@@ -190,6 +217,12 @@ export function buildSuggestionDesc(
   userQuery: string,
   ruleName: string,
   rule?: Pick<PricingRule, 'baseCategoria' | 'baseVariante' | 'matchTokens'> | null,
+  /**
+   * Palabras conocidas del catálogo (categorías/variantes/reglas). Si el resto
+   * del texto no contiene ninguna, se considera ruido del texto libre y NO se
+   * antepone al nombre (evita escribir basura en la factura).
+   */
+  knownWords?: string[],
 ): string {
   const dimsRe = /\d+(?:[.,]\d+)?\s*[xX×]\s*\d+(?:[.,]\d+)?(?:\s*[xX×]\s*\d+(?:[.,]\d+)?)?/
   const userDims = (userQuery || '').match(dimsRe)
@@ -266,6 +299,17 @@ export function buildSuggestionDesc(
           consumed = true
         }
       }
+    }
+  }
+
+  // Ruido del texto libre: el resto no pertenece al catálogo (p. ej. "cm con los
+  // esquineros atrás" arrastrado del encabezado del usuario). Anteponerlo
+  // ensuciaba la descripción que se persiste en la factura (regresión
+  // "Sin Tela A x B"). Se trata como consumido → se emite regla + medida.
+  if (!consumed && knownWords && knownWords.length > 0) {
+    const words = contentWords(remainder)
+    if (words.length > 0 && !words.some(w => matchesKnownWord(w, knownWords))) {
+      consumed = true
     }
   }
 

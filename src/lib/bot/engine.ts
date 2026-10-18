@@ -279,7 +279,11 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
   }
 
   // ── VOUCHER POR TEXTO / PENDING ──
-  if (botAllowed && !clarifyHandled) {
+  // Si el media ya lo tomó el pipeline de voucher (imagen/PDF con caption), el
+  // caption es contexto de ESA pieza, no un voucher de texto aparte: procesarlo
+  // acá duplicaba la extracción (dos filas para el mismo message_id) y el pago
+  // podía registrarse dos veces. Ver docs/bots/decisiones-y-gotchas.md §11.1.
+  if (botAllowed && !clarifyHandled && !mediaConsumedByVoucher) {
     const montoVoucherText = extraction?.monto ?? null
     const metodoVoucherText =
       extraction?.metodo_pago === 'efectivo' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('efectivo'))

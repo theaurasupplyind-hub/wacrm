@@ -14,7 +14,7 @@ import {
   type InvoiceCreatedResult,
   type ClientAddress,
 } from '@/lib/facbal/client'
-import type { PrecioReferencia, PricingRule } from '@/lib/precios'
+import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
 import { comprehendOrder, resolveClientGuess } from './understand'
 import type { MissingAttr } from './understand'
@@ -1261,6 +1261,23 @@ async function quoteFromParsed(
   return { handled: true, text: msg }
 }
 
+/**
+ * ¿El texto nombra una regla del catálogo? Exige la frase completa del nombre
+ * o un matchToken de 4+ letras: evita falsos positivos del matcher por raíz
+ * común (p.ej. "cambiale" ⇔ "cambio").
+ */
+function mentionsKnownRule(text: string, rules: PricingRule[]): boolean {
+  const words = new Set(normalizeText(text).split(/[^a-z0-9]+/).filter(Boolean))
+  return rules.some((rule) => {
+    const nameWords = normalizeText(rule.name).split(/[^a-z0-9]+/).filter(Boolean)
+    if (nameWords.length > 0 && nameWords.every((w) => words.has(w))) return true
+    return rule.matchTokens.some((tok) => {
+      const parts = normalizeText(String(tok)).split(/[^a-z0-9]+/).filter(Boolean)
+      return parts.length > 0 && parts.every((w) => w.length >= 4 && words.has(w))
+    })
+  })
+}
+
 async function handleQuoteApproval(
   args: ProcessPedidoMessageArgs,
   ctx: OrderContext,
@@ -1334,6 +1351,13 @@ async function handleQuoteApproval(
       ? await args.modifyFn(text, quoteLines)
       : await interpretQuoteChanges(text, quoteLines, pendingItems.map((it) => it.descripcion))
     if (changes.kind === 'unsupported') {
+      // El intérprete sólo conoce las líneas ya cotizadas: si el texto nombra
+      // una regla del catálogo ("es Cambio de Tela", "caja fibro 78 x 56"),
+      // re-cotizamos con el flujo normal en vez de dejar el mensaje muerto.
+      const { rules } = await loadCatalog(args)
+      if (mentionsKnownRule(text, rules)) {
+        return presentQuote(args, text, opts.freshFallback ? null : ctx)
+      }
       const msg = `No pude aplicar ese cambio (${changes.motivo}). La cotización sigue igual; si querés, decímelo de otra forma o la creamos así.`
       await sendText(args, msg)
       return { handled: true, text: msg }

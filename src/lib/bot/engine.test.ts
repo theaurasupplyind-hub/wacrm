@@ -209,6 +209,22 @@ describe('planTurn voucher texto / fallback', () => {
     if (a.kind === 'run_voucher_text') expect(a.clientName).toBe('Marlon')
   })
 
+  it('imagen con caption de voucher: el caption NO se procesa como voucher-text (evita doble pago)', () => {
+    const p = planTurn(
+      state({
+        messageType: 'image',
+        mediaConsumedByVoucher: true,
+        inboundText: 'te transferí $35.000 a tu cuenta Macro',
+        extraction: extraction({ intent: 'voucher', confianza: 'alta', proveedor: 'Kari', monto: 35000, metodo_pago: 'transferencia' }),
+      }),
+    )
+    expect(kinds(p.actions)).not.toContain('run_voucher_text')
+    expect(kinds(p.actions)).not.toContain('run_voucher_message_text')
+    expect(kinds(p.actions)).not.toContain('store_voucher_pending_text')
+    // El pipeline de imagen ya se hizo cargo de la pieza: el motor no emite nada.
+    expect(p.actions).toEqual([])
+  })
+
   it('texto no clasificado → assistant (nunca queda mudo)', () => {
     const p = planTurn(state({ inboundText: 'bla bla bla', extraction: extraction({ intent: 'otro', confianza: 'baja' }) }))
     expect(p.dispatchedTo).toBe('assistant')
