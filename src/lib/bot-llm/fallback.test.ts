@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { fallbackExtract } from './fallback'
+import { buildVocabulary } from '@/lib/catalog/vocabulary'
+import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
 
 describe('fallbackExtract', () => {
   it('detecta gasto con monto y categoría', () => {
@@ -138,5 +140,18 @@ describe('fallbackExtract', () => {
     const r = fallbackExtract('pagué 18 mil de luz')
     expect(r.intent).toBe('gasto')
     expect(r.multipleExpenses).toBeUndefined()
+  })
+})
+
+describe('fallbackExtract con vocabulario (Plan A1)', () => {
+  const nueva = { categoria: 'CORTINA ROLLER', medida: '100 x 100', variante: '', precio: 1000 }
+  const vocab = buildVocabulary([...preciosReferencia, nueva], pricingRules)
+
+  it('reconoce un producto nuevo del catalogo sin tocar codigo', () => {
+    expect(fallbackExtract('quiero una cortina roller', vocab).intent).toBe('pedido')
+  })
+
+  it('sin vocabulario no lo reconoce (comportamiento historico)', () => {
+    expect(fallbackExtract('quiero una cortina roller').intent).not.toBe('pedido')
   })
 })

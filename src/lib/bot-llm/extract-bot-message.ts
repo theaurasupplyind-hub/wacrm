@@ -6,6 +6,7 @@ import { extractJson, normalizeDate, normalizeTime, parseMontoSafe } from './san
 import { applyRoleFields } from './intent-roles'
 import { classifyPaymentIntent } from './payment-intent'
 import type { BotIntent, Confidence, MissingField, MultiExpenseItem, PaymentDirection, PaymentVoice, UnifiedExtraction } from './types'
+import type { BotVocabulary } from '@/lib/catalog/vocabulary'
 
 const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema de WhatsApp (taller de bastidores GAL + gestión de gastos, asistencia y vouchers).
 
@@ -370,6 +371,8 @@ function todayAR(): string {
 export interface ExtractBotMessageOpts {
   /** Dominios con pendiente activo (expense/attendance/voucher) para Jev. */
   pendingDomains?: string[]
+  /** Vocabulario del catálogo para el fallback regex (Plan A1). Opcional. */
+  vocab?: BotVocabulary | null
 }
 
 export async function extractBotMessage(
@@ -378,7 +381,7 @@ export async function extractBotMessage(
   opts?: ExtractBotMessageOpts,
 ): Promise<UnifiedExtraction> {
   const raw = (text || '').trim()
-  if (!raw) return fallbackExtract(raw)
+  if (!raw) return fallbackExtract(raw, opts?.vocab)
 
   // Jev corre en paralelo al LLM (auxiliar de clasificación). Si está apagado,
   // no se llama y el resultado es idéntico al pipeline anterior.
@@ -386,13 +389,14 @@ export async function extractBotMessage(
     ? classifyWithJev({ text: raw, contextText, pendingDomains: opts?.pendingDomains })
     : null
 
-  const extraction = await extractWithoutJev(raw, contextText)
+  const extraction = await extractWithoutJev(raw, contextText, opts?.vocab)
   return applyJev(extraction, raw, jevPromise)
 }
 
 async function extractWithoutJev(
   raw: string,
   contextText?: string,
+  vocab?: BotVocabulary | null,
 ): Promise<UnifiedExtraction> {
   const today = todayAR()
   const systemPrompt = `${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
@@ -417,7 +421,7 @@ async function extractWithoutJev(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] LLM call failed:', msg)
-    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw, vocab), raw), {
       fallback_reason: 'llm_call_failed',
       llm_error: msg,
     })
@@ -426,7 +430,7 @@ async function extractWithoutJev(
   const jsonStr = extractJson(rawText)
   if (!jsonStr) {
     console.error('[extractBotMessage] No JSON in response:', rawText.slice(0, 200))
-    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw, vocab), raw), {
       llm_raw: rawText,
       llm_usage: usage,
       fallback_reason: 'no_json',
@@ -438,7 +442,7 @@ async function extractWithoutJev(
     parsed = JSON.parse(jsonStr)
   } catch {
     console.error('[extractBotMessage] Invalid JSON:', jsonStr.slice(0, 200))
-    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw, vocab), raw), {
       llm_raw: rawText,
       llm_usage: usage,
       fallback_reason: 'invalid_json',
@@ -455,7 +459,7 @@ async function extractWithoutJev(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[extractBotMessage] Sanitization failed:', msg)
-    return withDebug(applyVoucherCorrection(fallbackExtract(raw), raw), {
+    return withDebug(applyVoucherCorrection(fallbackExtract(raw, vocab), raw), {
       llm_raw: rawText,
       llm_raw_json: parsed,
       llm_usage: usage,

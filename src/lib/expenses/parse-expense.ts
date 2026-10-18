@@ -576,6 +576,10 @@ function inferExpenseType(text: string): ParsedExpense['tipoGasto'] {
 // Palabras de producto del catálogo (normalizadas, sin acentos). Si un verbo de
 // COMPRA aparece junto a estas palabras (o a una medida tipo 60x40), es un
 // pedido de cliente, NO un gasto del negocio.
+//
+// FALLBACK transitorio (Plan A1): en producción el webhook pasa el vocabulario
+// del catálogo y esta lista no se consulta. Se mantiene para llamadores sin
+// cuenta (tests, bot-beta). Eliminar cuando el vocabulario sea obligatorio.
 const CATALOG_PRODUCT_WORDS = [
   'bastidor',
   'acrilico',

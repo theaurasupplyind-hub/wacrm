@@ -52,6 +52,7 @@ import {
   type ChangeResult,
 } from './interpret-changes'
 import { buildKnownVocab, classifyItem } from './classify-item'
+import type { BotVocabulary } from '@/lib/catalog/vocabulary'
 import {
   isPhoneLikeClientName,
   isGreetingRecipientName,
@@ -331,6 +332,19 @@ async function searchCandidates(
 
 async function saveCtx(args: ProcessPedidoMessageArgs, state: OrderContext): Promise<void> {
   await saveOrderContext(args.db, args.conversationId, state)
+}
+
+/**
+ * Vocabulario de la cuenta para los gates que no pasan por `loadCatalog`
+ * (Plan A1). Fail-open: si FacBal falla, se usan las listas históricas.
+ */
+async function pedidosVocabulary(args: ProcessPedidoMessageArgs): Promise<BotVocabulary | null> {
+  try {
+    return await getVocabulary(args.accountId)
+  } catch (err) {
+    console.warn('[pedidos] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
+    return null
+  }
 }
 
 /** Direcciones del cliente (best-effort; [] si no hay o falla). */
@@ -1481,7 +1495,7 @@ async function handleCancelledQuote(
   // `none` es un pedido nuevo y se cotiza DESDE CERO (sin concatenar el texto ni
   // arrastrar ítems/cliente). Así "cambiar el pedido, les paso el nuevo: 240x120"
   // no se fusiona con la cotización cancelada (regresión c9d6f97/R1).
-  if (mentionsOrderItems(text)) {
+  if (mentionsOrderItems(text, await pedidosVocabulary(args))) {
     const reopened: OrderContext = { ...ctx, quoteCancelled: false, awaitingQuoteApproval: true }
     await saveCtx(args, reopened)
     return handleQuoteApproval(args, reopened, text, { freshFallback: true })
@@ -1579,7 +1593,7 @@ async function handlePending(
       await sendText(args, msg)
       return { handled: true, text: msg }
     }
-    if (mentionsOrderItems(text)) {
+    if (mentionsOrderItems(text, await pedidosVocabulary(args))) {
       // A correction containing product/measure data is not a client name.
       return resolveAndSave(args, ctx, text)
     }
@@ -1732,7 +1746,7 @@ async function tryGlossaryAction(
 
   // El mismo mensaje trae un pedido además de la definición.
   const orderPart = inline ? inline.cleaned : stripGlossaryReview(raw)
-  if (orderPart && mentionsOrderItems(orderPart)) {
+  if (orderPart && mentionsOrderItems(orderPart, await pedidosVocabulary(args))) {
     return presentQuote(args, orderPart, null)
   }
 

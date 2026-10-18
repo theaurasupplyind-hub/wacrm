@@ -5,6 +5,7 @@ const CREATE_VERB_RE = /(?:^|\s)(?:armar|arma|armas|armás|armame|armá|armáme|
 const BUDGET_NOUN_RE = /\b(?:presupuesto|pedido)\b/i
 const BUDGET_AS_VERB_RE = /\bpresupuest(?:ame|á|a)\b/i
 const DIRECT_BUDGET_REQUEST_RE = /\b(?:quiero|necesito|preciso)\s+(?:un\s+)?presupuesto\b/i
+// FALLBACK transitorio (Plan A1): con vocabulario se usa `mentionsCatalogTerm`.
 const ORDER_ITEM_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}|\b(?:bastidor(?:es)?|lienzo|lona|tapacanto(?:s)?|acrilico|marco|moldura(?:s)?|circular(?:es)?|rollo|embastar)\b/i
 /** Medida tipo 60x40 (dato, no vocabulario de producto). */
 const MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/

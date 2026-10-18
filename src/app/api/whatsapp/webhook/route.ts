@@ -1264,8 +1264,18 @@ async function processMessage(
   // ask for clarification. Fire-and-forget so it never blocks the
   // webhook response or subsequent messages in the same batch.
   // ============================================================
+  // Vocabulario del catálogo para los gates de clasificación y el fallback regex
+  // (Plan A1). Cacheado; fail-open: si FacBal falla, se usa el comportamiento
+  // histórico (listas de código).
+  let vocab: BotVocabulary | null = null
+  try {
+    vocab = await getVocabulary(accountId)
+  } catch (err) {
+    console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
+  }
+
   const mediaCaption = message.image?.caption || message.document?.caption || ''
-  const mediaLooksLikeExpense = looksLikeExpense(mediaCaption)
+  const mediaLooksLikeExpense = looksLikeExpense(mediaCaption, vocab)
 
   // ============================================================
   // Media consumption — prevent multiple systems processing the same image
@@ -1422,7 +1432,7 @@ async function processMessage(
     if (hasPendingVoucher) pendingDomains.push('voucher')
     if (hasPendingOrder) pendingDomains.push('order')
     try {
-      extraction = await extractBotMessage(inboundText, contextText, { pendingDomains })
+      extraction = await extractBotMessage(inboundText, contextText, { pendingDomains, vocab })
     } catch (err) {
       console.error('[intent] extractor error:', err)
     }
@@ -1484,16 +1494,6 @@ async function processMessage(
   // voucher-media, media-gasto y confirms interactivos son gates pre-turno y
   // quedan arriba/afuera (ver docs/bots/decisiones-y-gotchas.md §9).
   const voucherPendingCandidates = voucherCtx.pending.flatMap((p) => p.candidates)
-
-  // Vocabulario del catálogo para los gates del router (Plan A1). Fail-open: si
-  // FacBal no responde, se usa el comportamiento histórico (listas de código).
-  let vocab: BotVocabulary | null = null
-  try {
-    vocab = await getVocabulary(accountId)
-  } catch (err) {
-    console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
-  }
-
   const captionIsForcedVoucher =
     (message.type === 'image' || message.type === 'document') &&
     !!(message.image?.caption?.trim() || message.document?.caption?.trim()) &&

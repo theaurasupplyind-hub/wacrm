@@ -93,6 +93,7 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
 }
 
 // Palabras de producto/pedido (normalizadas, sin acentos).
+// FALLBACK transitorio (Plan A1): con vocabulario se usa `mentionsCatalogTerm`.
 const PEDIDO_PRODUCT_RE =
   /\b(bastidor(?:es)?|lienzo|lona|tapacantos?|acrilico|marco|molduras?|circular(?:es)?|rollo|cotizar|cotiza|presupuesto|embastad[oa]?|embastar)\b/i
 /** Verbos/sustantivos de pedido que no son nombres de producto. */
