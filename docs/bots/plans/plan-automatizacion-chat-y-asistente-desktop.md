@@ -3,7 +3,7 @@
 > Para un agente implementador. **Estado:** planificado — no iniciado.
 > **Objetivo:** centralizar el "cerebro" conversacional en `backend_gal`, automatizar primero desde WhatsApp, y (más adelante, no urgente) embeber un asistente en `galv2-tauri` que consuma el mismo cerebro y LLM.
 >
-> Contexto relacionado: `docs/bots/architecture.md`, `docs/bots/plans/plan-unificacion-motor-bot.md`, `docs/bots/gaps-bot-gastos.md`, `docs/bots/archive/resumen-bot-beta.md`.
+> Contexto relacionado: `docs/bots/architecture.md`, `docs/bots/decisiones-y-gotchas.md` §9, `docs/bots/gaps-bot-gastos.md`, `docs/bots/archive/resumen-bot-beta.md`.
 
 ---
 

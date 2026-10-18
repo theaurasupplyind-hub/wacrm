@@ -120,5 +120,5 @@ La unificación de este módulo con el resto de los intents del bot ya no sigue
 esta vía: el router unificado de 3 niveles de `archive/bot-personal.md` fue
 reemplazado por el motor de turno puro (`src/lib/bot/engine.ts` → `planTurn`) +
 planner LLM opt-in — ver [`architecture.md`](../architecture.md) §6 y
-[`plan-unificacion-motor-bot.md`](../plans/plan-unificacion-motor-bot.md). El flujo de
+[`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §9. El flujo de
 pedidos vive hoy en `src/lib/pedidos/`.

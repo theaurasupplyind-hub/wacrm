@@ -129,32 +129,42 @@ dominio— sigue como rollout)*
   escritura del **planner** vive en `src/lib/bot/policy.ts` (máx. 1 escritura/turno,
   texto del usuario obligatorio, dedupe) y `reconcilePlans`.
 
-## 8. Jev (clasificador experimental, sin validar)
+## 8. Jev — DESCARTADO (decisión 2026-10-17)
+
+Se evaluó usar Jev (TypeSafe System One) como clasificador auxiliar de intent y de
+pendientes. **Decisión: descartado** — la mejora de clasificación se resuelve por
+datos, no por un modelo extra. El spike validó el endpoint y la mecánica; se conserva
+el aprendizaje por si se retoma:
 
 - Endpoint **`POST https://openrouter.ai/api/alpha/decisions`** (no
   `/chat/completions`), con `{ model, state, questions }`.
 - **Gate de confianza `JEV_OVERRIDE_MIN_CONFIDENCE = 0.6`:** con un gasto pendiente,
   `"quiero 4 bastidores 60x40"` Jev devolvió `gasto` con **0.47** → **no** se
   sobrescribe el intent. Ese caso es la justificación del gate.
-- Costo ~$0.00002/llamada. `JEV_ENABLED=false` por defecto: cero cambios de
-  comportamiento y no se elimina ninguna ruta.
-- Pendiente: cargar `OPENROUTER_API_KEY` y correr el spike real + shadow de 10 días.
-- *(origen: `plans/plan-jev-bot-beta.md`)*
+- Costo ~$0.00002/llamada; `JEV_ENABLED=false` por defecto (cero cambio de conducta).
+- Código existente sin usar: `src/lib/ai/jev.ts` + `src/lib/bot-llm/classify-jev.ts`.
 
 ## 9. Deuda de código conocida (no cubierta por estos docs)
 
 - **`src/lib/bot-beta/voucher-dryrun.ts` es una copia manual de
   `src/lib/ai/voucher-pipeline.ts`** ("mantener sync manual si prod cambia").
-  `plans/plan-unificacion-motor-bot.md` planificaba eliminarlo; **sigue vivo**.
+  Pendiente: parametrizar el pipeline con `mode: 'commit' | 'dryRun'` y eliminarla.
+- **Migrar Bot Beta al motor de turno**: `src/lib/bot-beta/unified-handler.ts` sigue
+  con orquestación propia; debería pasar a adapter del motor (gana clarify gratis).
+- **Idempotencia durable por `metaMessageId`**: hoy la dedupe de escrituras es por
+  turno. Ojo: `bot_write_log` solo registra las escrituras de las **tools del
+  asistente** (ver §11.4), no las de voucher/pedidos.
 - **`pedidos/interpret-modification.ts`** se conserva por compatibilidad (y sus
   tests) hasta que `interpret-changes.ts` cubra sus 3 operaciones con paridad.
 - **"Bloque pegado" de WhatsApp** (`voice-orders/pasted-conversation.ts`): quedó
   **especificado pero no implementado** (el módulo `src/lib/voice-orders/` fue
   retirado). Decisión de producto pendiente: implementar o descartar.
-- **Cuarto detector sí/no** (`classifyYesNo` en `pedidos/summary.ts`, para el
-  "¿Es ese?" del cliente): sigue por regex, todavía sin unificar a `reply-intent.ts`.
-- *(origen: `plans/plan-unificacion-motor-bot.md`, `archive/notas-fallos-reales.md`,
-  `archive/plan-bot-beta-a-produccion-asistente.md`, `archive/plan-implementacion-urgente.md`)*
+- **Cuarto detector sí/no** (`classifyYesNo` en `pedidos/summary.ts`): pendiente de
+  unificar a `bot-llm/reply-intent.ts` → **promovido a `plan-01-vocabulario-datos.md`
+  Fase A4**.
+- *(origen: `archive/notas-fallos-reales.md`,
+  `archive/plan-bot-beta-a-produccion-asistente.md`,
+  `archive/plan-implementacion-urgente.md`, `archive/resumen-bot-beta.md`)*
 
 ## 10. Trabajo pendiente heredado
 
@@ -163,12 +173,18 @@ dominio— sigue como rollout)*
   `agente-eval.live` + `respuesta-eval.live`. Sin aplicar/validar en producción.
 - **Política runtime de escrituras del agente:** añadir política + pruebas para
   herramientas de escritura **antes** de ampliar su autonomía.
-- **Fase 6 — Glosario y memoria:** columna `domain` en `order_glossary`, tipos
-  (proveedor/empleado/categoría/cliente), expansión pre-fuzzy, vocabulario en el
-  contexto del agente. En espera de 1–2 semanas de datos de `bot_failure_traces`.
-- **Higiene de CI:** 2 tests preexistentes de timezone en `date-utils` rompen el CI.
+- **Glosario y memoria** → **promovido a `plan-02-glosario-knowledge.md`** (alias
+  tipado, producto custom + precio, columna `domain`, vocabulario en el contexto del
+  agente).
+- **Métricas actuales:** re-correr el análisis de `router_logs` (silencios `none`,
+  `no_match`/`ambiguous` de voucher) — los números de los planes archivados son
+  históricos.
+- **Higiene de CI:** fallas preexistentes en `main` — 2 tests de timezone en
+  `dashboard/date-utils.test.ts` y 1 timeout de render en `pedidos/receipt-image.test.ts`.
 - **Loop semanal:** `scripts/failure-report.mjs` → fixtures de regresión / prompt /
   vocabulario / umbrales.
+- *(origen: `plan-mejora-asistente-whatsapp.md` (eliminado),
+  `archive/plan-implementacion-urgente.md`)*
 
 ## 11. Incidentes del 16/10/2026 y fixes aplicados
 

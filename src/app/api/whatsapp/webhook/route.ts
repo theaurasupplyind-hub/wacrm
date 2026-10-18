@@ -1481,7 +1481,7 @@ async function processMessage(
   // `engine.planTurn` decide clarify + dispatch + pipeline de texto + fallback
   // y devuelve acciones. Acá SÓLO se materializa el I/O. Context-command,
   // voucher-media, media-gasto y confirms interactivos son gates pre-turno y
-  // quedan arriba/afuera (ver docs/bots/plan-unificacion-motor-bot.md §5).
+  // quedan arriba/afuera (ver docs/bots/decisiones-y-gotchas.md §9).
   const voucherPendingCandidates = voucherCtx.pending.flatMap((p) => p.candidates)
   const captionIsForcedVoucher =
     (message.type === 'image' || message.type === 'document') &&

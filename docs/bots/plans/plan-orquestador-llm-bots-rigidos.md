@@ -211,5 +211,5 @@ webhook → extractor
 - Orquestador existente: `src/lib/bot-assistant/{agent,prompts,production,tool-registry}.ts`,
   `src/lib/bot/{engine,planner,policy}.ts`.
 - Evidencia: `router_logs` / `bot_traces` (conv `05fe8f78…`, 15/10/2026).
-- Relacionado: `docs/bots/plans/plan-unificacion-motor-bot.md`, `docs/bots/definicion-ambiguedad.md`,
-  `docs/bots/archive/notas-fallos-reales.md`, `docs/bots/decisiones-y-gotchas.md`.
+- Relacionado: `docs/bots/decisiones-y-gotchas.md` (pendientes vivos), `docs/bots/definicion-ambiguedad.md`,
+  `docs/bots/archive/notas-fallos-reales.md`.

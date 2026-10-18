@@ -35,11 +35,13 @@ webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 
 | Documento | Estado |
 |-----------|--------|
-| [`plans/plan-mejora-asistente-whatsapp.md`](./plans/plan-mejora-asistente-whatsapp.md) | Mixto — whitelist/UX/herramientas implementadas; piloto DeepSeek y política de escrituras pendientes |
 | [`plans/plan-orquestador-llm-bots-rigidos.md`](./plans/plan-orquestador-llm-bots-rigidos.md) | Implementado (Fases 1–7); Fase 8 (planner `on` por dominio) es rollout |
-| [`plans/plan-unificacion-motor-bot.md`](./plans/plan-unificacion-motor-bot.md) | Parcial — motor de turno puro en producción; migración de Bot Beta fuera de alcance |
-| [`plans/plan-jev-bot-beta.md`](./plans/plan-jev-bot-beta.md) | Código listo, sin validar — pendiente spike + shadow de Jev |
 | [`plans/plan-automatizacion-chat-y-asistente-desktop.md`](./plans/plan-automatizacion-chat-y-asistente-desktop.md) | No iniciado — incluye Anexo A (auditoría de `backend_gal`) |
+
+> Los planes cerrados se **eliminaron**: sus pendientes vivos están en
+> [`decisiones-y-gotchas.md`](./decisiones-y-gotchas.md) §9 y §10. Los planes en curso
+> de vocabulario/glosario viven en el directorio de plan del agente
+> (`plan-00-indice.md`, `plan-01-vocabulario-datos.md`, `plan-02-glosario-knowledge.md`).
 
 ## Archivo histórico
 

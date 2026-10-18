@@ -514,7 +514,7 @@ src/lib/attendance/
 
 > El roadmap anterior (router regex 3 niveles, mejoras Voice Orders) quedó
 > superado por el motor de turno puro (`src/lib/bot/engine.ts`) + planner LLM
-> opt-in (ver §6 y [`plan-unificacion-motor-bot.md`](./plans/plan-unificacion-motor-bot.md)).
+> opt-in (ver §6 y [`decisiones-y-gotchas.md`](./decisiones-y-gotchas.md) §9).
 
 ### Corto plazo
 1. **Planner LLM:** medir `shadow` en `router_logs.debug_info.planner_shadow` → `on` + `assistant` → `+pedido` → `+expense` → `+attendance` → `ASSISTANT_PLANNER_WRITES=true`. Vouchers siempre congelados.

@@ -11,10 +11,10 @@
 |-----------|--------|----------------------------------|
 | [`integracion-vouchers-original.md`](./integracion-vouchers-original.md) | ✅ Implementado | [`vouchers.md`](../vouchers.md) — spec de matching + pipeline actual |
 | [`plan-mejora-gastos-asistencia.md`](./plan-mejora-gastos-asistencia.md) | ✅ Implementado | [`architecture.md`](../architecture.md) §7/§10/§11; semántica en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §1 |
-| [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) | ✅ Implementado | [`architecture.md`](../architecture.md) §6; grietas del fallback en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §3 |
+| [`plan-bot-llm-unificado.md`](./plan-bot-llm-unificado.md) | ✅ Implementado | [`architecture.md`](../architecture.md) §6; grietas del fallback en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §3 (endurecer → plan-01 Fase A4) |
 | [`plan-items-libres-y-creacion-corta.md`](./plan-items-libres-y-creacion-corta.md) | ✅ Implementado (Fases A/B) | [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §4 |
 | [`plan-presupuestos-por-bot.md`](./plan-presupuestos-por-bot.md) | ✅ Implementado | `src/lib/precios/` + `src/lib/pedidos/`; gotchas en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §2 |
-| [`plan-implementacion-urgente.md`](./plan-implementacion-urgente.md) | ✅ Consumido (checklist 14/10) | Pendientes rescatados en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §10 |
+| [`plan-implementacion-urgente.md`](./plan-implementacion-urgente.md) | ✅ Consumido (checklist 14/10) | Pendientes en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §10 (Fase 6 glosario → plan-02; `classifyYesNo` → plan-01 Fase A4) |
 | [`plan-asistente-conversacional-bot-beta.md`](./plan-asistente-conversacional-bot-beta.md) | 🕓 Superado | Asistente productivo ([`assistant-agent.md`](../assistant-agent.md)) |
 | [`plan-bot-beta-a-produccion-asistente.md`](./plan-bot-beta-a-produccion-asistente.md) | 🕓 Superado | No ejecutar literalmente; decisiones rescatadas en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §7 |
 | [`notas-fallos-reales.md`](./notas-fallos-reales.md) | 🕓 Snapshot pre-fix (14/10) | Fixes aplicados; regla sí/no en [`decisiones-y-gotchas.md`](../decisiones-y-gotchas.md) §5 |
