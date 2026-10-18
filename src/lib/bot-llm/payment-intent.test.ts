@@ -16,6 +16,17 @@ describe('classifyPaymentIntent', () => {
     expect(classifyPaymentIntent('Pago recibido de Ana')).toBe('voucher')
   })
 
+  it('factura NOMBRADA + verbo de pago en pasado → voucher (factura = venta)', () => {
+    expect(classifyPaymentIntent('transferí para la factura de Julio')).toBe('voucher')
+    expect(classifyPaymentIntent('pagué la factura F-10960')).toBe('voucher')
+    expect(classifyPaymentIntent('transferí para la factura 001')).toBe('voucher')
+    expect(classifyPaymentIntent('transferí para F-10960')).toBe('voucher')
+  })
+
+  it('"tambien pago la otra factura" sigue siendo un comentario (no voucher)', () => {
+    expect(classifyPaymentIntent('tambien pago la otra factura')).toBeNull()
+  })
+
   it('marcadores explícitos de pago propio / sueldo → expense', () => {
     expect(classifyPaymentIntent('Le pagué a Jo 2000000')).toBe('expense')
     expect(classifyPaymentIntent('les pague a los proveedores')).toBe('expense')

@@ -39,6 +39,21 @@ const PAGO_RE =
 const BARE_SHAPE_RE =
   /^\s*([A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]+){0,2})\s+(pag[oó]|paga|pagan|pagaron|abon[oó]|abona|abonan|abonaron|transfiri[oó]|transfirieron)\b/i
 
+/**
+ * Factura NOMBRADA: "factura de Julio", "factura F-10960", "factura 001" o un
+ * id de factura suelto ("F-10960"). En este sistema "factura" siempre es la
+ * factura de VENTA (saldo por cobrar), así que pagar "para la factura de X" es
+ * un cobro.
+ */
+const FACTURA_NOMBRADA_RE = /\bfactura\s+(?:de\s+[a-z]|f-?\d{3,}|\d{3,})|\bf-?\d{4,}\b/
+
+/**
+ * Verbo de pago en PASADO ("transferí", "pagué"). Excluye el presente
+ * ("pago"/"paga") a propósito: "también pago la otra factura" es un comentario,
+ * no un reporte de pago (falso positivo documentado).
+ */
+const PAGO_PASADO_RE = /\b(transferi|transfirio|transfirieron|pague|pagaron|abone|abonaron|deposite|depositaron)\b/
+
 function isCapitalized(name: string): boolean {
   const c = name.trim()[0]
   return !!c && c === c.toUpperCase() && c !== c.toLowerCase()
@@ -57,6 +72,10 @@ export function classifyPaymentIntent(raw: string): PaymentIntent {
   const n = normalizeForMatch(text)
 
   if (COBRO_RE.test(n)) return 'voucher'
+  // "transferí/pagué para la factura de X" = cobro: la factura es NOMBRADA y el
+  // verbo está en pasado. Va antes de PAGO_RE, que con su catch-all ("transferi")
+  // lo tomaría como gasto.
+  if (FACTURA_NOMBRADA_RE.test(n) && PAGO_PASADO_RE.test(n)) return 'voucher'
   if (PAGO_RE.test(n)) return 'expense'
 
   const bare = text.match(BARE_SHAPE_RE)

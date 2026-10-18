@@ -57,6 +57,11 @@
     interpreta como gasto.
   - `looksLikeAttendance("se fue la luz")` = `true` (keyword `se fue`) → un
     problema del local se interpreta como salida de empleado.
+- **"Factura" es SIEMPRE la factura de VENTA** (el saldo por cobrar), nunca una
+  compra. Por eso `transferí/pagué para la factura de <cliente>` (o `F-10960`, o
+  `factura 001`) es **cobro (voucher)**, nunca gasto. En `payment-intent.ts` la
+  regla exige factura **nombrada** + verbo de pago **en pasado**: un comentario
+  sin factura nombrada ("también pago la otra factura") no dispara. *(decisión 2026-10-17)*
 - *(origen: `archive/plan-bot-llm-unificado.md`)*
 
 ## 4. Pedidos e ítems fuera de catálogo
