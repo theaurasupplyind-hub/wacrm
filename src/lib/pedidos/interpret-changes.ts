@@ -18,6 +18,7 @@
  */
 import { callOpenRouter } from '@/lib/ai/openrouter'
 import type { PedidoItem } from './types'
+import { buildVocabularyPromptBlock, type BotVocabulary } from '@/lib/catalog/vocabulary'
 import { roundCatalogPrice } from './interpret-modification'
 
 export interface QuoteLine {
@@ -239,6 +240,7 @@ export async function interpretQuoteChanges(
   text: string,
   lines: QuoteLine[],
   pendientes: string[] = [],
+  vocab?: BotVocabulary | null,
 ): Promise<ChangeResult> {
   if (!text || !text.trim()) return NONE
   if (lines.length === 0 && pendientes.length === 0) return NONE
@@ -250,7 +252,7 @@ export async function interpretQuoteChanges(
       .join('\n')
     const pendText = pendientes.length > 0 ? `\nSin cotizar (fuera de catálogo): ${pendientes.join(', ')}` : ''
     const res = await callOpenRouter({
-      systemPrompt: CHANGE_PROMPT,
+      systemPrompt: `${CHANGE_PROMPT}\n\n${buildVocabularyPromptBlock(vocab)}`,
       userMessage: `Líneas de la cotización:\n${linesText}${pendText}\n\nMensaje del usuario: "${text}"`,
       jsonMode: true,
       temperature: 0,

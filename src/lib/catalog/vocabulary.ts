@@ -162,3 +162,35 @@ export function mentionsProduct(text: string, vocab: BotVocabulary): boolean {
 export function mentionsCatalogTerm(text: string, vocab: BotVocabulary): boolean {
   return mentions(text, vocabPhrases(vocab).catalog)
 }
+
+// ── Bloque de vocabulario para los prompts del LLM (Plan A2) ────────────────
+
+function ruleLabel(r: PricingRule): string {
+  if (r.operation === 'percentage' && r.operationValue) {
+    return `${r.name} (${r.operationValue > 0 ? '+' : ''}${r.operationValue}%)`
+  }
+  if (r.operation === 'fixed' && r.operationValue) return `${r.name} ($${r.operationValue})`
+  return r.name
+}
+
+/**
+ * Bloque compacto con el catálogo actual, para inyectar en los prompts de los
+ * LLM en vez de listas de producto hardcodeadas. Sin vocabulario devuelve una
+ * instrucción genérica (no rompe llamadores sin cuenta).
+ */
+export function buildVocabularyPromptBlock(vocab: BotVocabulary | null | undefined): string {
+  if (!vocab) {
+    return 'CATÁLOGO: usá los nombres de producto/variante tal como los escribe el cliente; no los traduzcas ni los reemplaces.'
+  }
+  const lines = [
+    'CATÁLOGO ACTUAL (nombres que el sistema reconoce; usalos tal cual los escribe el cliente):',
+    `- Categorías/productos: ${vocab.categorias.join(' | ') || '(sin datos)'}`,
+    `- Variantes: ${vocab.variantes.join(' | ') || '(sin datos)'}`,
+    `- Reglas de precio: ${vocab.rules.map(ruleLabel).join(' | ') || '(sin datos)'}`,
+  ]
+  if (vocab.sinonimos.size > 0) {
+    const pares = [...vocab.sinonimos.entries()].map(([term, dest]) => `${term} = ${dest}`)
+    lines.push(`- Términos ya aprendidos: ${pares.join(' | ')}`)
+  }
+  return lines.join('\n')
+}

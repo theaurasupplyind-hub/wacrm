@@ -15,6 +15,7 @@ import {
   invalidateVocabulary,
   mentionsProduct,
   mentionsCatalogTerm,
+  buildVocabularyPromptBlock,
   __resetVocabularyCache,
   VOCABULARY_TTL_MS,
 } from './vocabulary'
@@ -106,5 +107,27 @@ describe('mentionsProduct / mentionsCatalogTerm (Plan A1)', () => {
   it('sin coincidencia → false', () => {
     expect(mentionsProduct('hola, cómo va?', vocab)).toBe(false)
     expect(mentionsCatalogTerm('hola, cómo va?', vocab)).toBe(false)
+  })
+})
+
+describe('buildVocabularyPromptBlock (Plan A2)', () => {
+  const vocab = buildVocabulary(preciosReferencia, pricingRules)
+
+  it('incluye categorías, variantes y reglas con su ajuste de precio', () => {
+    const block = buildVocabularyPromptBlock(vocab)
+    expect(block).toContain('BASTIDOR')
+    expect(block).toContain('Sin Tela')
+    expect(block).toContain('Cambio de Tela (-50%)')
+    expect(block).not.toContain('Términos ya aprendidos')
+  })
+
+  it('incluye los sinónimos aprendidos', () => {
+    const conSinonimos = { ...vocab, sinonimos: new Map([['fantasia', 'Sin Tela']]) }
+    expect(buildVocabularyPromptBlock(conSinonimos)).toContain('fantasia = Sin Tela')
+  })
+
+  it('sin vocabulario devuelve la instrucción genérica', () => {
+    expect(buildVocabularyPromptBlock(null)).toMatch(/CATÁLOGO:/)
+    expect(buildVocabularyPromptBlock(undefined)).not.toContain('- Categorías')
   })
 })

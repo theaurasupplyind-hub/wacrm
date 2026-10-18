@@ -4,6 +4,7 @@
 
 import { callOpenRouter } from '@/lib/ai/openrouter'
 import { parseDeliveryDate, serializeFechaEntrega } from './dates'
+import { buildVocabularyPromptBlock, type BotVocabulary } from '@/lib/catalog/vocabulary'
 import type { OrderContext, ParsedOrder, ParsedOrderItem, TipoEntrega } from './types'
 
 // `gemini-2.5-flash` (no-lite) sigue instrucciones multi-sección y conserva
@@ -12,7 +13,7 @@ function orderModel(): string {
   return process.env.ORDER_MODEL || 'google/gemini-2.5-flash'
 }
 
-const SYSTEM_PROMPT = `Sos un extractor de pedidos de una fábrica de bastidores. Devolvés EXCLUSIVAMENTE un JSON sin texto extra, con este formato:
+const BASE_SYSTEM_PROMPT = `Sos un extractor de pedidos de una fábrica de bastidores. Devolvés EXCLUSIVAMENTE un JSON sin texto extra, con este formato:
 
 {
   "cliente": string|null,
@@ -22,8 +23,8 @@ const SYSTEM_PROMPT = `Sos un extractor de pedidos de una fábrica de bastidores
 }
 
 Reglas:
-- Cada ítem conserva las palabras del usuario sobre el producto, la variante y la medida: "sin tela", "lienzo profesional", "lona preparada", "doble 4cm", "pintura", "embastame", "tapacanto", "acrilico", "rollo 2x5". No traduzcas ni agregues sinónimos.
-- ENCABEZADOS DE BLOQUE: si el mensaje trae encabezados como "Con lienzo:", "Sin lienzo:", "Sin tela:", cada ítem de ese bloque debe incluir el encabezado COMPLETO en su "texto", incluyendo la palabra "sin" (ej: el bloque "Sin lienzo (con los esquineros atrás):\n200x140cm" → "200x140cm sin lienzo con los esquineros atrás"). NUNCA omitas "sin lienzo"/"sin tela": cambia el precio.
+- Cada ítem conserva las palabras del usuario sobre el producto, la variante y la medida (ver CATÁLOGO ACTUAL al final). No traduzcas ni agregues sinónimos que el usuario no dijo.
+- ENCABEZADOS DE BLOQUE: si el mensaje trae encabezados de bloque ("Con <algo>:", "Sin <algo>:", "…:"), cada ítem de ese bloque debe incluir el encabezado COMPLETO en su "texto", INCLUIDA la palabra negativa ("sin") tal como la escribió el usuario. NUNCA omitas el encabezado: cambia la variante y el precio.
 - "libre": true cuando el usuario pide una MUESTRA sin medida ("Bastidor de Muestra con Fibro", "muestra de prueba"), un ítem que aclara que NO tiene medida ("no tiene medida", "sin medida", "no se mide"), o un producto fuera del catálogo ("Palos de metal"), aunque su nombre incluya "bastidor" o "fibro". Si no es ninguno de esos casos, "libre": false.
 - Si dice "gratis", "sin cargo", "sin cobrar" o "a 0 pesos" para un ítem, devolvé ese ítem con "precio": 0.
 - La cantidad default es 1.
@@ -213,12 +214,15 @@ export function fallbackParseOrder(text: string): ParsedOrder {
 
 export async function parseOrder(
   text: string,
-  opts: { context?: OrderContext | null; model?: string } = {},
+  opts: { context?: OrderContext | null; model?: string; vocab?: BotVocabulary | null } = {},
 ): Promise<ParsedOrder> {
   const userMessage = buildUserMessage(text, opts.context)
+  // El vocabulario del catálogo va en el prompt (Plan A2): agregar un producto,
+  // variante o regla en el panel cambia lo que ve el LLM sin tocar código.
+  const systemPrompt = `${BASE_SYSTEM_PROMPT}\n\n${buildVocabularyPromptBlock(opts.vocab)}`
   try {
     const res = await callOpenRouter({
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt,
       userMessage,
       jsonMode: true,
       model: opts.model || orderModel(),

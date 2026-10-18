@@ -4,6 +4,7 @@
 
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
+import { buildVocabulary } from '@/lib/catalog/vocabulary'
 import { parseOrder } from './parse-order'
 import { comprehendOrder, resolveClientGuess } from './understand'
 import { buildOrderSummary } from './summary'
@@ -31,13 +32,14 @@ export async function previewPedido(
     parseFn?: (text: string, context: OrderContext | null) => Promise<ParsedOrder>
   } = {},
 ): Promise<PedidoPreview | null> {
-  const parsed = opts.parseFn
-    ? await opts.parseFn(text, opts.context ?? null)
-    : await parseOrder(text, { context: opts.context ?? null })
-  if (parsed.items.length === 0) return null
-
+  // Catálogo antes del parseo: alimenta el vocabulario del prompt (Plan A2).
   const refs = opts.refs ?? (await getPreciosReferencia())
   const rules = opts.rules ?? (await getPricingRules())
+  const parsed = opts.parseFn
+    ? await opts.parseFn(text, opts.context ?? null)
+    : await parseOrder(text, { context: opts.context ?? null, vocab: buildVocabulary(refs, rules) })
+  if (parsed.items.length === 0) return null
+
   const { resolved } = comprehendOrder({
     items: parsed.items,
     refs,

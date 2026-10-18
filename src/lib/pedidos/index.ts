@@ -635,7 +635,7 @@ async function resolveAndSave(
   const text = overrideText ?? args.text
   const parsed = args.parseFn
     ? await args.parseFn(text, existing)
-    : await parseOrder(text, { context: existing })
+    : await parseOrder(text, { context: existing, vocab: await pedidosVocabulary(args) })
 
   if (parsed.items.length === 0) {
     if (existing && !overrideText) {
@@ -891,7 +891,8 @@ function parseOrderWith(
   text: string,
   context: OrderContext | null,
 ): Promise<ParsedOrder> {
-  return args.parseFn ? args.parseFn(text, context) : parseOrder(text, { context })
+  if (args.parseFn) return args.parseFn(text, context)
+  return pedidosVocabulary(args).then((vocab) => parseOrder(text, { context, vocab }))
 }
 
 /** Contexto mínimo para reenviar ítems ya parseados a `parseOrder`. */
@@ -1183,7 +1184,7 @@ async function presentQuote(
 ): Promise<ProcessPedidoResult> {
   const parsed = args.parseFn
     ? await args.parseFn(text, context)
-    : await parseOrder(text, { context })
+    : await parseOrder(text, { context, vocab: await pedidosVocabulary(args) })
   return quoteFromParsed(args, text, context, parsed)
 }
 
@@ -1363,7 +1364,7 @@ async function handleQuoteApproval(
   if (quoteLines.length > 0 || pendingItems.length > 0) {
     const changes: ChangeResult = args.modifyFn
       ? await args.modifyFn(text, quoteLines)
-      : await interpretQuoteChanges(text, quoteLines, pendingItems.map((it) => it.descripcion))
+      : await interpretQuoteChanges(text, quoteLines, pendingItems.map((it) => it.descripcion), await pedidosVocabulary(args))
     if (changes.kind === 'unsupported') {
       // El intérprete sólo conoce las líneas ya cotizadas: si el texto nombra
       // una regla del catálogo ("es Cambio de Tela", "caja fibro 78 x 56"),

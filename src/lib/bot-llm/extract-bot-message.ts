@@ -6,7 +6,7 @@ import { extractJson, normalizeDate, normalizeTime, parseMontoSafe } from './san
 import { applyRoleFields } from './intent-roles'
 import { classifyPaymentIntent } from './payment-intent'
 import type { BotIntent, Confidence, MissingField, MultiExpenseItem, PaymentDirection, PaymentVoice, UnifiedExtraction } from './types'
-import type { BotVocabulary } from '@/lib/catalog/vocabulary'
+import { buildVocabularyPromptBlock, type BotVocabulary } from '@/lib/catalog/vocabulary'
 
 const EXTRACT_PROMPT = `Sos un extractor de intenciones y datos para un sistema de WhatsApp (taller de bastidores GAL + gestión de gastos, asistencia y vouchers).
 
@@ -56,7 +56,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "multi_expense": un mismo mensaje contiene DOS O MÁS gastos separados e independientes del negocio. Devolvé la lista en "multipleExpenses". Cada gasto debe tener su propio monto.
 - "voucher": comprobante de pago o transferencia/depósito para pagar una factura.
 - "factura": consulta de facturas pendientes, deudas, saldos.
-- "pedido": el cliente arma/consulta un PRESUPUESTO. Aparece una o más medidas ("60x40", "94x81"), una lista de medidas ("56 x 78, 89 x 67"), o nombres de producto (bastidor, lienzo, tapacanto, acrílico, marco, lona, circular, rollo) sin verbo de compra del negocio. NO lleva monto pagado ni proveedor.
+- "pedido": el cliente arma/consulta un PRESUPUESTO. Aparece una o más medidas ("60x40", "94x81"), una lista de medidas ("56 x 78, 89 x 67"), o nombres de producto del catálogo (ver CATÁLOGO ACTUAL) sin verbo de compra del negocio. NO lleva monto pagado ni proveedor.
 - "otro": saludos genéricos ("hola", "gracias"), charla casual, mensajes irrelevantes, o respuestas que no completan ninguna intención pendiente.
 
 === REGLAS (MUY IMPORTANTES) ===
@@ -75,7 +75,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
   - Si consulta "factura", "deuda", "saldo", "debo", "debemos", "debe", "deben", "se debe", "pendiente", "cuanto debe un cliente" → factura (aunque diga "necesito saber"). Si dice "deuda de [Nombre]" / "saldo de [Nombre]" / "deuda con [Nombre]" / "le debo/debemos a [Nombre]" → factura con proveedor="[Nombre]" (ej "Revisemos la deuda de Aldo" → proveedor:"Aldo"; "le debemos 3M a Puerto Maderas" → proveedor:"Puerto Maderas").
   - REGLA DEBER (prioritaria sobre método de pago): si el verbo es deber en cualquier persona ("debo", "debemos", "debe", "deben", "se debe", "es lo que se debe") → SIEMPRE factura, NUNCA gasto, aunque mencione "transferencia"/"efectivo" (ej "2.963.912 es lo que se debe de madera transferencia" → factura, proveedor:"Puerto Maderas", direction:null). Deber = deuda declarada, no plata que se movió: direction=null y tipo_gasto=null.
  - "qué podés hacer / quién soy / capacidades" → otro (conversacional), NUNCA factura.
-- "pedido"/presupuesto: si el mensaje trae UNA O MÁS medidas ("60x40", "94x81", "56 x 78, 89 x 67") o nombres de producto de la fábrica (bastidor, lienzo, tapacanto, acrílico, marco, lona, circular, rollo) SIN verbo de compra a proveedor ni monto pagado → intent "pedido" con confianza "alta". No es gasto aunque haya números: son medidas, no montos.
+- "pedido"/presupuesto: si el mensaje trae UNA O MÁS medidas ("60x40", "94x81", "56 x 78, 89 x 67") o nombres de producto del catálogo (ver CATÁLOGO ACTUAL) SIN verbo de compra a proveedor ni monto pagado → intent "pedido" con confianza "alta". No es gasto aunque haya números: son medidas, no montos.
 - Diferencia clave pedido vs gasto: "compré 3 bastidores 60x40 a Joaquín por 30000" (verbo comprar + proveedor + monto) → "gasto". "3 bastidores 60x40 para Juan" (solo medidas/producto del pedido) → "pedido".
 - "X vale 0 agregalo", "agregá X a 0 pesos", "poné X gratis", "X es sin cargo": son de "pedido" (agregar/editar un ítem de un presupuesto), NUNCA "gasto". Un gasto del negocio nunca tiene monto 0 ni usa "agregalo".
 - Una lista de medidas separadas por coma ("56 x 78, 89 x 67, 67 x 56 sin tela") → SIEMPRE un solo "pedido", nunca multi_expense.
@@ -399,7 +399,7 @@ async function extractWithoutJev(
   vocab?: BotVocabulary | null,
 ): Promise<UnifiedExtraction> {
   const today = todayAR()
-  const systemPrompt = `${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
+  const systemPrompt = `${buildVocabularyPromptBlock(vocab)}\n\n${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
 
   const userMessage = contextText
     ? `CONTEXTO (últimos mensajes + estado pendiente del bot):\n${contextText}\n\nMENSAJE: ${raw}`
