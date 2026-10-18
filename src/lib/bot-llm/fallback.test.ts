@@ -155,3 +155,18 @@ describe('fallbackExtract con vocabulario (Plan A1)', () => {
     expect(fallbackExtract('quiero una cortina roller').intent).not.toBe('pedido')
   })
 })
+
+describe('fallbackExtract — cobro (voucher) antes que gasto (Plan A4)', () => {
+  it('un cobro explicito es voucher, no gasto', () => {
+    const r = fallbackExtract('me transfirió 35000 para la factura 001')
+    expect(r.intent).toBe('voucher')
+  })
+
+  it('"me pagó Jo en efectivo" tambien es voucher', () => {
+    expect(fallbackExtract('me pagó Jo en efectivo').intent).toBe('voucher')
+  })
+
+  it('un pago propio sigue siendo gasto', () => {
+    expect(fallbackExtract('le pagué a Jo 35000').intent).toBe('gasto')
+  })
+})

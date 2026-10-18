@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyReply, isDismissCommand } from './reply-intent'
+import { classifyReply, classifyYesNo, isDismissCommand } from './reply-intent'
 
 describe('reply-intent (fix #4: módulo único)', () => {
   it('confirma con palabra + verbo que repite la oferta (incidente 2)', () => {
@@ -58,6 +58,26 @@ describe('reply-intent (fix #4: módulo único)', () => {
     }
     for (const t of ['no cancela', 'hola', 'cancela la factura de Aldo', 'no', '']) {
       expect(isDismissCommand(t), t).toBe(false)
+    }
+  })
+})
+
+describe('classifyYesNo (cuarto detector sí/no, unificado)', () => {
+  it('confirma un candidato ("¿es ese?")', () => {
+    for (const t of ['si', 'sí', 'sisi', 'claro', 'ese', 'esa', 'es ese', 'correcto', 'exacto', 'afirmativo']) {
+      expect(classifyYesNo(t), t).toBe('yes')
+    }
+  })
+
+  it('niega el candidato: pide otro, NO cancela', () => {
+    for (const t of ['no', 'nop', 'nope', 'otro', 'otra', 'ninguno', 'ninguna', 'nuevo', 'nueva']) {
+      expect(classifyYesNo(t), t).toBe('no')
+    }
+  })
+
+  it('sin señal o contradictorio → null', () => {
+    for (const t of ['', 'hola', 'si pero no', 'el de la esquina']) {
+      expect(classifyYesNo(t), t).toBeNull()
     }
   })
 })

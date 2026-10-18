@@ -137,6 +137,12 @@ export function fallbackExtract(text: string, vocab?: BotVocabulary | null): Uni
   const raw = (text || '').trim()
   if (!raw) return empty(raw)
 
+  // Un cobro EXPLÍCITO ("me transfirió 35000", "me pagó Jo") es voucher, no gasto:
+  // EXPENSE_INTENT_KEYWORDS incluye "transferi" y `looksLikeExpense` se lo comería.
+  if (classifyPaymentIntent(raw) === 'voucher') {
+    return { ...empty(raw), intent: 'voucher', confianza: 'baja' }
+  }
+
   // Pedidos: medidas o keywords de producto, sin dominio rival (gasto/
   // asistencia/voucher). Va ANTES del split multi-expense porque una lista de
   // medidas ("56 x 78, 89 x 67") no es una lista de gastos.

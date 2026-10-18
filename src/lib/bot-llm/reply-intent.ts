@@ -107,3 +107,24 @@ export function classifyReply(text: string): ReplyIntent {
   }
   return 'other'
 }
+
+/** Palabras que, solas, confirman un candidato ("¿es ese cliente?"). */
+const YES_WORDS = new Set(['si', 'sisi', 's', 'claro', 'correcto', 'ese', 'esa', 'exacto', 'afirmativo'])
+
+/** Palabras que lo niegan: significan "no es ese / dame otro", NO cancelar. */
+const NO_WORDS = new Set(['no', 'nop', 'nope', 'otro', 'otra', 'ninguno', 'ninguna', 'nuevo', 'nueva'])
+
+/**
+ * Clasifica la respuesta a "¿es ese?" sobre un candidato de cliente (cuarto
+ * detector sí/no, unificado acá). Comparte el normalizador con `classifyReply`
+ * pero con OTRA semántica: `no` = "no es ese" (pedir otro), no cancelar.
+ */
+export function classifyYesNo(text: string): 'yes' | 'no' | null {
+  const tokens = normalizeReplyTokens(text)
+  if (tokens.length === 0) return null
+  const yes = tokens.some((t) => YES_WORDS.has(t))
+  const no = tokens.some((t) => NO_WORDS.has(t))
+  if (yes && !no) return 'yes'
+  if (no && !yes) return 'no'
+  return null
+}

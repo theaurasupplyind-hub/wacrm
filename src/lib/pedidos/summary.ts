@@ -117,16 +117,11 @@ export function classifyEntrega(text: string): TipoEntrega | null {
   return null
 }
 
-/** Clasifica una respuesta sí/no (para confirmar el cliente candidato). */
-export function classifyYesNo(text: string): 'yes' | 'no' | null {
-  const t = normalizeCmd(text)
-  if (!t) return null
-  const yes = /\b(si|sisi|s|claro|correcto|ese|esa|es ese|exacto|afirmativo)\b/.test(t)
-  const no = /\b(no|nop|nope|otro|otra|ninguno|ninguna|nuevo|nueva)\b/.test(t)
-  if (yes && !no) return 'yes'
-  if (no && !yes) return 'no'
-  return null
-}
+/**
+ * Clasifica una respuesta sí/no (para confirmar el cliente candidato).
+ * Delegado al módulo único de intención de respuesta (`bot-llm/reply-intent.ts`).
+ */
+export { classifyYesNo } from '@/lib/bot-llm/reply-intent'
 
 const SKIP_DESCUENTO_RE = /\b(no|nada|ninguno|ninguna|sin descuento|saltear|salteo|omitir|despues|luego|paso)\b/
 

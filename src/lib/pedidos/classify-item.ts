@@ -8,6 +8,7 @@ import { normalizeText, parseQuery, singularize } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import type { OrderGlossaryEntry } from './glossary'
 import type { ParsedOrderItem } from './types'
+import { DEFAULT_CATEGORIA } from '@/lib/catalog/defaults'
 
 export interface UnknownTerm {
   term: string
@@ -33,8 +34,6 @@ export interface ItemClassification {
   regla: PricingRule | null
   unknownTerms: string[]
 }
-
-const DEFAULT_CATEGORIA = 'BASTIDOR'
 
 // Palabras funcionales/unidades que nunca son términos del catálogo.
 // Ojo: NO incluir "sin"/"con" — son parte de variantes ("Sin Tela").

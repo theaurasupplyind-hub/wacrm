@@ -13,6 +13,9 @@
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
 import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
 import { buildKnownVocab, tokenMatchesWord } from '@/lib/pedidos/classify-item'
+import { DEFAULT_CATEGORIA } from './defaults'
+
+export { DEFAULT_CATEGORIA }
 
 export interface BotVocabulary {
   refs: PrecioReferencia[]
@@ -23,11 +26,9 @@ export interface BotVocabulary {
   knownWords: string[]
   /** Término normalizado → destino. Sinónimos aprendidos (se completa en Plan B). */
   sinonimos: Map<string, string>
-  /** Categoría cuando no se reconoce ninguna. Hoy fijo: mover a dato en Plan A3. */
+  /** Categoría cuando no se reconoce ninguna (ver `catalog/defaults.ts`). */
   categoriaDefault: string
 }
-
-export const DEFAULT_CATEGORIA = 'BASTIDOR'
 
 /** El panel de precios/reglas cambia poco: 5 min alcanza y sobra. */
 export const VOCABULARY_TTL_MS = 5 * 60 * 1000

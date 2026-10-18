@@ -19,8 +19,7 @@ import type { ResolveResult } from './resolve-items'
 import { resolveCatalogAttrs } from './catalog-attrs'
 import { isGreetingRecipientName, isPhoneLikeClientName } from './client-identity'
 import type { ParsedOrderItem } from './types'
-
-const DEFAULT_CATEGORIA = 'BASTIDOR'
+import { DEFAULT_CATEGORIA } from '@/lib/catalog/defaults'
 
 export interface ComprehendInput {
   items: ParsedOrderItem[]

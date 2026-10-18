@@ -11,8 +11,7 @@ import type { PrecioReferencia, PricingRule, Producto, PriceSuggestion } from '@
 import { buildKnownVocab, classifyItem, stripOtherVariants } from './classify-item'
 import { resolveCatalogAttrs } from './catalog-attrs'
 import type { ParsedOrderItem, PedidoItem } from './types'
-
-const DEFAULT_CATEGORIA = 'BASTIDOR'
+import { DEFAULT_CATEGORIA } from '@/lib/catalog/defaults'
 
 export interface ResolveResult {
   items: PedidoItem[]
