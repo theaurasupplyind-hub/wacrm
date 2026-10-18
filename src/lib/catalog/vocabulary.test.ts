@@ -9,6 +9,7 @@ vi.mock('@/lib/facbal/client', () => facbal)
 
 import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
 import type { PrecioReferencia } from '@/lib/precios'
+import type { OrderGlossaryEntry } from '@/lib/pedidos/glossary'
 import {
   buildVocabulary,
   getVocabulary,
@@ -140,5 +141,29 @@ describe('buildVocabularyPromptBlock (Plan A2)', () => {
   it('sin vocabulario devuelve la instrucción genérica', () => {
     expect(buildVocabularyPromptBlock(null)).toMatch(/CATÁLOGO:/)
     expect(buildVocabularyPromptBlock(undefined)).not.toContain('- Categorías')
+  })
+})
+
+describe('Plan B — lo aprendido alimenta el vocabulario', () => {
+  const glossary: OrderGlossaryEntry[] = [
+    { termNorm: 'palos', termDisplay: 'Palos de metal', meaning: { type: 'producto', value: 'Palos de metal', precio: 5000 } },
+    { termNorm: 'fantasia', termDisplay: 'fantasía', meaning: { type: 'alias', target_type: 'variante', target: 'sin tela' } },
+  ]
+  const vocab = buildVocabulary(preciosReferencia, pricingRules, glossary)
+
+  it('un producto aprendido se reconoce como producto (ruteo data-driven)', () => {
+    expect(vocab.productosAprendidos).toContain('Palos de metal')
+    expect(mentionsProduct('quiero 2 palos de metal', vocab)).toBe(true)
+  })
+
+  it('un sinónimo aprendido entra a las palabras conocidas', () => {
+    expect(vocab.sinonimos.get('fantasia')).toBe('sin tela')
+    expect(mentionsProduct('bastidor 60x40 fantasia', vocab)).toBe(true)
+  })
+
+  it('los productos aprendidos SÍ van al prompt (los sinónimos no)', () => {
+    const block = buildVocabularyPromptBlock(vocab)
+    expect(block).toContain('Productos fuera de catálogo ya usados: Palos de metal')
+    expect(block).not.toContain('fantasia')
   })
 })

@@ -13,6 +13,8 @@
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
 import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
 import { buildKnownVocab, tokenMatchesWord } from '@/lib/pedidos/classify-item'
+import { loadGlossary, type OrderGlossaryEntry } from '@/lib/pedidos/glossary'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { DEFAULT_CATEGORIA } from './defaults'
 
 export { DEFAULT_CATEGORIA }
@@ -24,8 +26,10 @@ export interface BotVocabulary {
   variantes: string[]
   /** Palabras conocidas normalizadas (categorías + variantes + reglas/tokens). */
   knownWords: string[]
-  /** Término normalizado → destino. Sinónimos aprendidos (se completa en Plan B). */
+  /** Término normalizado → destino. Sinónimos aprendidos (Plan B). */
   sinonimos: Map<string, string>
+  /** Nombres de productos FUERA de catálogo ya aprendidos (Plan B2). */
+  productosAprendidos: string[]
   /** Categoría cuando no se reconoce ninguna (ver `catalog/defaults.ts`). */
   categoriaDefault: string
 }
@@ -42,17 +46,33 @@ const cache = new Map<string, CacheEntry>()
 const inflight = new Map<string, Promise<BotVocabulary>>()
 
 /** Arma el vocabulario desde el catálogo. Puro (sin red) — apto para tests. */
-export function buildVocabulary(refs: PrecioReferencia[], rules: PricingRule[]): BotVocabulary {
+export function buildVocabulary(
+  refs: PrecioReferencia[],
+  rules: PricingRule[],
+  glossary: OrderGlossaryEntry[] = [],
+): BotVocabulary {
   const categorias = [...new Set(refs.map((r) => r.categoria))].filter(Boolean)
   const variantes = [...new Set(refs.map((r) => r.variante))].filter(Boolean)
   const knownWords = buildKnownVocab(refs, rules).knownWords
+  // Plan B: lo aprendido entra al vocabulario (sinónimos + productos fuera de catálogo).
+  const sinonimos = new Map<string, string>()
+  const productosAprendidos: string[] = []
+  for (const g of glossary) {
+    if (g.meaning.type === 'alias') {
+      const dest = 'target' in g.meaning ? g.meaning.target : g.meaning.value
+      if (dest) sinonimos.set(g.termNorm, dest)
+    } else if (g.meaning.type === 'producto') {
+      productosAprendidos.push(g.meaning.value)
+    }
+  }
   return {
     refs,
     rules,
     categorias,
     variantes,
     knownWords,
-    sinonimos: new Map(),
+    sinonimos,
+    productosAprendidos,
     categoriaDefault: DEFAULT_CATEGORIA,
   }
 }
@@ -72,7 +92,7 @@ export function invalidateVocabulary(accountId?: string): void {
  * Vocabulario de la cuenta (cacheado). Deduplica pedidos concurrentes y, ante
  * error de red, devuelve la última copia buena en vez de romper el turno.
  */
-export async function getVocabulary(accountId: string): Promise<BotVocabulary> {
+export async function getVocabulary(accountId: string, db?: SupabaseClient): Promise<BotVocabulary> {
   const hit = cache.get(accountId)
   if (hit && Date.now() - hit.at < VOCABULARY_TTL_MS) return hit.value
 
@@ -81,8 +101,12 @@ export async function getVocabulary(accountId: string): Promise<BotVocabulary> {
 
   const load = (async () => {
     try {
-      const [refs, rules] = await Promise.all([getPreciosReferencia(), getPricingRules()])
-      const value = buildVocabulary(refs, rules)
+      const [refs, rules, glossary] = await Promise.all([
+        getPreciosReferencia(),
+        getPricingRules(),
+        db ? loadGlossary(db, accountId) : Promise.resolve([] as OrderGlossaryEntry[]),
+      ])
+      const value = buildVocabulary(refs, rules, glossary)
       cache.set(accountId, { value, at: Date.now() })
       return value
     } catch (err) {
@@ -133,7 +157,12 @@ const PHRASE_CACHE = new WeakMap<BotVocabulary, VocabPhrases>()
 function vocabPhrases(vocab: BotVocabulary): VocabPhrases {
   const cached = PHRASE_CACHE.get(vocab)
   if (cached) return cached
-  const product = [...vocab.categorias, ...vocab.variantes, ...vocab.sinonimos.keys()]
+  const product = [
+    ...vocab.categorias,
+    ...vocab.variantes,
+    ...vocab.sinonimos.keys(),
+    ...vocab.productosAprendidos,
+  ]
     .map(phraseWords)
     .filter((p) => p.length > 0)
   const rules = [...vocab.rules.map((r) => r.name), ...vocab.rules.flatMap((r) => r.matchTokens)]
@@ -218,6 +247,12 @@ export function buildVocabularyPromptBlock(
   if (o.rules) {
     const rules = vocab.rules.map((r) => ruleLabel(r, o.ruleAdjustments)).join(' | ')
     lines.push(`- Reglas de precio: ${rules || '(sin datos)'}`)
+  }
+  // Plan B2: los productos FUERA de catálogo ya aprendidos SÍ van al prompt
+  // (a diferencia de los sinónimos, que se sustituyen antes de clasificar): el
+  // LLM tiene que reconocerlos como ítem de pedido.
+  if (o.products && vocab.productosAprendidos.length > 0) {
+    lines.push(`- Productos fuera de catálogo ya usados: ${vocab.productosAprendidos.join(' | ')}`)
   }
   return lines.join('\n')
 }

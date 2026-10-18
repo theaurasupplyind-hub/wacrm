@@ -301,8 +301,9 @@ async function loadCatalog(
   args: ProcessPedidoMessageArgs,
 ): Promise<{ refs: PrecioReferencia[]; rules: PricingRule[] }> {
   if (args.refs && args.rules) return { refs: args.refs, rules: args.rules }
-  // Catálogo cacheado por cuenta (P0): evita 2 HTTP por request.
-  const vocab = await getVocabulary(args.accountId)
+  // Catálogo cacheado por cuenta (P0): evita 2 HTTP por request. Incluye el
+  // glosario aprendido (Plan B) para que los sinónimos/productos se reconozcan.
+  const vocab = await getVocabulary(args.accountId, args.db)
   return { refs: args.refs ?? vocab.refs, rules: args.rules ?? vocab.rules }
 }
 
@@ -978,11 +979,18 @@ async function handleGlossaryAnswer(
   }
 
   for (const it of interpretations) {
-    await upsertGlossary(args.db, args.accountId, {
-      termNorm: it.termNorm,
-      termDisplay: it.termNorm,
-      meaning: it.meaning,
-    })
+    await upsertGlossary(
+      args.db,
+      args.accountId,
+      {
+        termNorm: it.termNorm,
+        // Para un producto fuera de catálogo, el display es el nombre que dio el
+        // usuario (el término normalizado es solo el token que disparó la pregunta).
+        termDisplay: it.meaning.type === 'producto' ? it.meaning.value : it.termNorm,
+        meaning: it.meaning,
+      },
+      args.userId,
+    )
   }
 
   // Re-resolver el texto original ahora que el glosario lo entiende. Si estábamos
@@ -996,11 +1004,13 @@ async function handleGlossaryAnswer(
 /** Marca como `libre` los ítems cuyo texto contiene alguno de los términos. */
 function markTermsLibre(parsed: ParsedOrder, normTerms: string[]): ParsedOrder {
   if (normTerms.length === 0) return parsed
+  const wanted = new Set(normTerms.filter(Boolean))
   return {
     ...parsed,
     items: parsed.items.map((it) => {
-      const key = normalizeTerm(it.texto)
-      return normTerms.some((t) => t && key.includes(t)) ? { ...it, libre: true } : it
+      // Match por TOKEN, no por substring: "marco" no debe matchear "enmarcado".
+      const tokens = normalizeTerm(it.texto).split(/\s+/).filter(Boolean)
+      return tokens.some((t) => wanted.has(t)) ? { ...it, libre: true } : it
     }),
   }
 }

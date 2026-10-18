@@ -11,9 +11,19 @@ import { normalizeText } from '@/lib/precios'
 import type { PrecioReferencia, PricingRule } from '@/lib/precios'
 import type { ParsedOrderItem } from './types'
 
+export type GlossaryTargetType = 'categoria' | 'variante' | 'regla'
+
 export type GlossaryMeaning =
   | { type: 'grosor'; value: number }
+  /** Alias libre (legacy): el texto se sustituye por `value`. */
   | { type: 'alias'; value: string }
+  /** Alias TIPADO (Plan B1): el término es otra forma de decir algo del catálogo. */
+  | { type: 'alias'; target_type: GlossaryTargetType; target: string }
+  /**
+   * Producto FUERA de catálogo (Plan B2): el término nombra un producto nuevo.
+   * Se cotiza como línea manual (`libre`) con su `precio` (null = a cotizar a mano).
+   */
+  | { type: 'producto'; value: string; precio: number | null }
 
 export interface OrderGlossaryEntry {
   termNorm: string
@@ -58,17 +68,39 @@ function builtInGrosor(text: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+/** Texto canónico de un alias (tipado o legacy). */
+function aliasReplacement(m: { value?: string; target?: string }): string {
+  return m.target ?? m.value ?? ''
+}
+
+/** ¿El término aparece como palabra en el texto? (tolerante a acentos). */
+function termInText(termNorm: string, text: string): boolean {
+  return new RegExp(`\\b${accentFlexible(termNorm)}\\b`, 'i').test(text)
+}
+
+/** Entrada de `producto` aprendida que aplica a este texto (si hay). */
+function productEntryFor(text: string, glossary: OrderGlossaryEntry[]): GlossaryMeaning | null {
+  for (const g of glossary) {
+    if (g.meaning.type !== 'producto') continue
+    if (termInText(g.termNorm, text)) return g.meaning
+  }
+  return null
+}
+
 /** Aplica glosario + expresiones explícitas de grosor a un texto de ítem. */
 export function applyOrderGlossaryText(texto: string, glossary: OrderGlossaryEntry[]): string {
   let t = texto
   for (const g of glossary) {
+    // Los `producto` NO se sustituyen: conservan el nombre del usuario y se
+    // marcan como línea manual en `applyOrderGlossary`.
+    if (g.meaning.type === 'producto') continue
     const re = new RegExp(
       `\\b${accentFlexible(g.termNorm)}\\b(?:\\s+de\\s+\\d+(?:[.,]\\d+)?|\\s+\\d+(?:[.,]\\d+)?)?`,
       'gi',
     )
     if (!re.test(t)) continue
     if (g.meaning.type === 'alias') {
-      t = t.replace(re, ` ${g.meaning.value} `)
+      t = t.replace(re, ` ${aliasReplacement(g.meaning)} `)
     } else {
       t = t.replace(re, ' ')
       t = applyGrosorToText(t, g.meaning.value)
@@ -87,7 +119,15 @@ export function applyOrderGlossary(
   items: ParsedOrderItem[],
   glossary: OrderGlossaryEntry[],
 ): ParsedOrderItem[] {
-  return items.map(it => ({ ...it, texto: applyOrderGlossaryText(it.texto, glossary) }))
+  return items.map(it => {
+    const texto = applyOrderGlossaryText(it.texto, glossary)
+    // Producto aprendido (fuera de catálogo): línea manual con su precio.
+    const prod = productEntryFor(it.texto, glossary)
+    if (prod && prod.type === 'producto') {
+      return { ...it, texto, libre: true, precio: it.precio ?? prod.precio }
+    }
+    return { ...it, texto }
+  })
 }
 
 // ── Detección de intención de glosario en el mensaje ──
@@ -146,13 +186,31 @@ interface RawGlossaryRow {
 
 function parseMeaning(raw: unknown): GlossaryMeaning | null {
   if (!raw || typeof raw !== 'object') return null
-  const o = raw as { type?: unknown; value?: unknown }
+  const o = raw as { type?: unknown; value?: unknown; target?: unknown; target_type?: unknown; precio?: unknown }
   if (o.type === 'grosor') {
     const n = typeof o.value === 'number' ? o.value : parseFloat(String(o.value ?? '').replace(',', '.'))
     return Number.isFinite(n) && n > 0 ? { type: 'grosor', value: n } : null
   }
-  if (o.type === 'alias' && typeof o.value === 'string' && o.value.trim()) {
-    return { type: 'alias', value: o.value.trim().toLowerCase() }
+  if (o.type === 'alias') {
+    // Tipado (preferido, Plan B1): { target_type, target }.
+    const target = typeof o.target === 'string' ? o.target.trim().toLowerCase() : ''
+    if (
+      target &&
+      (o.target_type === 'categoria' || o.target_type === 'variante' || o.target_type === 'regla')
+    ) {
+      return { type: 'alias', target_type: o.target_type, target }
+    }
+    // Legacy: alias de texto libre.
+    if (typeof o.value === 'string' && o.value.trim()) {
+      return { type: 'alias', value: o.value.trim().toLowerCase() }
+    }
+    return null
+  }
+  if (o.type === 'producto') {
+    const value = typeof o.value === 'string' ? o.value.trim() : ''
+    if (!value) return null
+    const n = typeof o.precio === 'number' ? o.precio : parseFloat(String(o.precio ?? '').replace(',', '.'))
+    return { type: 'producto', value, precio: Number.isFinite(n) && n >= 0 ? Math.round(n) : null }
   }
   return null
 }
@@ -222,19 +280,23 @@ const GLOSSARY_PROMPT = `Sos un asistente de un taller de bastidores. El usuario
 Devolvé EXCLUSIVAMENTE un JSON:
 {
   "meanings": [
-    { "term": "término en minúsculas", "type": "grosor" | "alias", "value": número (para grosor) o texto (para alias) }
+    { "term": "término en minúsculas", "type": "grosor", "value": número },
+    { "term": "término en minúsculas", "type": "alias", "target_type": "categoria" | "variante" | "regla", "target": "nombre canónico del catálogo" },
+    { "term": "término en minúsculas", "type": "producto", "value": "nombre del producto tal como lo dice el usuario", "precio": número o null }
   ]
 }
 
-- "grosor": cuando el término indica el grosor/espesor del bastidor. value = número entero en cm (ej: "es de 4 centímetros" → 4).
-- "alias": cuando el término es otra forma de decir un producto/variante del catálogo. value = el texto canónico del catálogo (ej: "doble 4cm", "lienzo profesional", "sin tela", "tapacanto").
-- Si el usuario aclara que NO es un término del catálogo sino un PRODUCTO fuera de catálogo ("no son términos, es un producto que no está en el catálogo", "es un producto nuevo que no venden"), o una muestra, devolvé "meanings": [] (no inventes un alias).
+- "grosor": el término indica el grosor/espesor del bastidor. value = número entero en cm (ej: "es de 4 centímetros" → 4).
+- "alias": el término es OTRA FORMA DE DECIR un producto/variante/regla DEL CATÁLOGO. Devolvé "target_type" (categoria | variante | regla) y "target" = el nombre canónico del catálogo (ej: target_type:"variante", target:"doble 4cm").
+- "producto": el término es un PRODUCTO NUEVO que NO está en el catálogo (ej: "Palos de metal", "soporte X", una muestra especial). value = el nombre tal como lo dice el usuario. Si el usuario dio un precio, ponelo en "precio" (number, sin símbolo); si no lo dijo, "precio": null. NUNCA lo conviertas en un alias ni lo descartes.
+- Si el usuario aclara que NO es un término ni un producto (no quiere agregarlo), devolvé "meanings": [].
 - Si no podés decidir, devolvé "meanings": [].
 
 Ejemplos:
 "moldura de 4, es grosor 4" → {"meanings":[{"term":"moldura","type":"grosor","value":4}]}
-"moldura quiere decir doble 4cm" → {"meanings":[{"term":"moldura","type":"alias","value":"doble 4cm"}]}
-"no son términos, es un producto que no está en el catálogo, Palos de metal" → {"meanings":[]}
+"moldura quiere decir doble 4cm" → {"meanings":[{"term":"moldura","type":"alias","target_type":"variante","target":"doble 4cm"}]}
+"no son términos, es un producto que no está en el catálogo, Palos de metal" → {"meanings":[{"term":"palos","type":"producto","value":"Palos de metal","precio":null}]}
+"palos de metal a 5000" → {"meanings":[{"term":"palos","type":"producto","value":"Palos de metal","precio":5000}]}
 
 DEVOLVÉ SOLO EL JSON.`
 
@@ -271,10 +333,10 @@ export async function parseGlossaryMeanings(
     const out: GlossaryInterpretation[] = []
     for (const item of raw) {
       if (!item || typeof item !== 'object') continue
-      const o = item as { term?: unknown; type?: unknown; value?: unknown }
+      const o = item as { term?: unknown; type?: unknown; value?: unknown; target?: unknown; target_type?: unknown; precio?: unknown }
       const termNorm = normalizeTerm(String(o.term ?? ''))
       if (!termNorm || !wanted.has(termNorm)) continue
-      const meaning = parseMeaning({ type: o.type, value: o.value })
+      const meaning = parseMeaning({ type: o.type, value: o.value, target: o.target, target_type: o.target_type, precio: o.precio })
       if (meaning) out.push({ termNorm, meaning })
     }
     return out

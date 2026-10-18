@@ -52,6 +52,45 @@ describe('applyOrderGlossaryText', () => {
   })
 })
 
+describe('Plan B — alias tipado y producto fuera de catálogo', () => {
+  it('alias TIPADO: sustituye el término por el target canónico', () => {
+    const glossary: OrderGlossaryEntry[] = [
+      { termNorm: 'fantasia', termDisplay: 'fantasía', meaning: { type: 'alias', target_type: 'variante', target: 'sin tela' } },
+    ]
+    expect(applyOrderGlossaryText('bastidor 60x40 fantasia', glossary)).toContain('sin tela')
+  })
+
+  it('producto aprendido: NO sustituye el texto y marca el ítem libre con su precio', () => {
+    const glossary: OrderGlossaryEntry[] = [
+      { termNorm: 'palos', termDisplay: 'Palos de metal', meaning: { type: 'producto', value: 'Palos de metal', precio: 5000 } },
+    ]
+    const items = applyOrderGlossary([{ cantidad: 1, texto: 'palos de metal' }], glossary)
+    expect(items[0].libre).toBe(true)
+    expect(items[0].precio).toBe(5000)
+    expect(items[0].texto).toContain('palos de metal')
+  })
+
+  it('producto sin precio: queda libre y a cotizar a mano', () => {
+    const glossary: OrderGlossaryEntry[] = [
+      { termNorm: 'soporte', termDisplay: 'soporte X', meaning: { type: 'producto', value: 'soporte X', precio: null } },
+    ]
+    const items = applyOrderGlossary([{ cantidad: 1, texto: 'soporte x' }], glossary)
+    expect(items[0].libre).toBe(true)
+    expect(items[0].precio ?? null).toBeNull()
+  })
+
+  it('producto aprendido entra a la cotización como línea manual con precio', () => {
+    const glossary: OrderGlossaryEntry[] = [
+      { termNorm: 'palos', termDisplay: 'Palos de metal', meaning: { type: 'producto', value: 'Palos de metal', precio: 5000 } },
+    ]
+    const items = applyOrderGlossary([{ cantidad: 2, texto: 'palos de metal' }], glossary)
+    const r = resolveItems({ items, refs: preciosReferencia, rules: pricingRules })
+    expect(r.items[0].categoria).toBe('LIBRE')
+    expect(r.items[0].precio_unitario).toBe(5000)
+    expect(r.items[0].faltante).toBe(false)
+  })
+})
+
 describe('resolve end-to-end con glosario', () => {
   it('"moldura de 4" como grosor aplica el +10% de Sin Tela (grosor ≥ 3)', () => {
     const glossary: OrderGlossaryEntry[] = [{ termNorm: 'moldura', termDisplay: 'moldura', meaning: { type: 'grosor', value: 4 } }]

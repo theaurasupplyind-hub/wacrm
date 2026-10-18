@@ -1269,7 +1269,7 @@ async function processMessage(
   // histórico (listas de código).
   let vocab: BotVocabulary | null = null
   try {
-    vocab = await getVocabulary(accountId)
+    vocab = await getVocabulary(accountId, supabaseAdmin())
   } catch (err) {
     console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
   }

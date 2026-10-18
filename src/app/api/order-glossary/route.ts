@@ -37,8 +37,23 @@ function buildMeaning(body: Record<string, unknown> | null): GlossaryMeaning | n
     const n = typeof body.value === 'number' ? body.value : parseFloat(String(body.value ?? '').replace(',', '.'))
     return Number.isFinite(n) && n > 0 ? { type: 'grosor', value: n } : null
   }
-  if (body.type === 'alias' && typeof body.value === 'string' && body.value.trim()) {
-    return { type: 'alias', value: body.value.trim().toLowerCase() }
+  if (body.type === 'alias') {
+    // Tipado (preferido): "es la variante Doble 4cm".
+    const target = typeof body.target === 'string' ? body.target.trim().toLowerCase() : ''
+    const tt = body.target_type
+    if (target && (tt === 'categoria' || tt === 'variante' || tt === 'regla')) {
+      return { type: 'alias', target_type: tt, target }
+    }
+    if (typeof body.value === 'string' && body.value.trim()) {
+      return { type: 'alias', value: body.value.trim().toLowerCase() }
+    }
+    return null
+  }
+  if (body.type === 'producto') {
+    const value = typeof body.value === 'string' ? body.value.trim() : ''
+    if (!value) return null
+    const n = typeof body.precio === 'number' ? body.precio : parseFloat(String(body.precio ?? '').replace(',', '.'))
+    return { type: 'producto', value, precio: Number.isFinite(n) && n >= 0 ? Math.round(n) : null }
   }
   return null
 }
