@@ -1,7 +1,21 @@
 /**
  * Clasificador determinístico de pagos (cobro vs pago vs ambiguo).
  *
- * La distinción voucher (un cliente nos paga) vs gasto (nosotros pagamos) es
+ * ── HECHOS DEL DOMINIO (mismos que el prompt de `extract-bot-message.ts`) ──
+ * Esta capa NO "entiende": aplica estos hechos de forma barata y determinística.
+ * Nunca debe contradecir al prompt.
+ *
+ *  1. Quien escribe es SIEMPRE el taller → 1ª persona = movió plata = gasto;
+ *     3ª persona = reporta un pago de un tercero = cobro.
+ *  2. "factura" SIEMPRE es la factura de VENTA → factura nombrada + verbo de pago
+ *     = cobro, AUNQUE esté en 1ª persona. Hay PRECEDENCIA sobre el hecho 1: por eso
+ *     el chequeo de `FACTURA_NOMBRADA_RE` va ANTES que `PAGO_RE`.
+ *  3. El comprobante manda y el caption es preferencia → lo resuelve el pipeline
+ *     de voucher (acá no aplica: esta capa es sólo texto).
+ *  4. Forma pelada con nombre ("Jo pagó 2000") → `ambiguous`: la resuelve
+ *     `detectAmbiguity`/`effect-gate` con una aclaración. Nunca auto-decidir.
+ *
+ * La distinción voucher (un tercero nos paga) vs gasto (nosotros pagamos) es
  * semántica: "Mati pagó" puede significar "Mati nos pagó" o el "le pagué a
  * Mati" elidido. Por eso:
  *

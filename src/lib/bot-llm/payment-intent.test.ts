@@ -27,6 +27,13 @@ describe('classifyPaymentIntent', () => {
     expect(classifyPaymentIntent('tambien pago la otra factura')).toBeNull()
   })
 
+  it('hechos del dominio: 1ª persona sin factura = gasto; con factura = cobro (precedencia)', () => {
+    // Hecho 1: quien escribe es el taller → movió plata.
+    expect(classifyPaymentIntent('transferí 50000')).toBe('expense')
+    // Hecho 2: "factura" nombrada PRECEDE al hecho 1.
+    expect(classifyPaymentIntent('transferí para la factura de Julio')).toBe('voucher')
+  })
+
   it('marcadores explícitos de pago propio / sueldo → expense', () => {
     expect(classifyPaymentIntent('Le pagué a Jo 2000000')).toBe('expense')
     expect(classifyPaymentIntent('les pague a los proveedores')).toBe('expense')

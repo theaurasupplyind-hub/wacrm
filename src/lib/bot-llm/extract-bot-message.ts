@@ -61,6 +61,17 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 
 === REGLAS (MUY IMPORTANTES) ===
 
+=== HECHOS DEL DOMINIO (definen la lectura; NO los contradigas) ===
+
+1. **Quien escribe es SIEMPRE el taller** (número del negocio). No hay clientes escribiendo.
+   - 1ª persona ("pagué/transferí/compré") = el taller movió plata → direction "pago" → gasto.
+   - 3ª persona ("pagó/paga/transfirió") = el taller REPORTA lo que hizo un tercero → direction "cobro" → voucher.
+2. **"factura" SIEMPRE es la factura de VENTA** (lo que le emitimos al cliente; saldo por cobrar), nunca una compra.
+   - "transferí/pagué para LA FACTURA de [cliente]" o "para la factura F-10960/001" → **cobro (voucher)**, aunque esté en 1ª persona: **PRECEDENCIA sobre el hecho 1**.
+   - Un comentario sin factura nombrada ("también pago la otra factura") NO es un reporte de pago → otro.
+3. **El comprobante manda; el caption es preferencia.** Si llega una imagen/PDF de comprobante, la fuente de verdad es la imagen; el caption solo ayuda (nombre del cliente) y se ignora si no aporta.
+4. **Forma pelada** ("[Nombre] pagó 2000", sin marcador de cobro explícito) → dirección **ambigua** (¿un tercero nos pagó o le pagamos?): devolvé tu mejor intent con confianza "baja"; el sistema pedirá confirmación.
+
 - "compré N [producto]" (ej: "compré 3 bastidores 60x40") o "compré [insumo/servicio]" (ej: "compré insumos para el taller", "compré pintura") → gasto con tipo_gasto "compra".
 - "compré/compramos [insumo] a [proveedor] por [monto]" → gasto con tipo_gasto "compra", aunque el insumo sea tela.
 - "[Nombre] pago/pagó/paga/abonó [monto] en efectivo [todo]" / "[Nombre] Pago 2000000" (sujeto es quien paga, verbo pago/pagó/paga/abonó/pagaron, SIN "le"/"a" objeto, puede ser sin monto y con "todo"=paga saldo completo) → voucher (cliente pagó su factura), proveedor=[Nombre] (nombre_cliente), monto si hay (null si dice "todo" o si NO hay monto = paga el total), metodo_pago="efectivo" si dice efectivo. NUNCA empleado_gasto, NUNCA gasto aunque falte el monto. Ej: "Mathias pago en efectivo todo" → voucher, proveedor:"Mathias", monto:null, metodo_pago:"efectivo". Ej: "Jo pago en efectivo" → voucher, proveedor:"Jo", monto:null, metodo_pago:"efectivo".
@@ -68,7 +79,7 @@ Analizá el mensaje del usuario y devolvé SOLO UN JSON con esta estructura exac
 - "pagué/pagamos a [proveedor]" o "transferí a [persona]" (YO pagué/transferí, verbo en 1ª persona) → gasto con tipo_gasto "pago", proveedor=[proveedor].
 - "[Nombre] pagó/paga [monto] en/por transferencia [a Destino]" (sujeto en 3ª persona, NUNCA "le", NUNCA sueldo) → voucher, proveedor=[Nombre], destino=[Destino] o null, monto o null (=total), metodo_pago="transferencia". Ej: "Jo pago en transferencia a Jorge" → voucher, proveedor:"Jo", destino:"Jorge", monto:null, metodo_pago:"transferencia".
 - "valor X, pagamos Y" para el mismo proveedor → multi_expense con una compra por X y un pago por Y, ambos con el proveedor.
-- ROLES (completar SIEMPRE que haya verbo de pago): "voice" = first para "pagué/transferí/compré/aboné", third para "pagó/paga/abonó"; "payer" = sujeto que paga (solo en 3ª persona); "payee" = quien recibe; "direction" = "cobro" si un cliente nos paga, "pago" si nosotros pagamos. Sirven para desambiguar voucher vs gasto (3ª persona con sujeto que paga → voucher; 1ª persona → gasto). Si la forma es pelada ("Jo pagó 2000", sin marcador de cobro), igual devolvé tu mejor intent: el sistema pedirá confirmación al usuario cuando corresponda.
+- ROLES (completar SIEMPRE que haya verbo de pago): "voice" = first para "pagué/transferí/compré/aboné", third para "pagó/paga/abonó"; "payer" = sujeto que paga (solo en 3ª persona); "payee" = quien recibe; "direction" = "cobro" si el taller reporta un pago que ENTRÓ (un tercero pagó una factura nuestra), "pago" si el taller movió plata (gasto/proveedor/sueldo). Precedencia: si nombra una FACTURA, gana cobro (hecho 2). Si la forma es pelada ("Jo pagó 2000", sin marcador de cobro), igual devolvé tu mejor intent: el sistema pedirá confirmación al usuario cuando corresponda.
 - "pagué [servicio]" (ej: "pagué la luz", "pagué el alquiler") → gasto.
 - "transferí/deposité/pagué para LA FACTURA de [cliente]" o "para la factura F-10960/001" (factura NOMBRADA) → voucher, NUNCA gasto: en este sistema "factura" es SIEMPRE la factura de venta (un cobro). Un comentario sin factura nombrada ("también pago la otra factura") NO es un reporte de pago → otro.
 - "se fue la luz", "se cortó la luz" → NO es asistencia. Solo "se fue [persona]" con nombre es salida.
