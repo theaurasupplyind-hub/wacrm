@@ -15,6 +15,7 @@ import { transcribeAudio, type TranscribeLog } from '@/lib/audio/transcribe'
 import { buildBotContextText } from '@/lib/bot-llm/context'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
 import { processExpenseMessage, processExpenseConfirmReply, looksLikeExpense, loadExpenseContext, clearExpenseContext } from '@/lib/expenses'
+import { getVocabulary, type BotVocabulary } from '@/lib/catalog/vocabulary'
 import {
   processAttendanceMessage,
   processAttendanceConfirmReply,
@@ -1483,6 +1484,16 @@ async function processMessage(
   // voucher-media, media-gasto y confirms interactivos son gates pre-turno y
   // quedan arriba/afuera (ver docs/bots/decisiones-y-gotchas.md §9).
   const voucherPendingCandidates = voucherCtx.pending.flatMap((p) => p.candidates)
+
+  // Vocabulario del catálogo para los gates del router (Plan A1). Fail-open: si
+  // FacBal no responde, se usa el comportamiento histórico (listas de código).
+  let vocab: BotVocabulary | null = null
+  try {
+    vocab = await getVocabulary(accountId)
+  } catch (err) {
+    console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
+  }
+
   const captionIsForcedVoucher =
     (message.type === 'image' || message.type === 'document') &&
     !!(message.image?.caption?.trim() || message.document?.caption?.trim()) &&
@@ -1506,6 +1517,7 @@ async function processMessage(
     orderAwaiting,
     voucherCandidates: voucherPendingCandidates,
     captionIsForcedVoucher,
+    vocab,
   }, { policy: { maxWritesPerTurn: 1, originalText: inboundText } })
 
   // ── Planner ACTIVO por dominio (Fase 4) ──

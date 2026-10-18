@@ -1,4 +1,5 @@
 import type { ParsedExpense, PaymentSplit } from './types'
+import { mentionsProduct, type BotVocabulary } from '@/lib/catalog/vocabulary'
 
 const EXPENSE_INTENT_KEYWORDS = [
   'gaste', 'gasté', 'gasto',
@@ -587,8 +588,12 @@ const CATALOG_PRODUCT_WORDS = [
 
 const ORDER_COMPRA_VERBS = ['compre', 'compra', 'compramos', 'compraron', 'comprar']
 
-function isCatalogOrder(normalized: string): boolean {
-  const hasProduct = CATALOG_PRODUCT_WORDS.some(w => normalized.includes(w))
+function isCatalogOrder(normalized: string, vocab?: BotVocabulary | null): boolean {
+  // Con vocabulario, los productos salen del catálogo (Plan A1). Sin él, de la
+  // lista histórica: fail-open para llamadores que no tienen cuenta.
+  const hasProduct = vocab
+    ? mentionsProduct(normalized, vocab)
+    : CATALOG_PRODUCT_WORDS.some(w => normalized.includes(w))
   const hasCompraVerb = ORDER_COMPRA_VERBS.some(v => normalized.includes(v))
   const hasMeasure = /\d{1,4}\s*x\s*\d{1,4}/.test(normalized)
   const hasProviderAndAmount = /\b(?:a|proveedor)\s+[a-záéíóúñ]+/.test(normalized) && /\d/.test(normalized)
@@ -601,10 +606,10 @@ function isOrderMention(normalized: string): boolean {
   return /(pague|pago|pagamos|pagar|abone|abono)\s+(el|lo|un|mi|ese)?\s*pedido/.test(normalized)
 }
 
-export function looksLikeExpense(text: string): boolean {
+export function looksLikeExpense(text: string, vocab?: BotVocabulary | null): boolean {
   const normalized = normalize(text)
   if (!EXPENSE_INTENT_KEYWORDS.some(k => normalized.includes(k))) return false
-  if (isCatalogOrder(normalized)) return false
+  if (isCatalogOrder(normalized, vocab)) return false
   if (isOrderMention(normalized)) return false
   return true
 }

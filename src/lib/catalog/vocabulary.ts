@@ -11,8 +11,8 @@
  * Ver `plan-01-vocabulario-datos.md`.
  */
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
-import type { PrecioReferencia, PricingRule } from '@/lib/precios'
-import { buildKnownVocab } from '@/lib/pedidos/classify-item'
+import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
+import { buildKnownVocab, tokenMatchesWord } from '@/lib/pedidos/classify-item'
 
 export interface BotVocabulary {
   refs: PrecioReferencia[]
@@ -101,4 +101,64 @@ export async function getVocabulary(accountId: string): Promise<BotVocabulary> {
 export function __resetVocabularyCache(): void {
   cache.clear()
   inflight.clear()
+}
+
+// ── Predicados de vocabulario (gates de clasificación) ──────────────────────
+
+/** Palabras significativas de un término (sin artículos ni unidades/medidas). */
+function phraseWords(text: string): string[] {
+  return normalizeText(String(text))
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !/\d/.test(w))
+}
+
+function anyTokenMatches(words: string[], target: string): boolean {
+  return words.some((w) => tokenMatchesWord(w, target))
+}
+
+function matchesAnyPhrase(textWords: string[], phrases: string[][]): boolean {
+  return phrases.some((parts) => parts.length > 0 && parts.every((p) => anyTokenMatches(textWords, p)))
+}
+
+interface VocabPhrases {
+  /** Categorías, variantes y sinónimos de producto. Sin reglas (incluyen insumos). */
+  product: string[][]
+  /** Todo: producto + nombres y tokens de reglas. */
+  catalog: string[][]
+}
+
+const PHRASE_CACHE = new WeakMap<BotVocabulary, VocabPhrases>()
+
+function vocabPhrases(vocab: BotVocabulary): VocabPhrases {
+  const cached = PHRASE_CACHE.get(vocab)
+  if (cached) return cached
+  const product = [...vocab.categorias, ...vocab.variantes, ...vocab.sinonimos.keys()]
+    .map(phraseWords)
+    .filter((p) => p.length > 0)
+  const rules = [...vocab.rules.map((r) => r.name), ...vocab.rules.flatMap((r) => r.matchTokens)]
+    .map(phraseWords)
+    .filter((p) => p.length > 0)
+  const value: VocabPhrases = { product, catalog: [...product, ...rules] }
+  PHRASE_CACHE.set(vocab, value)
+  return value
+}
+
+function mentions(text: string, phrases: string[][]): boolean {
+  const words = phraseWords(text)
+  if (words.length === 0) return false
+  return matchesAnyPhrase(words, phrases)
+}
+
+/**
+ * ¿El texto menciona un **producto** del catálogo (categoría, variante o
+ * sinónimo)? Excluye reglas a propósito: los nombres de reglas incluyen insumos
+ * ("Pinturas", "Impresion") que en un gasto NO son un pedido.
+ */
+export function mentionsProduct(text: string, vocab: BotVocabulary): boolean {
+  return mentions(text, vocabPhrases(vocab).product)
+}
+
+/** ¿El texto menciona cualquier término del catálogo (producto o regla)? */
+export function mentionsCatalogTerm(text: string, vocab: BotVocabulary): boolean {
+  return mentions(text, vocabPhrases(vocab).catalog)
 }

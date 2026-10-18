@@ -6,6 +6,7 @@ import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
 import { isVoucherClarificationReply } from '@/lib/ai/voucher-pipeline'
+import type { BotVocabulary } from '@/lib/catalog/vocabulary'
 import type { TurnAction } from './actions'
 import { applyPolicy, actionDomain, isWriteAction, DEFAULT_POLICY, type PlannerDomain, type PolicyContext } from './policy'
 
@@ -46,6 +47,8 @@ export interface TurnState {
   voucherCandidates: MatchVoucherCandidate[]
   /** Caption de imagen/documento que en realidad es nombre de cliente de un voucher. */
   captionIsForcedVoucher: boolean
+  /** Vocabulario del catálogo para los gates (Plan A1). Opcional: fail-open. */
+  vocab?: BotVocabulary | null
 }
 
 export interface TurnPlan {
@@ -231,6 +234,7 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
           mediaConsumedByVoucher,
           jevPending: buildJevPending(extraction),
           clarifyAnsweredIntent,
+          vocab: state.vocab ?? null,
         })
 
   const dispatchedTo: string = routerDecision.dispatchedTo

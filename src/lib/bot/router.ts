@@ -7,6 +7,7 @@ import { looksLikePedido } from '@/lib/bot-llm/fallback'
 import { isCategoryCorrectionCommand } from '@/lib/expenses/command'
 import { isExplicitBudgetCreationRequest, mentionsOrderItems, looksLikeOrderSlotReply } from '@/lib/pedidos/intent'
 import { classifyReply } from '@/lib/bot-llm/reply-intent'
+import type { BotVocabulary } from '@/lib/catalog/vocabulary'
 
 export type DispatchedTo = 'expense' | 'attendance' | 'voucher' | 'pedido' | 'flow' | 'interactive' | 'assistant' | 'clarify' | 'none'
 export type DispatchReason =
@@ -83,6 +84,12 @@ export interface RouterState {
    * (ej. "Me pagó (cobro)" matchea looksLikeExpense).
    */
   clarifyAnsweredIntent?: BotIntent | null
+  /**
+   * Vocabulario del catálogo (Plan A1). Opcional: si falta, los gates usan las
+   * listas históricas (fail-open). Se pasa desde el webhook para que un producto
+   * nuevo del panel se reconozca sin tocar código.
+   */
+  vocab?: BotVocabulary | null
 }
 
 export interface RouterDecision {
@@ -103,7 +110,7 @@ function resolveClarifyIntent(intent: BotIntent): RouterDecision {
 }
 
 export function decideDispatch(state: RouterState): RouterDecision {
-  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, hasResumableQuote, orderAwaiting, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent } = state
+  const { hasPendingExpense, hasPendingAttendance, hasPendingOrder, hasResumableQuote, orderAwaiting, flowConsumed, interactiveReplyId, inboundText, extraction, jevPending, clarifyAnsweredIntent, vocab } = state
   const intent = extraction?.intent
   const confianza = extraction?.confianza
 
@@ -180,7 +187,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
     !interactiveReplyId &&
     hasResumableQuote &&
     (isExplicitBudgetCreationRequest(inboundText) ||
-      mentionsOrderItems(inboundText) ||
+      mentionsOrderItems(inboundText, vocab) ||
       looksLikeOrderSlotReply(inboundText) ||
       classifyReply(inboundText) !== 'other')
   ) {
@@ -207,7 +214,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
   if (intent === 'pedido') {
     // Una mención conversacional a "presupuesto" no es por sí sola una orden
     // para entrar al flujo de creación ni una respuesta de nombre de cliente.
-    if (!mentionsOrderItems(inboundText) && !isExplicitBudgetCreationRequest(inboundText)) {
+    if (!mentionsOrderItems(inboundText, vocab) && !isExplicitBudgetCreationRequest(inboundText)) {
       return { dispatchedTo: 'assistant', dispatchReason: 'intent' }
     }
     return { dispatchedTo: 'pedido', dispatchReason: 'intent' }
@@ -219,8 +226,8 @@ export function decideDispatch(state: RouterState): RouterDecision {
     !flowConsumed &&
     !interactiveReplyId &&
     inboundText.trim() &&
-    looksLikePedido(inboundText) &&
-    (mentionsOrderItems(inboundText) || isExplicitBudgetCreationRequest(inboundText))
+    looksLikePedido(inboundText, vocab) &&
+    (mentionsOrderItems(inboundText, vocab) || isExplicitBudgetCreationRequest(inboundText))
   ) {
     return { dispatchedTo: 'pedido', dispatchReason: 'fallback_regex' }
   }
@@ -229,7 +236,7 @@ export function decideDispatch(state: RouterState): RouterDecision {
   }
 
   // Fallback regex gates — mirrors webhook fallback
-  const isExpenseText = !flowConsumed && !interactiveReplyId && ((hasPendingExpense && !jevSupersede) || (inboundText.trim() && looksLikeExpense(inboundText)))
+  const isExpenseText = !flowConsumed && !interactiveReplyId && ((hasPendingExpense && !jevSupersede) || (inboundText.trim() && looksLikeExpense(inboundText, vocab)))
   if (isExpenseText) {
     return { dispatchedTo: 'expense', dispatchReason: 'fallback_regex' }
   }

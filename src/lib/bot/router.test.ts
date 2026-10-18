@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { decideDispatch } from './router'
 import { looksLikeExpense } from '@/lib/expenses'
 import type { UnifiedExtraction } from '@/lib/bot-llm/types'
+import { buildVocabulary } from '@/lib/catalog/vocabulary'
+import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
+import type { PrecioReferencia } from '@/lib/precios'
 
 function extraction(overrides: Partial<UnifiedExtraction>): UnifiedExtraction {
   return {
@@ -428,6 +431,32 @@ describe('decideDispatch — cotización descartada reanudable (incidente 15/10)
       inboundText: 'dale',
       extraction: extraction({ intent: 'otro', confianza: 'baja' }),
     })
+    expect(r.dispatchedTo).toBe('assistant')
+  })
+})
+
+describe('decideDispatch con vocabulario (Plan A1)', () => {
+  // Producto que NO existe en el repo: si rutea, el gate es data-driven.
+  const nueva: PrecioReferencia = { categoria: 'CORTINA ROLLER', medida: '100 x 100', variante: '', precio: 1000 }
+  const vocab = buildVocabulary([...preciosReferencia, nueva], pricingRules)
+  const base = {
+    hasPendingExpense: false,
+    hasPendingAttendance: false,
+    hasPendingVoucher: false,
+    flowConsumed: false,
+    interactiveReplyId: null,
+    extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+    mediaConsumedByVoucher: false,
+  }
+
+  it('un producto nuevo del catalogo rutea a pedido sin tocar codigo', () => {
+    const r = decideDispatch({ ...base, inboundText: 'quiero una cortina roller', vocab })
+    expect(r.dispatchedTo).toBe('pedido')
+    expect(r.dispatchReason).toBe('fallback_regex')
+  })
+
+  it('sin vocabulario, el mismo producto no se reconoce (comportamiento historico)', () => {
+    const r = decideDispatch({ ...base, inboundText: 'quiero una cortina roller' })
     expect(r.dispatchedTo).toBe('assistant')
   })
 })

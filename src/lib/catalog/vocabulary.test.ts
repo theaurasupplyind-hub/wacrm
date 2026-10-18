@@ -8,10 +8,13 @@ const facbal = vi.hoisted(() => ({
 vi.mock('@/lib/facbal/client', () => facbal)
 
 import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
+import type { PrecioReferencia } from '@/lib/precios'
 import {
   buildVocabulary,
   getVocabulary,
   invalidateVocabulary,
+  mentionsProduct,
+  mentionsCatalogTerm,
   __resetVocabularyCache,
   VOCABULARY_TTL_MS,
 } from './vocabulary'
@@ -80,5 +83,28 @@ describe('getVocabulary (cacheado)', () => {
     facbal.getPreciosReferencia.mockRejectedValueOnce(new Error('net down'))
     const after = await getVocabulary('acc-1')
     expect(after).toBe(warm)
+  })
+})
+
+describe('mentionsProduct / mentionsCatalogTerm (Plan A1)', () => {
+  // Catálogo con un producto que NO existe en el repo: si el gate lo reconoce,
+  // el reconocimiento es data-driven (no hardcodeado).
+  const nueva: PrecioReferencia = { categoria: 'CORTINA ROLLER', medida: '100 x 100', variante: '', precio: 1000 }
+  const vocab = buildVocabulary([...preciosReferencia, nueva], pricingRules)
+
+  it('reconoce una categoría nueva del catálogo (con plural)', () => {
+    expect(mentionsProduct('quiero una cortina roller', vocab)).toBe(true)
+    expect(mentionsProduct('2 cortinas roller', vocab)).toBe(true)
+    expect(mentionsProduct('un bastidor 60x40', vocab)).toBe(true)
+  })
+
+  it('NO trata los insumos de las reglas como producto', () => {
+    expect(mentionsProduct('pagué pintura para el taller', vocab)).toBe(false)
+    expect(mentionsCatalogTerm('pagué pintura para el taller', vocab)).toBe(true)
+  })
+
+  it('sin coincidencia → false', () => {
+    expect(mentionsProduct('hola, cómo va?', vocab)).toBe(false)
+    expect(mentionsCatalogTerm('hola, cómo va?', vocab)).toBe(false)
   })
 })

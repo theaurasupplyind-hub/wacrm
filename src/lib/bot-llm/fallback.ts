@@ -1,4 +1,5 @@
 import { looksLikeExpense, parseExpense } from '@/lib/expenses/parse-expense'
+import { mentionsCatalogTerm, type BotVocabulary } from '@/lib/catalog/vocabulary'
 import { looksLikeAttendance, parseAttendance } from '@/lib/attendance/parse-attendance'
 import { classifyPaymentIntent } from './payment-intent'
 import type { BotIntent, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
@@ -94,6 +95,8 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
 // Palabras de producto/pedido (normalizadas, sin acentos).
 const PEDIDO_PRODUCT_RE =
   /\b(bastidor(?:es)?|lienzo|lona|tapacantos?|acrilico|marco|molduras?|circular(?:es)?|rollo|cotizar|cotiza|presupuesto|embastad[oa]?|embastar)\b/i
+/** Verbos/sustantivos de pedido que no son nombres de producto. */
+const PEDIDO_ACTION_RE = /\b(?:cotizar|cotiza|presupuesto|embastar)\b/i
 const MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/
 // "a <proveedor> por <monto>" → compra del negocio, no pedido.
 const PROVIDER_AMOUNT_RE = /\ba\s+[a-záéíóúñ]+\s+(?:por|a)\s+\$?\s*\d/i
@@ -104,15 +107,19 @@ const PROVIDER_AMOUNT_RE = /\ba\s+[a-záéíóúñ]+\s+(?:por|a)\s+\$?\s*\d/i
  * (gasto/asistencia/voucher/pago). El "compré ... a proveedor por monto" es
  * gasto, no pedido.
  */
-export function looksLikePedido(text: string): boolean {
+export function looksLikePedido(text: string, vocab?: BotVocabulary | null): boolean {
   const raw = (text || '').trim()
   if (!raw) return false
-  if (looksLikeExpense(raw)) return false
+  if (looksLikeExpense(raw, vocab)) return false
   if (looksLikeAttendance(raw)) return false
   if (classifyPaymentIntent(raw) === 'voucher') return false
 
   const hasMeasure = MEASURE_RE.test(raw)
-  const hasProduct = PEDIDO_PRODUCT_RE.test(raw)
+  // Con vocabulario, los productos salen del catálogo (Plan A1); sin él, la lista
+  // histórica. Las acciones de pedido (cotizar/presupuesto) van siempre en código.
+  const hasProduct = vocab
+    ? mentionsCatalogTerm(raw, vocab) || PEDIDO_ACTION_RE.test(raw)
+    : PEDIDO_PRODUCT_RE.test(raw)
   const hasProviderAmount = PROVIDER_AMOUNT_RE.test(raw)
   const hasAmount = /\$\s*\d|\b\d{4,}\b/.test(raw)
 
@@ -125,14 +132,14 @@ export function looksLikePedido(text: string): boolean {
  * una UnifiedExtraction. Confianza siempre 'baja' y dudoso según ambigüedad,
  * para que el webhook se comporte igual que con el fallback regex de hoy.
  */
-export function fallbackExtract(text: string): UnifiedExtraction {
+export function fallbackExtract(text: string, vocab?: BotVocabulary | null): UnifiedExtraction {
   const raw = (text || '').trim()
   if (!raw) return empty(raw)
 
   // Pedidos: medidas o keywords de producto, sin dominio rival (gasto/
   // asistencia/voucher). Va ANTES del split multi-expense porque una lista de
   // medidas ("56 x 78, 89 x 67") no es una lista de gastos.
-  if (looksLikePedido(raw)) {
+  if (looksLikePedido(raw, vocab)) {
     return {
       ...empty(raw),
       intent: 'pedido',
@@ -166,7 +173,7 @@ export function fallbackExtract(text: string): UnifiedExtraction {
     }
   }
 
-  if (looksLikeExpense(raw)) {
+  if (looksLikeExpense(raw, vocab)) {
     const p = parseExpense(raw)
     const faltan: MissingField[] = []
     if (!p.amount || p.amount <= 0) faltan.push('monto')
