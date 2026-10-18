@@ -7,14 +7,13 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import type { InteractiveButton } from '@/lib/whatsapp/meta-api'
 import {
-  getPreciosReferencia,
-  getPricingRules,
   findClientMatches,
   getClientAddresses,
   type InvoiceCreatedResult,
   type ClientAddress,
 } from '@/lib/facbal/client'
 import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
+import { getVocabulary } from '@/lib/catalog/vocabulary'
 import { parseOrder } from './parse-order'
 import { comprehendOrder, resolveClientGuess } from './understand'
 import type { MissingAttr } from './understand'
@@ -300,9 +299,10 @@ async function logPedidoSend(
 async function loadCatalog(
   args: ProcessPedidoMessageArgs,
 ): Promise<{ refs: PrecioReferencia[]; rules: PricingRule[] }> {
-  const refs = args.refs ?? (await getPreciosReferencia())
-  const rules = args.rules ?? (await getPricingRules())
-  return { refs, rules }
+  if (args.refs && args.rules) return { refs: args.refs, rules: args.rules }
+  // Catálogo cacheado por cuenta (P0): evita 2 HTTP por request.
+  const vocab = await getVocabulary(args.accountId)
+  return { refs: args.refs ?? vocab.refs, rules: args.rules ?? vocab.rules }
 }
 
 async function searchCandidates(

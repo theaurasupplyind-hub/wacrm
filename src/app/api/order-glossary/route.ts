@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { normalizeTerm, type GlossaryMeaning } from '@/lib/pedidos/glossary'
+import { invalidateVocabulary } from '@/lib/catalog/vocabulary'
 
 /**
  * GET    /api/order-glossary            — lista el glosario de la cuenta.
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
       console.error('[order-glossary POST] error:', error)
       return NextResponse.json({ error: 'Failed to save term' }, { status: 500 })
     }
+    invalidateVocabulary(accountId)
     return NextResponse.json({ entries: data ?? [] })
   } catch (err) {
     return toErrorResponse(err)
@@ -126,6 +128,7 @@ export async function DELETE(request: Request) {
       console.error('[order-glossary DELETE] error:', error)
       return NextResponse.json({ error: 'Failed to delete term' }, { status: 500 })
     }
+    invalidateVocabulary(accountId)
     return NextResponse.json({ ok: true })
   } catch (err) {
     return toErrorResponse(err)
