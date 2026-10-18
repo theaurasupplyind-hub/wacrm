@@ -252,7 +252,7 @@ export async function interpretQuoteChanges(
       .join('\n')
     const pendText = pendientes.length > 0 ? `\nSin cotizar (fuera de catálogo): ${pendientes.join(', ')}` : ''
     const res = await callOpenRouter({
-      systemPrompt: `${CHANGE_PROMPT}\n\n${buildVocabularyPromptBlock(vocab)}`,
+      systemPrompt: `${CHANGE_PROMPT}\n\n${buildVocabularyPromptBlock(vocab, { rules: false })}`,
       userMessage: `Líneas de la cotización:\n${linesText}${pendText}\n\nMensaje del usuario: "${text}"`,
       jsonMode: true,
       temperature: 0,

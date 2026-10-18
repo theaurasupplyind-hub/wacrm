@@ -399,7 +399,7 @@ async function extractWithoutJev(
   vocab?: BotVocabulary | null,
 ): Promise<UnifiedExtraction> {
   const today = todayAR()
-  const systemPrompt = `${buildVocabularyPromptBlock(vocab)}\n\n${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
+  const systemPrompt = `${buildVocabularyPromptBlock(vocab, { ruleAdjustments: false })}\n\n${EXTRACT_PROMPT}\n\nFECHA ACTUAL (America/Argentina/Buenos_Aires): ${today}. REGLA FECHA: si el usuario dice solo "el 26", "día 26" o "el día del 26" sin mes, poné "${today.slice(0, 7)}-DD" con ese día. No inventes julio ni otro mes. "ayer" es el día anterior a ${today}, "anteayer" dos días antes.`
 
   const userMessage = contextText
     ? `CONTEXTO (últimos mensajes + estado pendiente del bot):\n${contextText}\n\nMENSAJE: ${raw}`

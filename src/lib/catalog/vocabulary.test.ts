@@ -118,12 +118,23 @@ describe('buildVocabularyPromptBlock (Plan A2)', () => {
     expect(block).toContain('BASTIDOR')
     expect(block).toContain('Sin Tela')
     expect(block).toContain('Cambio de Tela (-50%)')
-    expect(block).not.toContain('Términos ya aprendidos')
   })
 
-  it('incluye los sinónimos aprendidos', () => {
+  it('NUNCA incluye los términos aprendidos del glosario (se aplican antes de clasificar)', () => {
     const conSinonimos = { ...vocab, sinonimos: new Map([['fantasia', 'Sin Tela']]) }
-    expect(buildVocabularyPromptBlock(conSinonimos)).toContain('fantasia = Sin Tela')
+    const block = buildVocabularyPromptBlock(conSinonimos)
+    expect(block).not.toContain('Términos ya aprendidos')
+    expect(block).not.toContain('fantasia')
+  })
+
+  it('trim por consumidor: sin ajustes de precio y sin reglas', () => {
+    const sinAjustes = buildVocabularyPromptBlock(vocab, { ruleAdjustments: false })
+    expect(sinAjustes).toContain('Pinturas')
+    expect(sinAjustes).not.toContain('(+10%)')
+
+    const sinReglas = buildVocabularyPromptBlock(vocab, { rules: false })
+    expect(sinReglas).toContain('Variantes')
+    expect(sinReglas).not.toContain('Reglas de precio')
   })
 
   it('sin vocabulario devuelve la instrucción genérica', () => {

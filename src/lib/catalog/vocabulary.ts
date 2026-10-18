@@ -165,7 +165,8 @@ export function mentionsCatalogTerm(text: string, vocab: BotVocabulary): boolean
 
 // ── Bloque de vocabulario para los prompts del LLM (Plan A2) ────────────────
 
-function ruleLabel(r: PricingRule): string {
+function ruleLabel(r: PricingRule, withAdjustments: boolean): string {
+  if (!withAdjustments) return r.name
   if (r.operation === 'percentage' && r.operationValue) {
     return `${r.name} (${r.operationValue > 0 ? '+' : ''}${r.operationValue}%)`
   }
@@ -173,24 +174,49 @@ function ruleLabel(r: PricingRule): string {
   return r.name
 }
 
+export interface VocabularyPromptOptions {
+  /** Incluye "Categorías/productos". */
+  products?: boolean
+  /** Incluye "Variantes". */
+  variants?: boolean
+  /** Incluye "Reglas de precio". */
+  rules?: boolean
+  /** Incluye el ajuste de precio en las reglas: "Pinturas (+10%)" vs "Pinturas". */
+  ruleAdjustments?: boolean
+}
+
+const ALL_SECTIONS: Required<VocabularyPromptOptions> = {
+  products: true,
+  variants: true,
+  rules: true,
+  ruleAdjustments: true,
+}
+
 /**
  * Bloque compacto con el catálogo actual, para inyectar en los prompts de los
- * LLM en vez de listas de producto hardcodeadas. Sin vocabulario devuelve una
- * instrucción genérica (no rompe llamadores sin cuenta).
+ * LLM en vez de listas de producto hardcodeadas. Se puede trimear por consumidor
+ * (el extractor no necesita los ajustes de precio; el intérprete de cambios, las
+ * reglas). Sin vocabulario devuelve una instrucción genérica (llamadores sin cuenta).
+ *
+ * NO incluye los términos aprendidos del glosario: esos se aplican de forma
+ * determinística al texto antes de clasificar (`applyOrderGlossary`).
  */
-export function buildVocabularyPromptBlock(vocab: BotVocabulary | null | undefined): string {
+export function buildVocabularyPromptBlock(
+  vocab: BotVocabulary | null | undefined,
+  opts: VocabularyPromptOptions = ALL_SECTIONS,
+): string {
   if (!vocab) {
     return 'CATÁLOGO: usá los nombres de producto/variante tal como los escribe el cliente; no los traduzcas ni los reemplaces.'
   }
+  const o = { ...ALL_SECTIONS, ...opts }
   const lines = [
     'CATÁLOGO ACTUAL (nombres que el sistema reconoce; usalos tal cual los escribe el cliente):',
-    `- Categorías/productos: ${vocab.categorias.join(' | ') || '(sin datos)'}`,
-    `- Variantes: ${vocab.variantes.join(' | ') || '(sin datos)'}`,
-    `- Reglas de precio: ${vocab.rules.map(ruleLabel).join(' | ') || '(sin datos)'}`,
   ]
-  if (vocab.sinonimos.size > 0) {
-    const pares = [...vocab.sinonimos.entries()].map(([term, dest]) => `${term} = ${dest}`)
-    lines.push(`- Términos ya aprendidos: ${pares.join(' | ')}`)
+  if (o.products) lines.push(`- Categorías/productos: ${vocab.categorias.join(' | ') || '(sin datos)'}`)
+  if (o.variants) lines.push(`- Variantes: ${vocab.variantes.join(' | ') || '(sin datos)'}`)
+  if (o.rules) {
+    const rules = vocab.rules.map((r) => ruleLabel(r, o.ruleAdjustments)).join(' | ')
+    lines.push(`- Reglas de precio: ${rules || '(sin datos)'}`)
   }
   return lines.join('\n')
 }
