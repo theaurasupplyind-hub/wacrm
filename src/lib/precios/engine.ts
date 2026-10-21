@@ -78,6 +78,14 @@ const DESC_STOPWORDS = new Set([
   'aprox', 'tipo', 'grosor', 'medida', 'color', 'atras', 'adelante',
 ])
 
+/**
+ * Palabras que delatan el arrastre de un ENCABEZADO de bloque del mensaje
+ * ("Sin lienzo (con los esquineros atrás): ..."). Solo estas habilitan descartar
+ * el prefijo cuando no hay ninguna palabra del catálogo: así no se pierden
+ * descriptores legítimos como el color ("marco dorado").
+ */
+const HEADER_NOISE = new Set(['esquineros', 'esquinero', 'atras', 'adelante', 'arriba', 'abajo', 'trasero', 'traseros'])
+
 /** Palabras de contenido (sin unidades/stopwords) de un texto. */
 function contentWords(text: string): string[] {
   return normalizeText(text)
@@ -305,10 +313,13 @@ export function buildSuggestionDesc(
   // Ruido del texto libre: el resto no pertenece al catálogo (p. ej. "cm con los
   // esquineros atrás" arrastrado del encabezado del usuario). Anteponerlo
   // ensuciaba la descripción que se persiste en la factura (regresión
-  // "Sin Tela A x B"). Se trata como consumido → se emite regla + medida.
+  // "Sin Tela A x B"). Solo se descarta si el resto delata un encabezado: un
+  // descriptor legítimo fuera del catálogo (color: "marco dorado") se conserva.
   if (!consumed && knownWords && knownWords.length > 0) {
     const words = contentWords(remainder)
-    if (words.length > 0 && !words.some(w => matchesKnownWord(w, knownWords))) {
+    const hasCatalogWord = words.some(w => matchesKnownWord(w, knownWords))
+    const looksLikeHeader = words.some(w => HEADER_NOISE.has(w))
+    if (words.length === 0 || (!hasCatalogWord && looksLikeHeader)) {
       consumed = true
     }
   }

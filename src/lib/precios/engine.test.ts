@@ -125,7 +125,7 @@ describe('buildSuggestionDesc', () => {
     expect(buildSuggestionDesc('pintura 94x81', 'Pinturas', pinturas)).toBe('Pintura 94x81')
   })
 
-  it('descarta el prefijo de ruido cuando no hay palabras de catálogo (regresión "Sin Tela A x B")', () => {
+  it('descarta el prefijo de ruido cuando el resto delata un encabezado (regresión "Sin Tela A x B")', () => {
     const sinTela = pricingRules.find(r => r.name === 'Sin Tela')!
     const knownWords = ['bastidor', 'lienzo', 'tela', 'sin', 'pintura', 'tapacanto', 'marco', 'tapiz']
     // Texto que arrastra el encabezado del usuario ("Sin lienzo (con los esquineros atrás)").
@@ -136,13 +136,11 @@ describe('buildSuggestionDesc', () => {
     expect(desc).toContain('Sin Tela')
   })
 
-  it('conserva el prefijo solo si el resto es una palabra del catálogo', () => {
+  it('conserva descriptores legítimos fuera del catálogo (color)', () => {
     const tapacanto = pricingRules.find(r => r.name === 'Tapacanto')!
     const base = ['bastidor', 'lienzo', 'tela', 'marco', 'tapacanto']
-    // "dorado" NO está en el catálogo → se descarta el prefijo.
-    expect(buildSuggestionDesc('marco dorado 45x32 tapacanto', 'Tapacanto', tapacanto, base)).toBe('Tapacanto 45x32')
-    // "dorado" SÍ está en el catálogo → se conserva.
-    expect(buildSuggestionDesc('marco dorado 45x32 tapacanto', 'Tapacanto', tapacanto, [...base, 'dorado'])).toBe(
+    // "dorado" NO está en el catálogo, pero es un descriptor del producto: se conserva.
+    expect(buildSuggestionDesc('marco dorado 45x32 tapacanto', 'Tapacanto', tapacanto, base)).toBe(
       'Dorado 45x32 Tapacanto',
     )
   })

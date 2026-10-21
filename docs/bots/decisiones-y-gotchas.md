@@ -242,10 +242,14 @@ crudo del usuario cuando no lo reconocía → *"Cm con los esquineros atrás 200
 Sin Tela"*.
 
 - **Fix:** `buildSuggestionDesc` acepta `knownWords` y descarta el prefijo cuando el
-  resto **no contiene ninguna palabra del catálogo** (ruido de encabezados). Se sigue
-  emitiendo **regla/categoría + medida** (`"Pintura 200 x 140"`,
-  `"Bastidor 200 x 140 Sin Tela"`), que es lo que necesita el re-parseo y el
-  intérprete de cambios.
+  resto contiene una palabra de **encabezado** (`esquineros`, `atrás`, …) y ninguna
+  del catálogo. Se sigue emitiendo **regla/categoría + medida**
+  (`"Pintura 200 x 140"`, `"Bastidor 200 x 140 Sin Tela"`), que es lo que necesita el
+  re-parseo y el intérprete de cambios.
+- **Corrección 2026-10-21:** descartar *todo* prefijo que no esté en el catálogo
+  borraba descriptores legítimos (color: "marco dorado" → "Tapacanto 45x32"). Ahora
+  solo se descarta si el resto delata un encabezado; un descriptor fuera de catálogo
+  se conserva (`"Dorado 45x32 Tapacanto"`).
 - **Por qué NO se recorta a "solo la regla":** `descripcion` se reinyecta como texto
   del ítem (`index.ts` contexto/reproceso/`quoteLines`); sin la **medida** las líneas
   son indistinguibles y el LLM corrige/borra la equivocada
