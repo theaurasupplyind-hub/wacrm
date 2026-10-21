@@ -263,6 +263,25 @@ defaults existentes (`Retira`, sin fecha, sin descuento) y no usa ni guarda el
 teléfono interno del remitente como teléfono/nombre del cliente. `cancelar` y
 `reiniciar` limpian también `order_context`.
 
+##### Vocabulario del catálogo (fuente única)
+
+```
+src/lib/catalog/
+├── vocabulary.ts   # getVocabulary(accountId, db): refs + rules + glosario, cache 5 min
+│                   # mentionsProduct / mentionsCatalogTerm / mentionsRuleName
+│                   # buildVocabularyPromptBlock (prompt del LLM)
+└── defaults.ts     # DEFAULT_CATEGORIA (fuente única del default de categoría)
+```
+
+- Alimenta **gates de clasificación** (`bot/router`, `bot-llm/fallback`,
+  `pedidos/intent`, `expenses/parse-expense`) y **prompts** (`parseOrder`,
+  `interpretQuoteChanges`, `extractBotMessage`): agregar un producto, variante o
+  regla en el panel cambia el comportamiento **sin tocar código**.
+- **Siempre se carga con `db`** (incluye `order_glossary`); cualquier edición del
+  glosario invalida la cache de la cuenta. Invariantes en
+  [`decisiones-y-gotchas.md`](./decisiones-y-gotchas.md) §12.
+- Si FacBal falla, los gates caen a las listas históricas de código (fail-open).
+
 ##### Base de datos del motor y observabilidad
 
 | Migración | Objeto | Propósito |

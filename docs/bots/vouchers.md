@@ -16,23 +16,31 @@
 Las **Fases 1–3** **solo agregan entradas al pool**. Ninguna fase asigna
 `matchStatus`, envía mensajes finales ni llama `registrarPago()`.
 
-Si el pool queda vacío tras Fases 1–3, se ejecuta **Fase 4** (wide search) como
-fallback. Fase 4 siempre muestra opciones al usuario (nunca auto-match).
+**Fase 4** (resolución por nombre) reduce el pool o agrega el mejor candidato.
+**Fase 5** (wide search) solo corre si el pool sigue vacío y siempre muestra
+opciones al usuario (nunca auto-match).
 
-La **decisión** ocurre inline después de las fases de recolección. Es el único
-lugar donde se determina `matched`, `multi_invoice`, `ambiguous` o `no_match`.
+La **decisión** ocurre **inline** en el pipeline, después de las fases. Ahí se
+determina `matched`, `multi_invoice`, `ambiguous` o `no_match`. **No existe una
+función `resolvePoolDecision()`**: ese nombre fue un diseño planificado que nunca
+se extrajo del pipeline (`src/lib/ai/voucher-pipeline.ts`).
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  FASES 1–3 (y 4 como fallback)                              │
+│  FASES 1–3                                                  │
 │  Solo agregan entradas al candidatePool.                    │
 │  Nunca setean matchStatus ni llaman registrarPago().        │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  MOTOR DE DECISIÓN (resolvePoolDecision)                    │
-│  Evalúa el pool completo + nombre extraído + scores.        │
-│  Único lugar que asigna matchStatus.                       │
+│  FASE 4 — resolución por nombre (reduce/agrega al pool)     │
+│  FASE 5 — wide search solo si el pool quedó vacío           │
+└──────────────────────────┬──────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  DECISIÓN INLINE                                            │
+│  Evalúa el pool + nombre extraído + scores.                 │
+│  Único lugar que asigna matchStatus.                        │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -90,40 +98,28 @@ interface PoolEntry {
 
 ---
 
-## Motor de decisión — `resolvePoolDecision()`
+## Decisión — inline en el pipeline
 
-Después de ejecutar Fases 1–3, se evalúa el pool completo. Es el **único** lugar
-que asigna `matchStatus`.
+Después de las Fases 1–5, el pipeline evalúa el pool completo y asigna
+`matchStatus`. **No hay función extraída** (`resolvePoolDecision()` no existe);
+la lógica vive en `processVoucherImage` / `processVoucherText`.
 
-### Entrada
+### Insumos
 
 - `candidatePool: PoolEntry[]`
 - `voucher: VoucherData` (monto, nombre_origen, nombre_cliente, …)
-- `nameThreshold` (= `NAME_MATCH_THRESHOLD`, 0.5)
-
-### Salida
-
-```typescript
-interface PoolDecision {
-  status: 'matched' | 'multi_invoice' | 'ambiguous' | 'no_match'
-  selectedEntry?: PoolEntry
-  selectedInvoice?: MatchVoucherCandidate
-  candidates: MatchVoucherCandidate[]
-  mensajeRespuesta: string
-  reason: string
-}
-```
+- `NAME_MATCH_THRESHOLD` (= 0.5)
 
 ### Reglas de decisión
 
 | Pool | Regla |
 |------|-------|
-| 0 entries | Delegar a Fase 4 (wide search) |
+| 0 entries | Delegar a Fase 5 (wide search) |
 | 1 entry `single`, sin nombre extraído | `matched` — único candidato, sin contradicción |
 | 1 entry `single`, con nombre extraído y **coincide** | `matched` |
 | 1 entry `single`, con nombre extraído y **NO coincide** | `ambiguous` — **name_mismatch**: preguntar confirmación |
 | 1 entry `sum` | `multi_invoice` — pedir confirmación |
-| 2+ entries | Filtrar por score de nombre; si queda 1 → `matched`/`multi_invoice`; si no → `ambiguous` |
+| 2+ entries | Fase 4 filtra por score de nombre; si queda 1 → `matched`/`multi_invoice`; si no → `ambiguous` |
 
 ### Scoring de nombre
 
@@ -149,9 +145,26 @@ Prioridad de nombres extraídos: `nombre_origen` > `nombre_cliente`.
 
 ---
 
-## Fase 4 — Pago parcial / Wide search
+## Fase 4 — Resolución por nombre
 
-Se ejecuta **solo si el pool quedó vacío** tras Fases 1–3.
+Se ejecuta siempre (después de Fases 1–3), con el nombre extraído y los
+candidatos de la búsqueda por nombre de Fase 3.
+
+| Caso | Acción |
+|------|--------|
+| Pool > 1 y nombre confiable | Filtra el pool a las facturas con `score >= 0.5` (o caption que matchea al cliente); si queda 1, se auto-selecciona |
+| Pool vacío y nombre confiable | Agrega el mejor candidato por nombre |
+| Pool vacío y hay un nombre rescatable (origen/destino/caption) | Búsqueda **solo por nombre**, sin filtro de monto (Fase 4b) |
+| Sin nombre | No hace nada; decide la Fase 5 |
+
+El caption de la imagen solo filtra si **realmente matchea** un candidato: no
+veta ni vacía el pool por sí solo.
+
+---
+
+## Fase 5 — Pago parcial / Wide search
+
+Se ejecuta **solo si el pool quedó vacío** tras Fases 1–4.
 
 **API:** `matchVoucherByName` con `tolerancia = min(max(10K, monto * 0.5), 50K)`, sin nombre.
 
@@ -227,13 +240,13 @@ pendientes de esa conversación (pending + pendingTexts).
 | 2 | Pago exacto a varias facturas del mismo cliente ($500 → $300 + $200) | Fase 2 → pool[1 sum] → decisión → **multi_invoice** |
 | 3 | Pago con nombre + monto exacto, único candidato | Fase 3 → pool[1] con score alto → **matched** |
 | 4 | Candidato ya en pool Fase 1, Fase 3 lo refuerza | Dedup — no duplica |
-| 5 | Pago menor que factura ($500 → factura $1000) | Pool vacío → Fase 4 → **ambiguous** |
-| 6 | Sin monto extraído | Fases 1–2 skip → Fase 3 (solo nombre) → si vacío, Fase 4 |
-| 7 | 2 facturas mismo monto ($1000 = MARIA y JUAN), nombre desempata | Decisión → **matched** al que pasa score |
+| 5 | Pago menor que factura ($500 → factura $1000) | Pool vacío → Fase 5 → **ambiguous** |
+| 6 | Sin monto extraído | Fases 1–2 skip → Fase 3 (solo nombre) → si vacío, Fase 5 |
+| 7 | 2 facturas mismo monto ($1000 = MARIA y JUAN), nombre desempata | Fase 4 → decisión → **matched** al que pasa score |
 | 8 | 1 factura exacta, nombre extraído que NO coincide | pool[1] → name mismatch → **ambiguous** (pregunta confirmación) |
 | 9 | Suma exacta + factura individual del mismo monto | Fase 1 + 2 → pool[2] → decisión por nombre → **ambiguous** si no desempata |
 | 10 | Usuario confirma factura en `ambiguous` | **registrarPago()** + mensaje éxito |
-| 11 | Timeout en Fase 4 | Pedir nombre al usuario |
+| 11 | Timeout en Fase 5 | Pedir nombre al usuario |
 
 ---
 
@@ -245,7 +258,7 @@ Campos usados en matching:
 
 | Campo | Uso en matching |
 |-------|----------------|
-| `monto` | Fases 1, 2, 3, 4 |
+| `monto` | Fases 1, 2, 3, 5 |
 | `nombre_origen` | Fase 3 API + validación en decisión |
 | `nombre_cliente` | Fallback de nombre en decisión |
 | `nombre_destino`, `cbu_destino`, `cuit_destino` | Fase 3 API |
@@ -274,7 +287,7 @@ score; se preserva en multi-turn para confirmaciones posteriores.
 - **Bloque F — Debug UI.** Mostrar la sección `decision` en el timeline
   (pool entries con nameScore, regla aplicada, status final y reason) y
   registrar si el mensaje pasó o no el gate de keywords.
-- **Desempate por monto** en Fase 4 con el nombre extraído (actualmente
+- **Desempate por monto** en Fase 5 con el nombre extraído (actualmente
   `interpretUserResponse()` filtra por tokens).
 
 ---
