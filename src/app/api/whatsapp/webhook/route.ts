@@ -1265,16 +1265,24 @@ async function processMessage(
   // webhook response or subsequent messages in the same batch.
   // ============================================================
   // Vocabulario del catálogo para los gates de clasificación y el fallback regex
-  // (Plan A1). Cacheado; fail-open: si FacBal falla, se usa el comportamiento
-  // histórico (listas de código).
+  // (Plan A1). Cacheado (TTL 5 min, siempre con glosario); fail-open: si FacBal
+  // falla, se usa el comportamiento histórico (listas de código).
+  //
+  // Solo se carga si el mensaje trae texto (o caption de media): un sticker,
+  // una reacción o un mensaje sin contenido no necesita el catálogo ni debe
+  // pagar la latencia de 2 HTTP + 1 query en el camino del webhook.
+  // ============================================================
+  const mediaCaption = message.image?.caption || message.document?.caption || ''
+  const textForVocab = (audioTranscription ?? contentText ?? '').trim() || mediaCaption.trim()
   let vocab: BotVocabulary | null = null
-  try {
-    vocab = await getVocabulary(accountId, supabaseAdmin())
-  } catch (err) {
-    console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
+  if (textForVocab) {
+    try {
+      vocab = await getVocabulary(accountId, supabaseAdmin())
+    } catch (err) {
+      console.warn('[webhook] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
+    }
   }
 
-  const mediaCaption = message.image?.caption || message.document?.caption || ''
   const mediaLooksLikeExpense = looksLikeExpense(mediaCaption, vocab)
 
   // ============================================================
