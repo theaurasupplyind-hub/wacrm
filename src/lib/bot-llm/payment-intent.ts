@@ -9,7 +9,8 @@
  *     3ª persona = reporta un pago de un tercero = cobro.
  *  2. "factura" SIEMPRE es la factura de VENTA → factura nombrada + verbo de pago
  *     = cobro, AUNQUE esté en 1ª persona. Hay PRECEDENCIA sobre el hecho 1: por eso
- *     el chequeo de `FACTURA_NOMBRADA_RE` va ANTES que `PAGO_RE`.
+ *     el chequeo de `FACTURA_NOMBRADA_RE` va ANTES que `PAGO_RE`. Excepción: la
+ *     factura de un SERVICIO ("factura de luz/gas/agua") es un gasto del taller.
  *  3. El comprobante manda y el caption es preferencia → lo resuelve el pipeline
  *     de voucher (acá no aplica: esta capa es sólo texto).
  *  4. Forma pelada con nombre ("Jo pagó 2000") → `ambiguous`: la resuelve
@@ -62,6 +63,14 @@ const BARE_SHAPE_RE =
 const FACTURA_NOMBRADA_RE = /\bfactura\s+(?:de\s+[a-z]|f-?\d{3,}|\d{3,})|\bf-?\d{4,}\b/
 
 /**
+ * Factura de SERVICIO ("factura de luz/gas/agua"): es un gasto del taller, no la
+ * factura de venta. Sin esta excepción, `FACTURA_NOMBRADA_RE` + un verbo en
+ * pasado convertía el pago de la luz en un cobro a cliente.
+ */
+const FACTURA_SERVICIO_RE =
+  /\bfacturas?\s+(?:de\s+|del\s+)?(?:luz|gas|agua|internet|telefono|celular|cable|alquiler|expensas|abl|rentas|monotributo|iva|tarjeta|seguro|colegio|varios)\b/
+
+/**
  * Verbo de pago en PASADO ("transferí", "pagué"). Excluye el presente
  * ("pago"/"paga") a propósito: "también pago la otra factura" es un comentario,
  * no un reporte de pago (falso positivo documentado).
@@ -89,7 +98,8 @@ export function classifyPaymentIntent(raw: string): PaymentIntent {
   // "transferí/pagué para la factura de X" = cobro: la factura es NOMBRADA y el
   // verbo está en pasado. Va antes de PAGO_RE, que con su catch-all ("transferi")
   // lo tomaría como gasto.
-  if (FACTURA_NOMBRADA_RE.test(n) && PAGO_PASADO_RE.test(n)) return 'voucher'
+  // Excepción: la factura de un SERVICIO no es la factura de venta (ver arriba).
+  if (FACTURA_NOMBRADA_RE.test(n) && !FACTURA_SERVICIO_RE.test(n) && PAGO_PASADO_RE.test(n)) return 'voucher'
   if (PAGO_RE.test(n)) return 'expense'
 
   const bare = text.match(BARE_SHAPE_RE)

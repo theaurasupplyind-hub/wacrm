@@ -59,7 +59,7 @@
     problema del local se interpreta como salida de empleado.
 - **HECHOS DEL DOMINIO de pagos** (definen la lectura; el prompt y `payment-intent.ts` deben aplicarlos **sin contradecirse** — el bug original del 16/10 fue justamente que se contradecían):
   1. **Quien escribe es SIEMPRE el taller** (número del negocio; no hay clientes escribiendo) → 1ª persona ("pagué/transferí") = el taller movió plata = **gasto**; 3ª persona ("pagó/transfirió") = reporta el pago de un tercero = **cobro**.
-  2. **"Factura" es SIEMPRE la factura de VENTA** (el saldo por cobrar), nunca una compra → `transferí/pagué para la factura de <cliente>` (o `F-10960`, `factura 001`) = **cobro**, y **precede** al hecho 1. Un comentario sin factura nombrada ("también pago la otra factura") no dispara.
+  2. **"Factura" es la factura de VENTA** (el saldo por cobrar), nunca una compra → `transferí/pagué para la factura de <cliente>` (o `F-10960`, `factura 001`) = **cobro**, y **precede** al hecho 1. Un comentario sin factura nombrada ("también pago la otra factura") no dispara. **Excepción:** la factura de un SERVICIO (`factura de luz/gas/agua/internet/alquiler`) es un **gasto de servicio** (fix 2026-10-21: antes se clasificaba como cobro y buscaba un cliente al que cobrarle).
   3. **El comprobante manda; el caption es preferencia** → imagen/PDF de comprobante = **cobro**; el caption solo ayuda con el nombre y se ignora si no aporta (`voucher-pipeline.ts`: *"el caption es una preferencia, no un veto"*).
   4. **Forma pelada con nombre** (`"Jo pagó 2000"`) → **ambiguo → preguntar** (nunca auto-decidir una escritura de plata).
   *(decisión 2026-10-18)*
@@ -165,9 +165,8 @@ el aprendizaje por si se retoma:
 - **"Bloque pegado" de WhatsApp** (`voice-orders/pasted-conversation.ts`): quedó
   **especificado pero no implementado** (el módulo `src/lib/voice-orders/` fue
   retirado). Decisión de producto pendiente: implementar o descartar.
-- **Cuarto detector sí/no** (`classifyYesNo` en `pedidos/summary.ts`): pendiente de
-  unificar a `bot-llm/reply-intent.ts` → **promovido a `plan-01-vocabulario-datos.md`
-  Fase A4**.
+- **Cuarto detector sí/no** (`classifyYesNo`): **resuelto** (A4, 2026-10-18). Vive en
+  `bot-llm/reply-intent.ts` y `pedidos/summary.ts` solo lo re-exporta.
 - *(origen: `archive/notas-fallos-reales.md`,
   `archive/plan-bot-beta-a-produccion-asistente.md`,
   `archive/plan-implementacion-urgente.md`, `archive/resumen-bot-beta.md`)*

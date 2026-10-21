@@ -27,6 +27,13 @@ describe('classifyPaymentIntent', () => {
     expect(classifyPaymentIntent('tambien pago la otra factura')).toBeNull()
   })
 
+  it('factura de un SERVICIO es gasto, no cobro (regresión "pagué la factura de luz")', () => {
+    expect(classifyPaymentIntent('pagué la factura de luz')).toBe('expense')
+    expect(classifyPaymentIntent('pague la factura de internet')).toBe('expense')
+    expect(classifyPaymentIntent('pagué la factura del gas')).toBe('expense')
+    expect(classifyPaymentIntent('transferí para pagar la factura de agua')).toBe('expense')
+  })
+
   it('hechos del dominio: 1ª persona sin factura = gasto; con factura = cobro (precedencia)', () => {
     // Hecho 1: quien escribe es el taller → movió plata.
     expect(classifyPaymentIntent('transferí 50000')).toBe('expense')
