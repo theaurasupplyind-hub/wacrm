@@ -33,18 +33,20 @@ export async function previewPedido(
   } = {},
 ): Promise<PedidoPreview | null> {
   // Catálogo antes del parseo: alimenta el vocabulario del prompt (Plan A2).
+  // El glosario aprendido entra al vocabulario igual que en el flujo real.
   const refs = opts.refs ?? (await getPreciosReferencia())
   const rules = opts.rules ?? (await getPricingRules())
+  const glossary = opts.glossary ?? []
   const parsed = opts.parseFn
     ? await opts.parseFn(text, opts.context ?? null)
-    : await parseOrder(text, { context: opts.context ?? null, vocab: buildVocabulary(refs, rules) })
+    : await parseOrder(text, { context: opts.context ?? null, vocab: buildVocabulary(refs, rules, glossary) })
   if (parsed.items.length === 0) return null
 
   const { resolved } = comprehendOrder({
     items: parsed.items,
     refs,
     rules,
-    glossary: opts.glossary ?? [],
+    glossary,
   })
   if (resolved.items.length === 0) return null
 

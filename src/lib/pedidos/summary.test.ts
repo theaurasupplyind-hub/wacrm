@@ -129,4 +129,23 @@ describe('previewPedido', () => {
     })
     expect(preview).toBeNull()
   })
+
+  it('aplica el glosario aprendido (producto fuera de catálogo con precio)', async () => {
+    const preview = await previewPedido('2 palos de metal', {
+      refs: preciosReferencia,
+      rules: pricingRules,
+      glossary: [
+        {
+          termNorm: 'palos',
+          termDisplay: 'Palos de metal',
+          meaning: { type: 'producto', value: 'Palos de metal', precio: 5000 },
+        },
+      ],
+      parseFn: async () => ({ cliente: null, items: [{ cantidad: 2, texto: 'palos de metal' }] }),
+    })
+    expect(preview).not.toBeNull()
+    expect(preview!.items[0].libre).toBe(true)
+    expect(preview!.items[0].precio_unitario).toBe(5000)
+    expect(preview!.total).toBe(10000)
+  })
 })

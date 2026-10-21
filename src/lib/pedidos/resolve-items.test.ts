@@ -181,4 +181,19 @@ describe('resolveItems', () => {
     expect(r.total).toBe(0)
     expect(r.faltantes).toEqual([])
   })
+
+  it('ítem libre CON medida sigue siendo línea manual (producto aprendido, no bastidor)', () => {
+    const r = resolveItems({
+      ...base,
+      items: [{ cantidad: 2, texto: 'palos de metal 60x40', libre: true, precio: 5000 }],
+    })
+    const it = r.items[0]
+    expect(it.libre).toBe(true)
+    expect(it.categoria).toBe('LIBRE')
+    expect(it.medida).toBeNull()
+    expect(it.descripcion).toBe('Palos de metal 60x40')
+    expect(it.precio_unitario).toBe(5000)
+    expect(it.regla_aplicada).toBeNull()
+    expect(r.total).toBe(10000)
+  })
 })

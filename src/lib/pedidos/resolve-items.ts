@@ -48,6 +48,30 @@ function describe(categoria: string, medida: string, variante: string | null): s
 }
 
 /**
+ * Línea manual de un ítem fuera de catálogo (producto aprendido, muestra sin
+ * medida, nombre propio). Precio propio del usuario o `faltante` para cotizar a
+ * mano. Fuente única para los dos caminos que la emiten.
+ */
+function manualLine(cantidad: number, texto: string, precioRaw: number | null | undefined): PedidoItem {
+  const precio =
+    typeof precioRaw === 'number' && Number.isFinite(precioRaw) && precioRaw >= 0
+      ? Math.round(precioRaw)
+      : null
+  return {
+    cantidad,
+    categoria: 'LIBRE',
+    medida: null,
+    variante: null,
+    precio_unitario: precio,
+    faltante: precio == null,
+    descripcion: cap(texto),
+    regla_aplicada: null,
+    asumido: 'ítem fuera de catálogo',
+    libre: true,
+  }
+}
+
+/**
  * Cotiza un producto "por atributo" (categorías que no se miden en `AxB`:
  * acrílico, circulares, rollo de tela) cuando el texto ya alcanza para
  * determinarlo (categoría + medida + variante únicas en el catálogo).
@@ -115,6 +139,18 @@ export function resolveItems(args: {
     const texto = (raw.texto || '').trim()
     const cls = classifyItem(texto, vocab)
 
+    // `libre` explícito (muestra sin medida / producto aprendido fuera de
+    // catálogo): SIEMPRE línea manual, aunque el texto arrastre una medida
+    // ("palos de metal 60x40" no es un bastidor). Antes esto solo aplicaba sin
+    // medida y el ítem se recotizaba como bastidor.
+    if (raw.libre === true) {
+      const item = manualLine(cantidad, texto, raw.precio)
+      resolved.push(item)
+      if (item.faltante) faltantes.push(etiqueta(cantidad, texto))
+      else total += (item.precio_unitario ?? 0) * cantidad
+      continue
+    }
+
     if (!cls.medida) {
       const byAttr = resolveByAttr(cantidad, texto, cls.categoria, refs)
       if (byAttr) {
@@ -123,33 +159,17 @@ export function resolveItems(args: {
         continue
       }
       // Ítem FUERA DE CATÁLOGO: nombre propio no reconocido (2+ términos) o con
-      // precio explícito del usuario, o marcado `libre` por el parser (muestra
-      // sin medida / producto fuera de catálogo). Se cotiza como LÍNEA MANUAL;
-      // nunca se asume "BASTIDOR" por default (bug "Palos de metal" / R3).
+      // precio explícito del usuario. Se cotiza como LÍNEA MANUAL; nunca se asume
+      // "BASTIDOR" por default (bug "Palos de metal" / R3).
       const isFree =
-        raw.libre === true ||
-        (cls.categoria === DEFAULT_CATEGORIA &&
-          !cls.regla &&
-          (cls.unknownTerms.length >= 2 || (raw.precio != null && cls.unknownTerms.length >= 1)))
+        cls.categoria === DEFAULT_CATEGORIA &&
+        !cls.regla &&
+        (cls.unknownTerms.length >= 2 || (raw.precio != null && cls.unknownTerms.length >= 1))
       if (isFree) {
-        const precio =
-          typeof raw.precio === 'number' && Number.isFinite(raw.precio) && raw.precio >= 0
-            ? Math.round(raw.precio)
-            : null
-        resolved.push({
-          cantidad,
-          categoria: 'LIBRE',
-          medida: null,
-          variante: null,
-          precio_unitario: precio,
-          faltante: precio == null,
-          descripcion: cap(texto),
-          regla_aplicada: null,
-          asumido: 'ítem fuera de catálogo',
-          libre: true,
-        })
-        if (precio == null) faltantes.push(etiqueta(cantidad, texto))
-        else total += precio * cantidad
+        const item = manualLine(cantidad, texto, raw.precio)
+        resolved.push(item)
+        if (item.faltante) faltantes.push(etiqueta(cantidad, texto))
+        else total += (item.precio_unitario ?? 0) * cantidad
         continue
       }
       pushFaltante(cantidad, texto)

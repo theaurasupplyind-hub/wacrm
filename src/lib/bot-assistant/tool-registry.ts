@@ -41,6 +41,7 @@ import {
 import { processExpenseMessage } from '@/lib/expenses'
 import { processAttendanceMessage } from '@/lib/attendance'
 import { previewPedido } from '@/lib/pedidos/preview'
+import { loadGlossary } from '@/lib/pedidos/glossary'
 import { loadOrderContext, isOrderContextActive, isResumableQuote } from '@/lib/pedidos/context'
 import type { OrderContext } from '@/lib/pedidos/types'
 import { evaluateGate, type OperationKind, type MatchInfo } from './effect-gate'
@@ -292,10 +293,13 @@ export const AGENT_TOOLS: AgentTool[] = [
       },
       required: ['texto'],
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const texto = str(args.texto)
       if (!texto) return { data: null, summary: 'Falta el texto del pedido.' }
-      const preview = await previewPedido(texto)
+      // Glosario de la cuenta: sin esto el preview no reconoce sinónimos ni
+      // productos aprendidos y cotiza distinto que el flujo real.
+      const glossary = await loadGlossary(ctx.db, ctx.accountId)
+      const preview = await previewPedido(texto, { glossary })
       if (!preview) return { data: null, summary: 'No se detectaron ítems para cotizar.' }
       return { data: preview, summary: preview.text }
     },
