@@ -10,6 +10,7 @@ vi.mock('@/lib/facbal/client', () => facbal)
 import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
 import type { PrecioReferencia } from '@/lib/precios'
 import type { OrderGlossaryEntry } from '@/lib/pedidos/glossary'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   buildVocabulary,
   getVocabulary,
@@ -20,6 +21,17 @@ import {
   __resetVocabularyCache,
   VOCABULARY_TTL_MS,
 } from './vocabulary'
+
+/** DB mínima para `loadGlossary` (select → eq → data). */
+function fakeDb(rows: unknown[] = []): SupabaseClient {
+  return {
+    from: () => ({
+      select: () => ({
+        eq: async () => ({ data: rows }),
+      }),
+    }),
+  } as unknown as SupabaseClient
+}
 
 beforeEach(() => {
   __resetVocabularyCache()
@@ -45,14 +57,16 @@ describe('buildVocabulary', () => {
 })
 
 describe('getVocabulary (cacheado)', () => {
+  const db = fakeDb()
+
   it('cachea por cuenta: dos turnos seguidos = una sola carga', async () => {
-    const a = await getVocabulary('acc-1')
-    const b = await getVocabulary('acc-1')
+    const a = await getVocabulary('acc-1', db)
+    const b = await getVocabulary('acc-1', db)
     expect(a).toBe(b)
     expect(facbal.getPreciosReferencia).toHaveBeenCalledTimes(1)
     expect(facbal.getPricingRules).toHaveBeenCalledTimes(1)
 
-    await getVocabulary('acc-2')
+    await getVocabulary('acc-2', db)
     expect(facbal.getPreciosReferencia).toHaveBeenCalledTimes(2)
   })
 
@@ -63,8 +77,8 @@ describe('getVocabulary (cacheado)', () => {
         release = resolve
       }),
     )
-    const p1 = getVocabulary('acc-1')
-    const p2 = getVocabulary('acc-1')
+    const p1 = getVocabulary('acc-1', db)
+    const p2 = getVocabulary('acc-1', db)
     release(preciosReferencia)
     const [v1, v2] = await Promise.all([p1, p2])
     expect(v1).toBe(v2)
@@ -72,19 +86,48 @@ describe('getVocabulary (cacheado)', () => {
   })
 
   it('invalidateVocabulary fuerza la recarga', async () => {
-    await getVocabulary('acc-1')
+    await getVocabulary('acc-1', db)
     invalidateVocabulary('acc-1')
-    await getVocabulary('acc-1')
+    await getVocabulary('acc-1', db)
     expect(facbal.getPreciosReferencia).toHaveBeenCalledTimes(2)
   })
 
   it('ante error de red devuelve la última copia buena', async () => {
     vi.useFakeTimers()
-    const warm = await getVocabulary('acc-1')
+    const warm = await getVocabulary('acc-1', db)
     vi.advanceTimersByTime(VOCABULARY_TTL_MS + 1)
     facbal.getPreciosReferencia.mockRejectedValueOnce(new Error('net down'))
-    const after = await getVocabulary('acc-1')
+    const after = await getVocabulary('acc-1', db)
     expect(after).toBe(warm)
+  })
+
+  it('lo cacheado SIEMPRE incluye el glosario aprendido (Plan B)', async () => {
+    const conProducto = fakeDb([
+      { term_norm: 'palos', term_display: 'Palos de metal', meaning: { type: 'producto', value: 'Palos de metal', precio: 5000 } },
+    ])
+    const v = await getVocabulary('acc-1', conProducto)
+    expect(v.productosAprendidos).toContain('Palos de metal')
+
+    const again = await getVocabulary('acc-1', conProducto)
+    expect(again).toBe(v)
+    expect(mentionsProduct('quiero 2 palos de metal', again)).toBe(true)
+  })
+
+  it('una carga en vuelo no pisa la cache invalidada', async () => {
+    let release: (v: unknown) => void = () => {}
+    facbal.getPreciosReferencia.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve
+      }),
+    )
+    const pending = getVocabulary('acc-1', db)
+    invalidateVocabulary('acc-1')
+    release(preciosReferencia)
+    await pending
+
+    await getVocabulary('acc-1', db)
+    // La primera carga no dejó cache: la segunda tuvo que volver a pedir el catálogo.
+    expect(facbal.getPreciosReferencia).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -108,6 +151,21 @@ describe('mentionsProduct / mentionsCatalogTerm (Plan A1)', () => {
   it('sin coincidencia → false', () => {
     expect(mentionsProduct('hola, cómo va?', vocab)).toBe(false)
     expect(mentionsCatalogTerm('hola, cómo va?', vocab)).toBe(false)
+  })
+
+  it('los matchTokens de regla NO abren gates con palabras genéricas', () => {
+    // "Sin" (<4 letras) es un matchToken de la regla "Sin Tela".
+    expect(mentionsCatalogTerm('no, sin problema', vocab)).toBe(false)
+    // "impre" es un matchToken de "Impresion": no debe matchear "impresora".
+    expect(mentionsCatalogTerm('compré una impresora', vocab)).toBe(false)
+    // "cambio" es matchToken de "Cambio de Tela": "cambiale" no es lo mismo.
+    expect(mentionsCatalogTerm('cambiale el descuento', vocab)).toBe(false)
+  })
+
+  it('los matchTokens válidos y los nombres de regla sí reconocen', () => {
+    expect(mentionsCatalogTerm('caja fibro 78x56', vocab)).toBe(true)
+    expect(mentionsCatalogTerm('quiero 3 tapacantos', vocab)).toBe(true)
+    expect(mentionsCatalogTerm('pintura 94x81', vocab)).toBe(true)
   })
 })
 

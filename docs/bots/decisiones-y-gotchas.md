@@ -258,3 +258,36 @@ usado por las tools del asistente. Los caminos de **voucher** (`registrarPago`) 
 **pedidos** (`executePedido`) **no** registran → no hay undo ni auditoría de esas
 escrituras (aunque ya existan 27 pagos por voucher en 14 días). Pendiente de diseño.
 
+## 12. Vocabulario data-driven (2026-10-21)
+
+Fuente única: `src/lib/catalog/vocabulary.ts` (más `catalog/defaults.ts`). Derivado
+de `precios_referencia` + `pricing_rules` + `order_glossary`; el prompt del LLM y
+los gates de clasificación **no** llevan listas de producto hardcodeadas.
+
+**Invariantes:**
+
+1. **`getVocabulary(accountId, db)` exige `db`.** El vocabulario SIEMPRE incluye el
+   glosario aprendido. Cachear una versión "sin glosario" dejaba al Plan B sin
+   efecto durante el TTL (5 min): los sinónimos/productos nuevos no entraban ni al
+   prompt ni a los gates.
+2. **Invalidación explícita:** cualquier alta/baja en `order_glossary` debe llamar
+   `invalidateVocabulary(accountId)` — la API y los dos caminos de aprendizaje del
+   bot (`handleGlossaryAnswer`, `tryGlossaryAction`, vía `learnGlossary`).
+3. **La cache no se pisa a sí misma:** una carga en vuelo que arrancó antes de un
+   `invalidateVocabulary` no vuelve a escribir la entrada vieja (generation counter).
+4. **Reglas en los gates:** el **nombre** de la regla se matchea tolerante
+   (plural/prefijo); los `matchTokens` se matchean **exactos y con 4+ letras**. Son
+   palabras del matcher de precios: tokens como `Sin`, `imp` o `impre` abrían gates
+   con cualquier texto ("sin problema", "impresora"). El mismo criterio lo usa
+   `mentionsRuleName` para re-cotizar correcciones.
+5. **Sinónimos vs productos aprendidos:** los alias se **sustituyen** antes de
+   clasificar (no van al prompt); los productos fuera de catálogo se reconocen como
+   ítem, van al prompt y se marcan `libre` con su precio.
+6. **`libre` manda sobre la medida:** un ítem marcado libre es línea manual aunque
+   el texto arrastre una medida ("palos de metal 60x40" no es un bastidor).
+7. **La descripción de la factura** (`buildSuggestionDesc`) conserva descriptores
+   del usuario (color) y solo descarta ruido de encabezado. Ver §11.3.
+
+**Fallback sin vocabulario:** el parser regex sigue siendo la red de seguridad
+cuando FacBal falla (`vocab = null`), con las listas históricas de código. No
+agregar productos nuevos ahí: se agregan al panel de precios/reglas.

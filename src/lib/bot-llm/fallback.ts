@@ -1,5 +1,6 @@
 import { looksLikeExpense, parseExpense } from '@/lib/expenses/parse-expense'
 import { mentionsCatalogTerm, type BotVocabulary } from '@/lib/catalog/vocabulary'
+import { ORDER_ACTION_RE, ORDER_MEASURE_RE } from '@/lib/pedidos/intent'
 import { looksLikeAttendance, parseAttendance } from '@/lib/attendance/parse-attendance'
 import { classifyPaymentIntent } from './payment-intent'
 import type { BotIntent, MissingField, MultiExpenseItem, UnifiedExtraction } from './types'
@@ -94,11 +95,9 @@ function trySplitMultiExpense(text: string): MultiExpenseItem[] | null {
 
 // Palabras de producto/pedido (normalizadas, sin acentos).
 // FALLBACK transitorio (Plan A1): con vocabulario se usa `mentionsCatalogTerm`.
+// La medida y las acciones de pedido viven en `pedidos/intent.ts` (fuente única).
 const PEDIDO_PRODUCT_RE =
   /\b(bastidor(?:es)?|lienzo|lona|tapacantos?|acrilico|marco|molduras?|circular(?:es)?|rollo|cotizar|cotiza|presupuesto|embastad[oa]?|embastar)\b/i
-/** Verbos/sustantivos de pedido que no son nombres de producto. */
-const PEDIDO_ACTION_RE = /\b(?:cotizar|cotiza|presupuesto|embastar)\b/i
-const MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/
 // "a <proveedor> por <monto>" → compra del negocio, no pedido.
 const PROVIDER_AMOUNT_RE = /\ba\s+[a-záéíóúñ]+\s+(?:por|a)\s+\$?\s*\d/i
 
@@ -115,11 +114,11 @@ export function looksLikePedido(text: string, vocab?: BotVocabulary | null): boo
   if (looksLikeAttendance(raw)) return false
   if (classifyPaymentIntent(raw) === 'voucher') return false
 
-  const hasMeasure = MEASURE_RE.test(raw)
+  const hasMeasure = ORDER_MEASURE_RE.test(raw)
   // Con vocabulario, los productos salen del catálogo (Plan A1); sin él, la lista
   // histórica. Las acciones de pedido (cotizar/presupuesto) van siempre en código.
   const hasProduct = vocab
-    ? mentionsCatalogTerm(raw, vocab) || PEDIDO_ACTION_RE.test(raw)
+    ? mentionsCatalogTerm(raw, vocab) || ORDER_ACTION_RE.test(raw)
     : PEDIDO_PRODUCT_RE.test(raw)
   const hasProviderAmount = PROVIDER_AMOUNT_RE.test(raw)
   const hasAmount = /\$\s*\d|\b\d{4,}\b/.test(raw)

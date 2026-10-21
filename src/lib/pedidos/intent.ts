@@ -8,9 +8,9 @@ const DIRECT_BUDGET_REQUEST_RE = /\b(?:quiero|necesito|preciso)\s+(?:un\s+)?pres
 // FALLBACK transitorio (Plan A1): con vocabulario se usa `mentionsCatalogTerm`.
 const ORDER_ITEM_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}|\b(?:bastidor(?:es)?|lienzo|lona|tapacanto(?:s)?|acrilico|marco|moldura(?:s)?|circular(?:es)?|rollo|embastar)\b/i
 /** Medida tipo 60x40 (dato, no vocabulario de producto). */
-const MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/
+export const ORDER_MEASURE_RE = /\d{1,4}\s*[x×*]\s*\d{1,4}/
 /** Verbos/sustantivos de pedido que no son nombres de producto. */
-const ORDER_ACTION_RE = /\b(?:cotizar|cotiza|presupuesto|embastar)\b/i
+export const ORDER_ACTION_RE = /\b(?:cotizar|cotiza|presupuesto|embastar)\b/i
 
 export function isExplicitBudgetCreationRequest(text: string): boolean {
   const value = (text || '').trim()
@@ -26,7 +26,11 @@ export function mentionsOrderItems(text: string, vocab?: BotVocabulary | null): 
   const normalized = (text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   // Con vocabulario: medida o término del catálogo (Plan A1). Sin él: lista histórica.
   if (vocab) {
-    return MEASURE_RE.test(normalized) || mentionsCatalogTerm(normalized, vocab) || ORDER_ACTION_RE.test(normalized)
+    return (
+      ORDER_MEASURE_RE.test(normalized) ||
+      mentionsCatalogTerm(normalized, vocab) ||
+      ORDER_ACTION_RE.test(normalized)
+    )
   }
   return ORDER_ITEM_RE.test(normalized.trim())
 }

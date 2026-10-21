@@ -12,8 +12,7 @@ import {
   type InvoiceCreatedResult,
   type ClientAddress,
 } from '@/lib/facbal/client'
-import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
-import { getVocabulary } from '@/lib/catalog/vocabulary'
+import { type PrecioReferencia, type PricingRule } from '@/lib/precios'
 import { parseOrder } from './parse-order'
 import { comprehendOrder, resolveClientGuess } from './understand'
 import type { MissingAttr } from './understand'
@@ -41,6 +40,7 @@ import {
   stripGlossaryReview,
   upsertGlossary,
   wantsGlossaryReview,
+  type GlossaryInterpretation,
 } from './glossary'
 import { parseDeliveryDate, serializeFechaEntrega, isSkipDate } from './dates'
 import { interpretDeliveryReply } from './interpret-delivery'
@@ -52,7 +52,7 @@ import {
   type ChangeResult,
 } from './interpret-changes'
 import { buildKnownVocab, classifyItem } from './classify-item'
-import type { BotVocabulary } from '@/lib/catalog/vocabulary'
+import { getVocabulary, invalidateVocabulary, mentionsRuleName, type BotVocabulary } from '@/lib/catalog/vocabulary'
 import {
   isPhoneLikeClientName,
   isGreetingRecipientName,
@@ -341,11 +341,39 @@ async function saveCtx(args: ProcessPedidoMessageArgs, state: OrderContext): Pro
  */
 async function pedidosVocabulary(args: ProcessPedidoMessageArgs): Promise<BotVocabulary | null> {
   try {
-    return await getVocabulary(args.accountId)
+    return await getVocabulary(args.accountId, args.db)
   } catch (err) {
     console.warn('[pedidos] vocabulary unavailable:', err instanceof Error ? err.message : String(err))
     return null
   }
+}
+
+/**
+ * Persiste lo aprendido en el glosario y **descarta el vocabulario cacheado** de
+ * la cuenta: los sinónimos y productos nuevos tienen que entrar en el próximo
+ * turno (gates + prompt), no dentro de 5 minutos. Fuente única para los dos
+ * caminos de aprendizaje (respuesta al "¿qué significa?" y definición inline).
+ */
+async function learnGlossary(
+  args: ProcessPedidoMessageArgs,
+  interpretations: GlossaryInterpretation[],
+): Promise<void> {
+  if (interpretations.length === 0) return
+  for (const it of interpretations) {
+    await upsertGlossary(
+      args.db,
+      args.accountId,
+      {
+        termNorm: it.termNorm,
+        // Para un producto fuera de catálogo, el display es el nombre que dio el
+        // usuario (el término normalizado es solo el token que disparó la pregunta).
+        termDisplay: it.meaning.type === 'producto' ? it.meaning.value : it.termNorm,
+        meaning: it.meaning,
+      },
+      args.userId,
+    )
+  }
+  invalidateVocabulary(args.accountId)
 }
 
 /** Direcciones del cliente (best-effort; [] si no hay o falla). */
@@ -978,20 +1006,7 @@ async function handleGlossaryAnswer(
     return requoteWithFreeTerms(args, ctx, pending.terms, pending.orderText)
   }
 
-  for (const it of interpretations) {
-    await upsertGlossary(
-      args.db,
-      args.accountId,
-      {
-        termNorm: it.termNorm,
-        // Para un producto fuera de catálogo, el display es el nombre que dio el
-        // usuario (el término normalizado es solo el token que disparó la pregunta).
-        termDisplay: it.meaning.type === 'producto' ? it.meaning.value : it.termNorm,
-        meaning: it.meaning,
-      },
-      args.userId,
-    )
-  }
+  await learnGlossary(args, interpretations)
 
   // Re-resolver el texto original ahora que el glosario lo entiende. Si estábamos
   // en una cotización, volvemos a cotizar; si no, seguimos el flujo de creación.
@@ -1287,20 +1302,13 @@ async function quoteFromParsed(
 }
 
 /**
- * ¿El texto nombra una regla del catálogo? Exige la frase completa del nombre
- * o un matchToken de 4+ letras: evita falsos positivos del matcher por raíz
+ * ¿El texto nombra una regla del catálogo? Delegado a
+ * `catalog/vocabulary.mentionsRuleName` (mismo criterio que los gates: nombre
+ * tolerante, `matchToken` exacto de 4+ letras). Evita falsos positivos por raíz
  * común (p.ej. "cambiale" ⇔ "cambio").
  */
 function mentionsKnownRule(text: string, rules: PricingRule[]): boolean {
-  const words = new Set(normalizeText(text).split(/[^a-z0-9]+/).filter(Boolean))
-  return rules.some((rule) => {
-    const nameWords = normalizeText(rule.name).split(/[^a-z0-9]+/).filter(Boolean)
-    if (nameWords.length > 0 && nameWords.every((w) => words.has(w))) return true
-    return rule.matchTokens.some((tok) => {
-      const parts = normalizeText(String(tok)).split(/[^a-z0-9]+/).filter(Boolean)
-      return parts.length > 0 && parts.every((w) => w.length >= 4 && words.has(w))
-    })
-  })
+  return mentionsRuleName(text, rules)
 }
 
 async function handleQuoteApproval(
@@ -1724,12 +1732,8 @@ async function tryGlossaryAction(
     const unknown = classifyItem(inline.term, vocab).unknownTerms.length > 0
     if (unknown) {
       const interpretations = await parseGlossaryMeanings([inline.term], raw, { refs, rules })
-      for (const it of interpretations) {
-        await upsertGlossary(args.db, args.accountId, {
-          termNorm: it.termNorm,
-          termDisplay: it.termNorm,
-          meaning: it.meaning,
-        })
+      if (interpretations.length > 0) {
+        await learnGlossary(args, interpretations)
         learned = true
       }
     }

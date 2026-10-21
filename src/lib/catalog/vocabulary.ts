@@ -11,7 +11,7 @@
  * Ver `plan-01-vocabulario-datos.md`.
  */
 import { getPreciosReferencia, getPricingRules } from '@/lib/facbal/client'
-import { normalizeText, type PrecioReferencia, type PricingRule } from '@/lib/precios'
+import { normalizeText, singularize, type PrecioReferencia, type PricingRule } from '@/lib/precios'
 import { buildKnownVocab, tokenMatchesWord } from '@/lib/pedidos/classify-item'
 import { loadGlossary, type OrderGlossaryEntry } from '@/lib/pedidos/glossary'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -44,6 +44,11 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>()
 const inflight = new Map<string, Promise<BotVocabulary>>()
+/**
+ * Generación por cuenta: `invalidateVocabulary` la incrementa y una carga en
+ * vuelo que arrancó antes NO vuelve a escribir la entrada vieja en la cache.
+ */
+const versions = new Map<string, number>()
 
 /** Arma el vocabulario desde el catálogo. Puro (sin red) — apto para tests. */
 export function buildVocabulary(
@@ -80,9 +85,13 @@ export function buildVocabulary(
 /** Invalida la cache. Llamar tras editar el glosario o el catálogo. */
 export function invalidateVocabulary(accountId?: string): void {
   if (accountId) {
+    versions.set(accountId, (versions.get(accountId) ?? 0) + 1)
     cache.delete(accountId)
     inflight.delete(accountId)
     return
+  }
+  for (const id of new Set([...cache.keys(), ...inflight.keys(), ...versions.keys()])) {
+    versions.set(id, (versions.get(id) ?? 0) + 1)
   }
   cache.clear()
   inflight.clear()
@@ -91,23 +100,31 @@ export function invalidateVocabulary(accountId?: string): void {
 /**
  * Vocabulario de la cuenta (cacheado). Deduplica pedidos concurrentes y, ante
  * error de red, devuelve la última copia buena en vez de romper el turno.
+ *
+ * INVARIANTE: `db` es obligatorio. El vocabulario SIEMPRE incluye el glosario
+ * aprendido (sinónimos + productos fuera de catálogo). Cachear una versión sin
+ * glosario dejaba al Plan B sin efecto durante el TTL (regresión 2026-10-21).
  */
-export async function getVocabulary(accountId: string, db?: SupabaseClient): Promise<BotVocabulary> {
+export async function getVocabulary(accountId: string, db: SupabaseClient): Promise<BotVocabulary> {
   const hit = cache.get(accountId)
   if (hit && Date.now() - hit.at < VOCABULARY_TTL_MS) return hit.value
 
   const pending = inflight.get(accountId)
   if (pending) return pending
 
+  const generation = versions.get(accountId) ?? 0
   const load = (async () => {
     try {
       const [refs, rules, glossary] = await Promise.all([
         getPreciosReferencia(),
         getPricingRules(),
-        db ? loadGlossary(db, accountId) : Promise.resolve([] as OrderGlossaryEntry[]),
+        loadGlossary(db, accountId),
       ])
       const value = buildVocabulary(refs, rules, glossary)
-      cache.set(accountId, { value, at: Date.now() })
+      // Si el glosario se editó mientras cargaba, no pisar la cache con lo viejo.
+      if ((versions.get(accountId) ?? 0) === generation) {
+        cache.set(accountId, { value, at: Date.now() })
+      }
       return value
     } catch (err) {
       console.warn('[vocabulary] load failed:', err instanceof Error ? err.message : String(err))
@@ -126,6 +143,7 @@ export async function getVocabulary(accountId: string, db?: SupabaseClient): Pro
 export function __resetVocabularyCache(): void {
   cache.clear()
   inflight.clear()
+  versions.clear()
 }
 
 // ── Predicados de vocabulario (gates de clasificación) ──────────────────────
@@ -141,15 +159,50 @@ function anyTokenMatches(words: string[], target: string): boolean {
   return words.some((w) => tokenMatchesWord(w, target))
 }
 
+/**
+ * Match tolerante pero SIN raíz común: evita "cambiale" ⇔ "cambio". Se usa para
+ * los nombres de regla, donde el prefijo/plural es legítimo ("tapacantos" →
+ * "Tapacanto") pero la raíz compartida no.
+ */
+function tokenMatchesWordStrict(word: string, target: string): boolean {
+  if (word === target) return true
+  if (singularize(word) === singularize(target)) return true
+  return (
+    word.length >= 4 &&
+    target.length >= 4 &&
+    (word.startsWith(target) || target.startsWith(word))
+  )
+}
+
 function matchesAnyPhrase(textWords: string[], phrases: string[][]): boolean {
   return phrases.some((parts) => parts.length > 0 && parts.every((p) => anyTokenMatches(textWords, p)))
+}
+
+function matchesAnyPhraseStrict(textWords: string[], phrases: string[][]): boolean {
+  return phrases.some(
+    (parts) => parts.length > 0 && parts.every((p) => textWords.some((w) => tokenMatchesWordStrict(w, p))),
+  )
+}
+
+/** Palabras de un `matchToken` de regla: completas y de 4+ letras. */
+function tokenWords(text: string): string[] {
+  return normalizeText(String(text))
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 4 && !/\d/.test(w))
+}
+
+/** Match EXACTO de palabra (sin prefijo/raíz): para `matchTokens` genéricos. */
+function matchesAnyExact(textWords: string[], phrases: string[][]): boolean {
+  return phrases.some((parts) => parts.length > 0 && parts.every((p) => textWords.includes(p)))
 }
 
 interface VocabPhrases {
   /** Categorías, variantes y sinónimos de producto. Sin reglas (incluyen insumos). */
   product: string[][]
-  /** Todo: producto + nombres y tokens de reglas. */
-  catalog: string[][]
+  /** Nombres de regla (matcheo tolerante). */
+  ruleNames: string[][]
+  /** `matchTokens` de regla (match exacto, 4+ letras). */
+  ruleTokens: string[][]
 }
 
 const PHRASE_CACHE = new WeakMap<BotVocabulary, VocabPhrases>()
@@ -165,18 +218,16 @@ function vocabPhrases(vocab: BotVocabulary): VocabPhrases {
   ]
     .map(phraseWords)
     .filter((p) => p.length > 0)
-  const rules = [...vocab.rules.map((r) => r.name), ...vocab.rules.flatMap((r) => r.matchTokens)]
-    .map(phraseWords)
-    .filter((p) => p.length > 0)
-  const value: VocabPhrases = { product, catalog: [...product, ...rules] }
+  // Nombres de regla: tolerantes (plural/singular) porque son el nombre canónico.
+  const ruleNames = vocab.rules.map((r) => phraseWords(r.name)).filter((p) => p.length > 0)
+  // `matchTokens`: se usan con match EXACTO y 4+ letras. Son palabras pensadas
+  // para el matcher de precios (con scoring), no como vocabulario: tokens como
+  // "Sin", "imp" o "impre" abrían gates con cualquier texto ("sin problema",
+  // "impresora"). Ver decisiones-y-gotchas §12.
+  const ruleTokens = vocab.rules.flatMap((r) => r.matchTokens).map(tokenWords).filter((p) => p.length > 0)
+  const value: VocabPhrases = { product, ruleNames, ruleTokens }
   PHRASE_CACHE.set(vocab, value)
   return value
-}
-
-function mentions(text: string, phrases: string[][]): boolean {
-  const words = phraseWords(text)
-  if (words.length === 0) return false
-  return matchesAnyPhrase(words, phrases)
 }
 
 /**
@@ -185,12 +236,40 @@ function mentions(text: string, phrases: string[][]): boolean {
  * ("Pinturas", "Impresion") que en un gasto NO son un pedido.
  */
 export function mentionsProduct(text: string, vocab: BotVocabulary): boolean {
-  return mentions(text, vocabPhrases(vocab).product)
+  const words = phraseWords(text)
+  if (words.length === 0) return false
+  return matchesAnyPhrase(words, vocabPhrases(vocab).product)
 }
 
 /** ¿El texto menciona cualquier término del catálogo (producto o regla)? */
 export function mentionsCatalogTerm(text: string, vocab: BotVocabulary): boolean {
-  return mentions(text, vocabPhrases(vocab).catalog)
+  const words = phraseWords(text)
+  if (words.length === 0) return false
+  const p = vocabPhrases(vocab)
+  return (
+    matchesAnyPhrase(words, p.product) ||
+    matchesAnyPhraseStrict(words, p.ruleNames) ||
+    matchesAnyExact(words, p.ruleTokens)
+  )
+}
+
+/**
+ * ¿El texto nombra una **regla** del catálogo? (mismo criterio que el gate:
+ * nombre tolerante, `matchToken` exacto de 4+ letras). Lo usa el flujo de
+ * correcciones para re-cotizar en vez de responder "no encuentro ese ítem".
+ */
+export function mentionsRuleName(text: string, rules: PricingRule[]): boolean {
+  const words = phraseWords(text)
+  if (words.length === 0) return false
+  const wordSet = new Set(words)
+  return rules.some((rule) => {
+    const nameWords = phraseWords(rule.name)
+    if (nameWords.length > 0 && matchesAnyPhraseStrict(words, [nameWords])) return true
+    return rule.matchTokens.some((tok) => {
+      const parts = tokenWords(String(tok))
+      return parts.length > 0 && parts.every((w) => wordSet.has(w))
+    })
+  })
 }
 
 // ── Bloque de vocabulario para los prompts del LLM (Plan A2) ────────────────

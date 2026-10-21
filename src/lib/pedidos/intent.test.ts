@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { isExplicitBudgetCreationRequest, looksLikeOrderSlotReply } from './intent'
+import { isExplicitBudgetCreationRequest, looksLikeOrderSlotReply, mentionsOrderItems } from './intent'
+import { buildVocabulary } from '@/lib/catalog/vocabulary'
+import { preciosReferencia, pricingRules } from '@/lib/precios/__fixtures__/catalogo'
 
 describe('isExplicitBudgetCreationRequest', () => {
   it.each([
@@ -36,5 +38,20 @@ describe('looksLikeOrderSlotReply', () => {
 
   it.each(['hola', 'gracias', 'cuánto debo', ''])('no confunde charla/consulta: %s', (text) => {
     expect(looksLikeOrderSlotReply(text)).toBe(false)
+  })
+})
+
+describe('mentionsOrderItems con vocabulario', () => {
+  const vocab = buildVocabulary(preciosReferencia, pricingRules)
+
+  it('reconoce productos y reglas del catálogo', () => {
+    expect(mentionsOrderItems('quiero 3 tapacantos', vocab)).toBe(true)
+    expect(mentionsOrderItems('caja fibro 78x56', vocab)).toBe(true)
+    expect(mentionsOrderItems('2 bastidores 60x40', vocab)).toBe(true)
+  })
+
+  it('una charla con "sin" no cuenta como ítem (matchToken "Sin")', () => {
+    expect(mentionsOrderItems('no, sin problema', vocab)).toBe(false)
+    expect(mentionsOrderItems('cambiale el descuento', vocab)).toBe(false)
   })
 })
