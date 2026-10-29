@@ -7,6 +7,7 @@ import { engineSendText } from '@/lib/flows/meta-send'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runAssistant } from './orchestrator'
 import { runAssistantAgent } from './agent'
+import { fallbackWritesEnabled } from '@/lib/bot/turn-outcome'
 import { ASSISTANT_SYSTEM_PROMPT } from './prompts'
 import { guardAssistantReply } from './reply-guard'
 import { buildBotTrace } from '@/lib/bot-trace/build-trace'
@@ -29,7 +30,17 @@ interface ProductionArgs {
   extraction?: UnifiedExtraction | null
   /** Estado multi-turno legible construido por el webhook. */
   conversationContext?: string | null
+  /** Contexto del fallback/reintento (turno anterior fallido). */
+  retryContext?: string | null
+  /** Dominio determinístico que no pudo resolver el turno (null = agente normal). */
+  fallbackFrom?: string | null
 }
+
+/**
+ * Desenlace del asistente, para que el adapter actualice
+ * `conversations.bot_last_turn` (fallback/reintento).
+ */
+export type AssistantOutcome = 'replied' | 'empty' | 'blocked' | 'error'
 
 /**
  * Wrapper productivo del asistente para webhook.
@@ -37,7 +48,7 @@ interface ProductionArgs {
  * Gates: assistantEnabled, assigned_agent_id, ai_autoreply_disabled.
  * Historia real + KB + preview readonly + fallback a auto-reply si calla.
  */
-export async function runAssistantForWebhook(args: ProductionArgs): Promise<void> {
+export async function runAssistantForWebhook(args: ProductionArgs): Promise<AssistantOutcome> {
   const { accountId, conversationId, contactId, userId, text, phone } = args
   const traceMessageId = args.messageId ?? `assistant-${conversationId}-${Date.now()}`
   console.log('[assistant production] start account=%s conv=%s text=%s', accountId.slice(0, 8), conversationId.slice(0, 8), text.slice(0, 60))
@@ -52,7 +63,7 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     // reciben respuesta del asistente.
     if (!(await isPhoneAllowed(db, accountId, phone))) {
       console.warn('[assistant production] blocked: number not whitelisted phone=%s', phone.slice(-6))
-      return
+      return 'blocked'
     }
 
     let config: Awaited<ReturnType<typeof loadAiConfig>> = null
@@ -67,7 +78,7 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     const assistantEnabled = config?.assistantEnabled ?? true
     if (config && !assistantEnabled) {
       console.warn('[assistant production] blocked: assistantEnabled=false account=%s', accountId.slice(0, 8))
-      return
+      return 'blocked'
     }
     if (!config) {
       console.warn('[assistant production] no ai_configs row — proceeding with default enabled, KB disabled')
@@ -93,11 +104,11 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
       .maybeSingle()
     if (convErr || !conv) {
       console.warn('[assistant production] blocked: conv not found err=%s', convErr?.message ?? 'null')
-      return
+      return 'blocked'
     }
     if (conv.assigned_agent_id) {
       console.warn('[assistant production] blocked: assigned_agent_id=%s', conv.assigned_agent_id)
-      return
+      return 'blocked'
     }
     if (conv.ai_autoreply_disabled) {
       console.warn('[assistant production] ai_autoreply_disabled=true — clearing for assistant conv=%s', conversationId.slice(0, 8))
@@ -138,6 +149,8 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
               : ASSISTANT_SYSTEM_PROMPT,
           extraction: args.extraction,
           conversationContext: args.conversationContext,
+          retryContext: args.retryContext ?? null,
+          allowWrites: args.fallbackFrom ? fallbackWritesEnabled() : true,
           ctx: {
             db,
             accountId,
@@ -179,6 +192,8 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
         debtDecision: debtInfo,
         knowledgePreview: knowledge.slice(0, 2),
         replyPreview: reply.slice(0, 400),
+        fallbackFrom: args.fallbackFrom ?? null,
+        isRetry: !!args.retryContext,
       }
       if (args.messageId) {
         // Merge para no pisar context_text/extraction que ya dejó el webhook.
@@ -188,9 +203,15 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
           .eq('message_id', args.messageId)
           .maybeSingle()
         const merged = { ...((existing?.debug_info as Record<string, unknown>) ?? {}), ...debugInfo }
+        const update: Record<string, unknown> = { debug_info: merged }
+        // El fallback del mismo turno reemplaza el motivo original (el handler
+        // declinó); el retry takeover ya quedó como `assistant_retry`.
+        if (args.fallbackFrom && args.fallbackFrom !== 'retry') {
+          update.dispatch_reason = 'assistant_fallback'
+        }
         const { error: upErr } = await db
           .from('router_logs')
-          .update({ debug_info: merged })
+          .update(update)
           .eq('message_id', args.messageId)
         if (upErr) console.warn('[assistant production] router_logs update failed:', upErr.message)
       } else {
@@ -231,7 +252,7 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
           rawText: text,
           extraction: result.extraction ?? null,
           dispatchedTo: 'assistant',
-          dispatchReason: 'assistant',
+          dispatchReason: args.fallbackFrom ? 'assistant_fallback' : 'assistant',
           logs: result.logs ?? [],
           finalStatus: 'replied',
         }),
@@ -245,7 +266,7 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     if (!reply) {
       console.warn('[assistant production] empty reply — fallback to auto-reply')
       await dispatchInboundToAiReply({ accountId, conversationId, contactId, configOwnerUserId: userId })
-      return
+      return 'empty'
     }
 
     try {
@@ -257,8 +278,10 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
         text: reply,
       })
       console.log('[assistant production] engineSendText OK len=%s', reply.length)
+      return 'replied'
     } catch (e) {
       console.error('[assistant production] engineSendText failed:', e instanceof Error ? e.message : String(e), (e as { stack?: string })?.stack?.slice(0, 500))
+      return 'error'
     }
   } catch (err) {
     console.error('[assistant production] dispatch failed:', err instanceof Error ? err.message : String(err), (err as { stack?: string })?.stack?.slice(0, 800))
@@ -288,5 +311,6 @@ export async function runAssistantForWebhook(args: ProductionArgs): Promise<void
     } catch {
       // swallow
     }
+    return 'error'
   }
 }

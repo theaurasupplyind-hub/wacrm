@@ -246,6 +246,9 @@ POST /api/whatsapp/webhook
             ├─ voucher            → flujo de voucher (pass-through, congelado)
             ├─ pedido             → cotización preview o creación explícita
             └─ factura/consulta/conversación → asistente
+  ├─ Fallback determinístico → agente con tools (ver abajo)
+  │    ├─ handler sin respuesta / error → agente con retryContext
+  │    └─ reintento tras callejón sin salida → agente directo (retryContext)
   ├─ Assistant branch → runAssistantForWebhook() (fire-and-forget)
   │    └─ historial + KB + estado/extracción → loop de tool-calling
   │         si no genera texto o falla → fallback a AI Auto-Reply
@@ -257,6 +260,35 @@ POST /api/whatsapp/webhook
 **La orquestación de texto está centralizada en el motor de turno** (`src/lib/bot/engine.ts`): contextos → extracción → clarify → router → acciones. `route.ts` quedó como **adapter delgado** que hace el I/O (aplica `clear_context`/`save_clarify`, envía y dispara los handlers dentro de los `bgTasks` que ve `after()`).
 
 El **planner LLM es opt-in** y default `off`: no reemplaza al router determinístico salvo que se habilite por dominio. Los handlers siguen siendo la autoridad de negocio (validaciones, confirmaciones y efectos de gastos, asistencia, vouchers y pedidos).
+
+### Fallback determinístico → agente con tools
+
+El determinístico sigue siendo la primera y única autoridad del happy path. El
+agente entra **sólo** cuando el determinístico no resolvió, o cuando el usuario
+reintenta tras un callejón sin salida:
+
+| Disparador | Cuándo | Qué recibe el agente |
+|---|---|---|
+| **Sin respuesta** | El handler devuelve `handled:false`, falla o no envía mensaje (`replied:false`) | `retryContext` con el dominio intentado + estado fresco |
+| **Reintento** | `bot_last_turn` quedó en `declined` / `no_reply` / `error` / `replied_dead_end` y el mensaje siguiente llega dentro del TTL | Contexto del mensaje anterior fallido + el actual |
+
+Guardrails:
+- **No hay takeover** si hay un pendiente activo (order/clarify/voucher/gasto/asistencia) o si el mensaje nuevo trae un intent fuerte (`alta`/`media`) de un dominio: el determinístico conserva la prioridad.
+- **No hay doble mensaje**: el fallback solo corre si `replied:false`.
+- **Vouchers congelados**: nunca entran al fallback ni al retry.
+- **Escrituras**: el agente de fallback usa las mismas tools → gate de efectos, `pending-confirm`, `bot_write_log` y máximo 1 escritura/turno. `ASSISTANT_FALLBACK_WRITES=false` lo deja en lectura (no expone tools de escritura ni ejecuta pendientes).
+- **Humano asignado**: `runAssistantForWebhook` bloquea el turno; el fallback no responde por encima de una persona.
+- **Observabilidad**: `dispatchReason=assistant_retry` / `assistant_fallback`, `conversations.bot_last_turn` (último desenlace) y la misma traza `bot_traces`/`router_logs` por `message_id`.
+
+##### Rollout del fallback
+
+| Env | Uso | Default |
+|---|---|---|
+| `ASSISTANT_FALLBACK_DOMAINS` | Dominios habilitados (csv: `expense,attendance,pedido`) | `expense,attendance`; `off`/vacío lo apaga |
+| `ASSISTANT_FALLBACK_RETRY_TTL_MS` | Ventana para considerar reintento | `600000` (10 min) |
+| `ASSISTANT_FALLBACK_WRITES` | `false` = fallback sólo lectura | `true` |
+
+
 
 ### Motor de turno y planner (Fases 1-5)
 
@@ -319,6 +351,7 @@ src/lib/catalog/
 | `053_bot_failure_traces.sql` | `bot_failure_traces` | Fallos para el loop semanal |
 | `054_bot_pending_confirms.sql` | `bot_pending_confirms` | Confirmaciones pendientes |
 | `055_voucher_awaiting_match.sql` | `conversations.voucher_awaiting_match` | Follow-up "monto o nombre" del voucher por texto |
+| `056_conversation_bot_last_turn.sql` | `conversations.bot_last_turn` (JSONB) | Desenlace del último turno (fallback/reintento) |
 
 ### Contexto del agente
 
@@ -351,7 +384,10 @@ otra lista es orientativa. Hoy expone **18 tools**:
 - **Vouchers:** siguen en su pipeline separado y **no** se exponen como tool.
 
 El agente selecciona herramientas por OpenRouter; los handlers ejecutan la
-operación.
+operación. El fallback puede correr en **sólo lectura**
+(`ASSISTANT_FALLBACK_WRITES=false`): `agentToolDefinitions({ includeWrites:false })`
+no expone las tools de escritura y el runtime igual bloquea cualquier llamada a
+una `write`.
 
 | Env | Uso | Default actual |
 |---|---|---|

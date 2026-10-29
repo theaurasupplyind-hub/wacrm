@@ -78,4 +78,20 @@ describe('buildAgentMessages', () => {
     expect(messages[1].content).toBe('turn-11')
     expect(messages.at(-1)?.content).toBe('MENSAJE ACTUAL:\nmensaje actual')
   })
+
+  it('inyecta el contexto de reintento antes del estado pendiente', () => {
+    const messages = buildAgentMessages({
+      systemPrompt: 'system prompt',
+      history: [],
+      text: 'dale, 5000 de luz',
+      conversationContext: 'Gasto pendiente: monto.',
+      retryContext: 'TURNO ANTERIOR FALLIDO: "gasté en luz".',
+    })
+
+    const current = messages.at(-1)?.content ?? ''
+    expect(current.indexOf('TURNO ANTERIOR FALLIDO')).toBeLessThan(
+      current.indexOf('ESTADO PENDIENTE DE LA CONVERSACIÓN'),
+    )
+    expect(current).toContain('MENSAJE ACTUAL:\ndale, 5000 de luz')
+  })
 })

@@ -21,6 +21,12 @@ and polish.
 - **Follow-up "¿me pasás el monto o el nombre?"** (`conversations.voucher_awaiting_match`,
   TTL 5 min): el próximo mensaje puede ser un monto puro o el nombre completo
   del cliente.
+- **Fallback determinístico → agente con tools (G7).** Si el handler de
+  gastos/asistencia no responde o falla, el agente con tool-calling toma el
+  turno con estado fresco. Si el usuario reintenta tras un callejón sin salida
+  (`"No te entendí"`) dentro de 10 min, el agente toma el mensaje siguiente con
+  el contexto del fallo. Vouchers y pendientes quedan fuera; las escrituras
+  siguen pasando por gate + confirmación + undo.
 
 ### Changed
 
@@ -28,17 +34,25 @@ and polish.
   transferencia o el match vino del fuzzy. Se muestran cliente/factura/saldo y
   botones Confirmar/Cancelar; nunca se paga a ciegas. La compuerta A/B de la
   forma pelada (`"Ale pago en efectivo"`) sigue vigente.
+- **`runAssistantForWebhook` devuelve el desenlace** (`replied`/`empty`/
+  `blocked`/`error`) para persistir `conversations.bot_last_turn`.
+  `ASSISTANT_FALLBACK_WRITES=false` deja el fallback en sólo lectura.
 
 ### Migrations
 
 - `055_voucher_awaiting_match.sql` — agrega `conversations.voucher_awaiting_match`
   (jsonb). Necesaria para el follow-up; el resto de los cambios funciona sin ella.
+- `056_conversation_bot_last_turn.sql` — agrega `conversations.bot_last_turn`
+  (jsonb). Necesaria para el fallback/reintento; sin ella el webhook sigue
+  funcionando (el fallback por `handled:false` opera igual, sin detección de
+  reintento).
 
 ### Docs
 
 - `docs/bots/vouchers.md` y `docs/voucher-flow.md` (flujo de texto, fuzzy,
-  confirmación y follow-up), `docs/bots/architecture.md` (migración 055 y
-  helpers) y `docs/bots/decisiones-y-gotchas.md` §13 (incidente 2026-10-29).
+  confirmación y follow-up), `docs/bots/architecture.md` (migración 056 y
+  fallback), `docs/bots/assistant-agent.md` (fallback y reintento) y
+  `docs/bots/decisiones-y-gotchas.md` §6/§7/§13 (G7 e incidente 2026-10-29).
 
 ## [0.7.0] — 2026-07-02
 

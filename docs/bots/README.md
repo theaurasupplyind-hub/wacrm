@@ -36,6 +36,7 @@ webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 | Documento | Estado |
 |-----------|--------|
 | [`plans/plan-orquestador-llm-bots-rigidos.md`](./plans/plan-orquestador-llm-bots-rigidos.md) | Implementado (Fases 1–7); Fase 8 (planner `on` por dominio) es rollout |
+| [`plans/plan-agente-unificado-2026-10.md`](./plans/plan-agente-unificado-2026-10.md) | **Propuesta para discusión** — estado único, tools con args, agente al frente |
 | [`plans/plan-automatizacion-chat-y-asistente-desktop.md`](./plans/plan-automatizacion-chat-y-asistente-desktop.md) | No iniciado — incluye Anexo A (auditoría de `backend_gal`) |
 
 > Los planes cerrados se **eliminaron**: sus pendientes vivos están en

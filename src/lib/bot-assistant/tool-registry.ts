@@ -734,9 +734,14 @@ export function listTools(): { name: string; kind: AgentTool['kind']; descriptio
   return AGENT_TOOLS.map((t) => ({ name: t.name, kind: t.kind, description: t.description }))
 }
 
-/** Definiciones OpenAI-compatible para pasar al modelo. */
-export function agentToolDefinitions() {
-  return AGENT_TOOLS.map((t) => ({
+/**
+ * Definiciones OpenAI-compatible para pasar al modelo.
+ * `includeWrites:false` sirve al fallback en modo lectura: el modelo ni
+ * siquiera ve las tools de escritura.
+ */
+export function agentToolDefinitions(options: { includeWrites?: boolean } = {}) {
+  const includeWrites = options.includeWrites !== false
+  return AGENT_TOOLS.filter((t) => includeWrites || !t.write).map((t) => ({
     type: 'function' as const,
     function: {
       name: t.name,

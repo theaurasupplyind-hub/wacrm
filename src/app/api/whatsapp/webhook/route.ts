@@ -34,6 +34,20 @@ import { isPhoneAllowed } from '@/lib/bot/whitelist'
 import { classifyContextCommand, handleContextCommand } from '@/lib/bot/context-command'
 import { loadClarifyContext, saveClarifyContext, clearClarifyContext } from '@/lib/bot-llm/clarify-context'
 import { runAssistantForWebhook } from '@/lib/bot-assistant/production'
+import {
+  assistantOutcomeToStatus,
+  buildFallbackContext,
+  buildRetryContext,
+  isDeadEndReply,
+  isRetryWorthy,
+  isStrongIntentForRetry,
+  parseLastTurn,
+  saveLastTurn,
+  shouldFallback,
+  shouldTakeoverRetry,
+  type HandlerOutcome,
+  type LastTurn,
+} from '@/lib/bot/turn-outcome'
 import { detectFailureSignal } from '@/lib/bot-assistant/failure-detect'
 import { logFailureSignal } from '@/lib/bot-assistant/failure-trace'
 import { processPedidoMessage } from '@/lib/pedidos'
@@ -607,7 +621,7 @@ async function handleAttendanceMessage(args: {
   contactId: string
   messageId?: string | null
   extraction?: UnifiedExtraction
-}): Promise<boolean> {
+}): Promise<HandlerOutcome> {
   try {
     const result = await processAttendanceMessage({
       db: supabaseAdmin(),
@@ -620,13 +634,15 @@ async function handleAttendanceMessage(args: {
     }, args.extraction)
     if (result.handled) {
       console.log('[attendance] handled conversation=%s employee=%s', args.conversationId, result.employeeName)
-      return true
+      // El handler envía su propia respuesta (texto/botones) o resuelve el
+      // turno; no hay flag `replied`, así que `handled` es la mejor señal.
+      return { handled: true, replied: true, text: null }
     }
-    return false
+    return { handled: false, replied: false }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[attendance] handler error:', msg)
-    return false
+    return { handled: false, replied: false, error: msg }
   }
 }
 
@@ -679,7 +695,7 @@ async function handleExpenseMessage(args: {
   conversationId: string
   contactId: string
   extraction?: UnifiedExtraction
-}): Promise<boolean> {
+}): Promise<HandlerOutcome> {
   try {
     const result = await processExpenseMessage({
       db: supabaseAdmin(),
@@ -706,17 +722,23 @@ async function handleExpenseMessage(args: {
         result.error ? 'error' : result.replied || guarded ? 'replied' : 'no_reply',
         result.error ?? null,
       )
-      return true
+      return {
+        handled: true,
+        replied: !!(result.replied || guarded),
+        text: result.text ?? null,
+        error: result.error ?? null,
+        wrote: result.expenseId != null,
+      }
     }
     // El router despachó a gastos pero el handler declinó: la traza debe
     // decirlo (antes quedaba sin terminal y parecía atendido).
     await recordExpenseOutcome(args, 'no_reply')
-    return false
+    return { handled: false, replied: false }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[expense] handler error:', msg)
     await recordExpenseOutcome(args, 'error', msg)
-    return false
+    return { handled: false, replied: false, error: msg }
   }
 }
 
@@ -1605,6 +1627,50 @@ async function processMessage(
     }
   }
 
+  // ── Reintento: si el turno anterior no dio respuesta útil, el agente toma
+  // el mensaje con el contexto del fallo. El determinístico conserva la
+  // prioridad ante un intent fuerte nuevo (el usuario cambió de tema).
+  const sectionLastTurn = parseLastTurn((conversation as { bot_last_turn?: unknown }).bot_last_turn)
+  const retryWorthy = isRetryWorthy(sectionLastTurn)
+  const retryContextText = retryWorthy && sectionLastTurn ? buildRetryContext(sectionLastTurn) : null
+  const hasPendingAny =
+    hasPendingExpense ||
+    hasPendingAttendance ||
+    hasPendingVoucher ||
+    hasPendingOrder ||
+    hasResumableQuote ||
+    !!clarifyLoad?.state ||
+    !!voucherAwaitingMatch
+  const canRetryTakeover =
+    !flowConsumed &&
+    !interactiveReplyId &&
+    !mediaConsumedByVoucher &&
+    !!inboundText.trim() &&
+    (message.type === 'text' || message.type === 'audio')
+  if (
+    canRetryTakeover &&
+    shouldTakeoverRetry({
+      last: sectionLastTurn,
+      botAllowed,
+      hasPending: hasPendingAny,
+      strongNewIntent: isStrongIntentForRetry(plan.extraction),
+      clarifyHandled: plan.clarifyHandled,
+    })
+  ) {
+    console.log(
+      '[fallback] retry takeover conv=%s prevStatus=%s',
+      conversation.id,
+      sectionLastTurn?.status,
+    )
+    plan = {
+      ...plan,
+      dispatchedTo: 'assistant',
+      dispatchReason: 'assistant_retry',
+      actions: [{ kind: 'run_assistant', text: inboundText, extraction: plan.extraction }],
+      responded: true,
+    }
+  }
+
   const dispatchedTo: string = plan.dispatchedTo
   const dispatchReason: string = plan.dispatchReason
   const responded: boolean = plan.responded
@@ -1613,54 +1679,155 @@ async function processMessage(
     console.log('[clarify] %s -> conversation=%s', dispatchReason, conversation.id)
   }
 
-  const pushExpenseTask = (ex?: UnifiedExtraction) => {
+  // ── Fallback determinístico → agente con tools ──
+  // El turno se marca "processing" antes de correr los handlers; cada tarea
+  // actualiza `bot_last_turn` al terminar. Si el handler no respondió (o
+  // falló), el agente toma el mensaje con estado fresco y tools.
+  let currentTurn: LastTurn = {
+    messageId: message.id,
+    text: inboundText,
+    domain: dispatchedTo,
+    reason: dispatchReason,
+    status: 'processing',
+    at: new Date().toISOString(),
+  }
+  const persistTurn = async (patch: Partial<LastTurn>) => {
+    currentTurn = { ...currentTurn, ...patch }
+    await saveLastTurn(supabaseAdmin(), conversation.id, currentTurn)
+  }
+
+  const runAssistantTask = (
+    text: string,
+    extraction: UnifiedExtraction | null,
+    opts: { retryContext?: string | null; fallbackFrom?: string | null } = {},
+  ): Promise<'replied' | 'empty' | 'blocked' | 'error'> =>
+    runAssistantForWebhook({
+      accountId,
+      conversationId: conversation.id,
+      contactId: contactRecord.id,
+      userId: configOwnerUserId,
+      text,
+      phone: message.from,
+      messageId: message.id,
+      extraction,
+      conversationContext: contextText,
+      retryContext: opts.retryContext ?? null,
+      fallbackFrom: opts.fallbackFrom ?? null,
+    }).catch((err) => {
+      console.error('[assistant] dispatch error:', err)
+      return 'error' as const
+    })
+
+  const pushAssistantTask = (
+    text: string,
+    extraction: UnifiedExtraction | null,
+    opts: { retryContext?: string | null; fallbackFrom?: string | null } = {},
+  ) => {
     bgTasks.push(
       (async () => {
-        try {
-          await handleExpenseMessage({
-            messageType: 'text', text: inboundText, accessToken,
-            senderPhone: message.from, senderName: contactName,
-            accountId, userId: configOwnerUserId,
-            conversationId: conversation.id, contactId: contactRecord.id,
-            messageId: message.id,
-            extraction: ex,
-          })
-        } catch (err) { console.error('[expense] Text error:', err) }
-      })()
+        const outcome = await runAssistantTask(text, extraction, opts)
+        await persistTurn({
+          status: assistantOutcomeToStatus(outcome),
+          fallbackFrom: opts.fallbackFrom ?? null,
+        })
+      })(),
     )
   }
 
-  const pushAttendanceTask = (ex?: UnifiedExtraction) => {
+  const runFallbackAgent = async (args: {
+    domain: 'expense' | 'attendance' | 'pedido'
+    outcome: HandlerOutcome
+  }): Promise<void> => {
+    if (!botAllowed) return
+    console.log(
+      '[fallback] domain=%s handled=%s replied=%s conv=%s',
+      args.domain, args.outcome.handled, args.outcome.replied, conversation.id,
+    )
+    const outcome = await runAssistantTask(inboundText, plan.extraction ?? null, {
+      retryContext: [retryContextText, buildFallbackContext({
+        text: inboundText,
+        domain: args.domain,
+        outcome: args.outcome,
+      })].filter(Boolean).join('\n\n'),
+      fallbackFrom: args.domain,
+    })
+    await persistTurn({
+      status: outcome === 'replied' ? 'fallback_replied' : assistantOutcomeToStatus(outcome),
+      fallbackFrom: args.domain,
+    })
+  }
+
+  const pushDeterministicTask = (
+    domain: 'expense' | 'attendance' | 'pedido',
+    run: () => Promise<HandlerOutcome>,
+  ) => {
     bgTasks.push(
       (async () => {
+        let outcome: HandlerOutcome
         try {
-          await handleAttendanceMessage({
-            text: inboundText, accountId, userId: configOwnerUserId,
-            conversationId: conversation.id, contactId: contactRecord.id,
-            messageId: message.id,
-            extraction: ex,
-          })
-        } catch (err) { console.error('[attendance] Text error:', err) }
-      })()
+          outcome = await run()
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error('[fallback] %s task error:', domain, msg)
+          outcome = { handled: false, replied: false, error: msg }
+        }
+        const deadEnd = outcome.replied && isDeadEndReply(outcome.text)
+        await persistTurn({
+          status: outcome.replied
+            ? deadEnd
+              ? 'replied_dead_end'
+              : 'replied'
+            : outcome.error
+              ? 'error'
+              : 'declined',
+        })
+        if (shouldFallback({ domain, replied: outcome.replied, wrote: outcome.wrote })) {
+          await runFallbackAgent({ domain, outcome })
+        }
+      })(),
     )
   }
 
-  const pushPedidoTask = () => {
-    bgTasks.push(
-      (async () => {
-        try {
-          await processPedidoMessage({
-            db: supabaseAdmin(),
-            text: inboundText,
-            accountId, userId: configOwnerUserId,
-            conversationId: conversation.id, contactId: contactRecord.id,
-            senderPhone: message.from, senderName: contactName,
-            accessToken, messageId: message.id,
-          })
-        } catch (err) { console.error('[pedido] Text error:', err) }
-      })()
+  const pushExpenseTask = (ex?: UnifiedExtraction) =>
+    pushDeterministicTask('expense', () =>
+      handleExpenseMessage({
+        messageType: 'text', text: inboundText, accessToken,
+        senderPhone: message.from, senderName: contactName,
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        messageId: message.id,
+        extraction: ex,
+      }),
     )
-  }
+
+  const pushAttendanceTask = (ex?: UnifiedExtraction) =>
+    pushDeterministicTask('attendance', () =>
+      handleAttendanceMessage({
+        text: inboundText, accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        messageId: message.id,
+        extraction: ex,
+      }),
+    )
+
+  const pushPedidoTask = () =>
+    pushDeterministicTask('pedido', async () => {
+      const res = await processPedidoMessage({
+        db: supabaseAdmin(),
+        text: inboundText,
+        accountId, userId: configOwnerUserId,
+        conversationId: conversation.id, contactId: contactRecord.id,
+        senderPhone: message.from, senderName: contactName,
+        accessToken, messageId: message.id,
+      })
+      return {
+        handled: res.handled,
+        replied: !!(res.replied || res.handled),
+        text: res.text ?? null,
+        error: res.error ?? null,
+        wrote: !!res.createdInvoice,
+      }
+    })
 
   // Fase 4: dominios donde el AGENTE es la vía principal (csv en
   // ASSISTANT_PRIMARY_DOMAINS, subset de {expense, attendance}). Vacío =
@@ -1675,22 +1842,6 @@ async function processMessage(
         .filter(Boolean),
     )
     return set.has(domain)
-  }
-
-  const pushAssistantTask = (text: string, extraction: UnifiedExtraction | null) => {
-    bgTasks.push(
-      runAssistantForWebhook({
-        accountId,
-        conversationId: conversation.id,
-        contactId: contactRecord.id,
-        userId: configOwnerUserId,
-        text,
-        phone: message.from,
-        messageId: message.id,
-        extraction,
-        conversationContext: contextText,
-      }).catch((err) => console.error('[assistant] dispatch error:', err)),
-    )
   }
 
   const executeAction = async (action: TurnAction): Promise<void> => {
@@ -1726,7 +1877,10 @@ async function processMessage(
       case 'run_expense':
         if (isAgentPrimary('expense')) {
           console.log('[assistant-primary] expense via agent conversation=%s', conversation.id)
-          pushAssistantTask(action.text, action.extraction)
+          pushAssistantTask(action.text, action.extraction, {
+            retryContext: retryContextText,
+            fallbackFrom: 'retry',
+          })
         } else {
           pushExpenseTask(action.extraction ?? undefined)
         }
@@ -1734,7 +1888,10 @@ async function processMessage(
       case 'run_attendance':
         if (isAgentPrimary('attendance')) {
           console.log('[assistant-primary] attendance via agent conversation=%s', conversation.id)
-          pushAssistantTask(action.text, action.extraction)
+          pushAssistantTask(action.text, action.extraction, {
+            retryContext: retryContextText,
+            fallbackFrom: 'retry',
+          })
         } else {
           pushAttendanceTask(action.extraction ?? undefined)
         }
@@ -1743,7 +1900,10 @@ async function processMessage(
         pushPedidoTask()
         break
       case 'run_assistant':
-        pushAssistantTask(action.text, action.extraction)
+        pushAssistantTask(action.text, action.extraction, {
+          retryContext: retryContextText,
+          fallbackFrom: dispatchReason === 'assistant_retry' ? 'retry' : null,
+        })
         break
       case 'run_voucher_text':
         bgTasks.push(
@@ -1782,8 +1942,44 @@ async function processMessage(
     }
   }
 
+  const hasAsyncTurn = plan.actions.some(
+    (a) =>
+      a.kind === 'run_expense' ||
+      a.kind === 'run_attendance' ||
+      a.kind === 'run_order' ||
+      a.kind === 'run_assistant',
+  )
+
+  // Estado "processing" antes de correr handlers: el mensaje siguiente que
+  // llegue mientras tanto no se considera reintento.
+  if (botAllowed) await persistTurn({})
+
   for (const action of plan.actions) {
     await executeAction(action)
+  }
+
+  // Turnos sin handler asíncrono: el desenlace se conoce acá (reply/clarify/
+  // voucher). Los handlers de expense/attendance/pedido/asistente actualizan
+  // `bot_last_turn` al terminar.
+  if (!hasAsyncTurn && botAllowed) {
+    const replyText = plan.actions
+      .map((a) =>
+        a.kind === 'reply_text' ? a.text : a.kind === 'reply_buttons' ? a.body : '',
+      )
+      .join('\n')
+    const hasVoucherAction = plan.actions.some(
+      (a) =>
+        a.kind === 'run_voucher_text' ||
+        a.kind === 'run_voucher_message_text' ||
+        a.kind === 'store_voucher_pending_text',
+    )
+    const status: LastTurn['status'] =
+      plan.responded || hasVoucherAction
+        ? isDeadEndReply(replyText)
+          ? 'replied_dead_end'
+          : 'replied'
+        : 'declined'
+    await persistTurn({ status })
   }
 
   // Auditoría: registrar la decisión del router en router_logs. Se hace

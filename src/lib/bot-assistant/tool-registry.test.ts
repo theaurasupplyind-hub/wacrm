@@ -39,6 +39,16 @@ describe('agent tool registry', () => {
     expect(defs[0].type).toBe('function')
   })
 
+  it('includeWrites:false expone solo lecturas y meta (fallback read-only)', () => {
+    const readOnly = agentToolDefinitions({ includeWrites: false })
+    const writeNames = AGENT_TOOLS.filter((t) => t.write).map((t) => t.name)
+    const exposed = readOnly.map((d) => d.function.name)
+    expect(exposed.length).toBeGreaterThan(0)
+    for (const name of writeNames) expect(exposed).not.toContain(name)
+    expect(exposed).toContain('consultar_facturas')
+    expect(exposed).toContain('pedir_ayuda')
+  })
+
   it('kind coherente con write (Fase 1: catálogo único)', () => {
     for (const t of AGENT_TOOLS) {
       expect(['read', 'write', 'meta']).toContain(t.kind)

@@ -20,8 +20,10 @@ configurable por cuenta para responder a clientes.
    estructurada y el router resuelve `gasto`, `asistencia`, `voucher`, `pedido`,
    `factura` o `assistant`.
 3. Solo los mensajes que llegan a `assistant` llaman a
-   `runAssistantForWebhook()`. **El agente no decide actualmente el dispatch
-   global ni sustituye los handlers determinísticos.**
+   `runAssistantForWebhook()`. **El agente no decide el dispatch global ni
+   sustituye los handlers determinísticos**; sí los releva cuando un handler no
+   responde o cuando el usuario reintenta tras un turno fallido (ver
+   [Fallback y reintento](#fallback-y-reintento)).
 4. En producción se carga historial reciente y conocimiento de la cuenta. El
    loop de `runAssistantAgent()` selecciona tools, recibe sus resultados y
    redacta la respuesta. Se ejecuta por defecto; poner
@@ -46,6 +48,7 @@ Archivos principales:
 | `src/lib/bot-assistant/production.ts`    | Gates productivos, historial/KB, invocación y envío        |
 | `src/lib/bot-assistant/agent.ts`         | Loop LLM ↔ tools                                           |
 | `src/lib/bot-assistant/tool-registry.ts` | Contratos y ejecución de herramientas                      |
+| `src/lib/bot/turn-outcome.ts`            | Desenlace del turno: fallback, reintento y dead-ends        |
 | `src/lib/bot-llm/context.ts`             | Representación textual de contextos de dominio pendientes  |
 
 ## Herramientas y límites actuales
@@ -103,6 +106,42 @@ responder al usuario, propone `TurnAction`s que el motor valida.
 Rollout sugerido: `shadow` → `on`+`assistant` (lectura) → `+pedido` →
 `+expense` → `+attendance` → `ASSISTANT_PLANNER_WRITES=true`. **Vouchers** no
 entran al planner.
+
+## Fallback y reintento
+
+El determinístico tiene prioridad. El agente entra solo en dos casos:
+
+1. **Sin respuesta:** el handler de gastos/asistencia devuelve `handled:false`,
+   falla o no envía mensaje (`replied:false`). El adapter (`webhook/route.ts`)
+   escribe `conversations.bot_last_turn` y llama a `runAssistantForWebhook()`
+   con un `retryContext` que dice qué dominio se intentó y por qué falló.
+2. **Reintento:** si el turno anterior quedó en `declined`, `no_reply`, `error`
+   o `replied_dead_end` y el mensaje nuevo llega dentro de
+   `ASSISTANT_FALLBACK_RETRY_TTL_MS`, el agente toma el mensaje con el contexto
+   del fallo. Un intent fuerte nuevo (`alta`/`media`) conserva la prioridad
+   determinística; un pendiente activo (slot, clarify, voucher o pedido)
+   bloquea el takeover.
+
+Guardrails:
+
+- **Vouchers congelados:** nunca entran al fallback ni al retry.
+- **Sin doble mensaje:** el fallback sólo corre si el handler no respondió.
+- **Escrituras:** el agente usa las mismas tools, con `effect-gate`,
+  `pending-confirm`, `bot_write_log` y máximo 1 escritura/turno.
+  `ASSISTANT_FALLBACK_WRITES=false` expone sólo lecturas
+  (`agentToolDefinitions({ includeWrites: false })`) y no ejecuta pendientes.
+- **Estado fresco:** el agente consulta `consultar_estado_pedido`,
+  `consultar_confirmaciones_pendientes` y `consultar_ultima_escritura`; nunca
+  reconstruye el estado desde el historial.
+
+| Env | Uso | Default |
+|---|---|---|
+| `ASSISTANT_FALLBACK_DOMAINS` | Dominios del fallback (csv: `expense,attendance,pedido`) | `expense,attendance`; `off`/vacío apaga |
+| `ASSISTANT_FALLBACK_RETRY_TTL_MS` | Ventana para considerar reintento | `600000` (10 min) |
+| `ASSISTANT_FALLBACK_WRITES` | `false` = fallback sólo lectura | `true` |
+
+Observabilidad: `dispatchReason=assistant_retry`, `fallbackFrom` en
+`router_logs.debug_info`/`bot_traces` y `conversations.bot_last_turn`.
 
 ## Contexto: lo que recuerda y lo que no
 

@@ -31,6 +31,13 @@ export interface AgentRunArgs {
   systemPrompt: string
   extraction?: UnifiedExtraction | null
   conversationContext?: string | null
+  /**
+   * Contexto del turno anterior fallido (fallback/reintento). Se presenta
+   * aparte del estado pendiente para que el modelo entienda la reformulación.
+   */
+  retryContext?: string | null
+  /** false = solo tools de lectura (fallback con ASSISTANT_FALLBACK_WRITES=false). */
+  allowWrites?: boolean
   ctx: ToolContext
   maxIters?: number
   model?: string
@@ -43,7 +50,10 @@ export interface AgentRunArgs {
  * state. Keep only recent turns to bound prompt size.
  */
 export function buildAgentMessages(
-  args: Pick<AgentRunArgs, 'text' | 'history' | 'systemPrompt' | 'extraction' | 'conversationContext'>
+  args: Pick<
+    AgentRunArgs,
+    'text' | 'history' | 'systemPrompt' | 'extraction' | 'conversationContext' | 'retryContext'
+  >
 ): ChatMessage[] {
   const history = args.history.filter(
     (turn): turn is { role: 'user' | 'assistant'; content: string } =>
@@ -58,6 +68,9 @@ export function buildAgentMessages(
   }
 
   const contextParts: string[] = []
+  if (args.retryContext?.trim()) {
+    contextParts.push(args.retryContext.trim())
+  }
   if (args.conversationContext?.trim()) {
     contextParts.push(`ESTADO PENDIENTE DE LA CONVERSACIÓN:\n${args.conversationContext.trim()}`)
   }
@@ -183,6 +196,7 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
   const toolLogs: ToolLog[] = []
   const toolResults: Record<string, unknown> = {}
   const model = args.model || process.env.ASSISTANT_MODEL || undefined
+  const allowWrites = args.allowWrites !== false
 
   const messages = buildAgentMessages(args)
 
@@ -223,11 +237,14 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
 
   // Fase 4: si el turno anterior dejó una confirmación pendiente, este mensaje
   // la resuelve (confirma / cancela / cambia de tema) antes del loop normal.
-  const pendingReply = await maybeHandlePendingConfirm({
-    text: args.text,
-    toolCtx,
-    extraction: args.extraction ?? null,
-  })
+  // En modo lectura no se ejecutan pendientes (sería una escritura).
+  const pendingReply = allowWrites
+    ? await maybeHandlePendingConfirm({
+        text: args.text,
+        toolCtx,
+        extraction: args.extraction ?? null,
+      })
+    : null
   if (pendingReply) {
     return {
       reply: pendingReply.reply,
@@ -239,7 +256,7 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
     }
   }
 
-  const tools = agentToolDefinitions()
+  const tools = agentToolDefinitions({ includeWrites: allowWrites })
   const maxIters = args.maxIters ?? 4
   let reply = ''
 
@@ -271,6 +288,21 @@ export async function runAssistantAgent(args: AgentRunArgs): Promise<AssistantRe
           role: 'tool',
           tool_call_id: call.id,
           content: JSON.stringify({ error: `Tool desconocida: ${call.function.name}` }),
+        })
+        continue
+      }
+
+      if (!allowWrites && tool.write) {
+        logs.push({
+          step: 'agent_tool_blocked',
+          data: { tool: tool.name, reason: 'writes_disabled' },
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            error: 'Las escrituras están deshabilitadas en este turno. Consultá y respondé sin registrar.',
+          }),
         })
         continue
       }

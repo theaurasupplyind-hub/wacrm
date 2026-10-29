@@ -118,9 +118,17 @@ que no se hizo** sin `handled:true` / escritura confirmada.
 | **G4 cliente** | El cliente sale **solo** de `searchCandidates(nombreDelMensaje)`, nunca del historial ni del LLM. |
 | **G5 anti-repetición** | Si el mensaje no cambia el estado, **no** re-mostrar el mismo bloque: responder "no pude aplicar X". |
 | **G6 idempotencia** | La delegación registra en `bot_write_log`; doble ejecución del mismo mensaje no duplica. |
+| **G7 fallback** | Si el handler determinístico no respondió (`handled:false`/error/`replied:false`), el agente con tools toma el turno con `retryContext`. Si el turno anterior quedó en callejón sin salida (`replied_dead_end`) y el usuario reintenta dentro de 10 min, el agente toma el mensaje siguiente. Nunca hay doble mensaje ni doble escritura; vouchers y pendientes quedan fuera. |
 
 *(origen: `plans/plan-orquestador-llm-bots-rigidos.md`; Fase 8 —planner `on` por
 dominio— sigue como rollout)*
+
+**Fallback (2026-10-29):** el determinístico conserva la prioridad; el agente
+entra sólo cuando no hubo respuesta o cuando el usuario reintenta. El desenlace
+se persiste en `conversations.bot_last_turn` (`processing`/`replied`/
+`replied_dead_end`/`declined`/`no_reply`/`error`/`blocked`/`fallback_replied`).
+El reintento no secuestra pendientes ni intents fuertes nuevos. Implementación:
+`src/lib/bot/turn-outcome.ts`, `webhook/route.ts`, `bot-assistant/{production,agent}.ts`.
 
 ## 7. Asistente productivo — límites de escritura
 
@@ -134,6 +142,9 @@ dominio— sigue como rollout)*
 - **Escrituras del agente:** pasan por los handlers que confirman; la barrera de
   escritura del **planner** vive en `src/lib/bot/policy.ts` (máx. 1 escritura/turno,
   texto del usuario obligatorio, dedupe) y `reconcilePlans`.
+- **Escrituras del fallback:** el agente de fallback usa las mismas tools y el
+  mismo gate; `ASSISTANT_FALLBACK_WRITES=false` lo deja en lectura. Si el handler
+  determinístico ya escribió (`wrote`/`replied:true`), el fallback no corre.
 
 ## 8. Jev — DESCARTADO (decisión 2026-10-17)
 
