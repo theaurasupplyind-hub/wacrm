@@ -9,6 +9,37 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+### Added
+
+- **Vouchers por texto sin monto.** El bot acepta pagos reportados por texto
+  (`"Martu pagó en efectivo"`): busca por nombre, acepta coincidencias locales
+  (`"Ale"` → `"Ale Casagrande"`) y, si no hay match, sugiere clientes parecidos
+  (Jaro-Winkler) cruzados con sus facturas pendientes. El monto también funciona
+  como ancla aunque no haya nombre (`"me pagaron 422000 en efectivo"`).
+- **Follow-up "¿me pasás el monto o el nombre?"** (`conversations.voucher_awaiting_match`,
+  TTL 5 min): el próximo mensaje puede ser un monto puro o el nombre completo
+  del cliente.
+
+### Changed
+
+- **Confirmación antes de pagar** cuando el nombre es débil, no hay nombre, es
+  transferencia o el match vino del fuzzy. Se muestran cliente/factura/saldo y
+  botones Confirmar/Cancelar; nunca se paga a ciegas. La compuerta A/B de la
+  forma pelada (`"Ale pago en efectivo"`) sigue vigente.
+
+### Migrations
+
+- `055_voucher_awaiting_match.sql` — agrega `conversations.voucher_awaiting_match`
+  (jsonb). Necesaria para el follow-up; el resto de los cambios funciona sin ella.
+
+### Docs
+
+- `docs/bots/vouchers.md` y `docs/voucher-flow.md` (flujo de texto, fuzzy,
+  confirmación y follow-up), `docs/bots/architecture.md` (migración 055 y
+  helpers) y `docs/bots/decisiones-y-gotchas.md` §13 (incidente 2026-10-29).
+
 ## [0.7.0] — 2026-07-02
 
 Promotes the AI assistant to a first-class **AI Agents** section in the

@@ -122,7 +122,7 @@ pipeline activo.
 
 **Estado:** ✅ Activo
 
-**Propósito:** Cuando un cliente envía imagen/PDF de un comprobante de pago por WhatsApp, extrae los datos vía IA (visión), los empareja con facturas pendientes en FacBal/backend_gal mediante un pipeline de fases con pool de candidatos, y registra el pago automáticamente cuando hay match confiable.
+**Propósito:** Cuando un cliente envía imagen/PDF de un comprobante de pago por WhatsApp, extrae los datos vía IA (visión), los empareja con facturas pendientes en FacBal/backend_gal mediante un pipeline de fases con pool de candidatos, y registra el pago automáticamente cuando hay match confiable. También acepta pagos reportados **por texto** (sin imagen), usando el monto o el nombre como ancla y confirmando cuando el match es débil.
 
 > Documento dedicado con la spec de matching + pipeline actual:
 > **[`vouchers.md`](./vouchers.md)** — también existe una descripción en inglés
@@ -134,9 +134,10 @@ pipeline activo.
 |---------|-----|
 | `src/lib/ai/voucher-pipeline.ts` | Orquestador: descarga media → extracción → fases → decisión → staging → pago |
 | `src/lib/ai/voucher-extraction.ts` | OpenRouter multimodal (`google/gemini-2.5-flash`) → JSON estructurado |
-| `src/lib/ai/voucher-matching.ts` | Helpers: `montoDistance`, `findExactClientSumMatches`, thresholds |
-| `src/lib/ai/voucher-context.ts` | Estado multi-turn en `conversations.voucher_context` |
-| `src/lib/facbal/client.ts` | `matchVoucherByName`, `createVoucherReview`, `registrarPago` |
+| `src/lib/ai/voucher-matching.ts` | Helpers: `montoDistance`, `findExactClientSumMatches`, thresholds, `isNameMatch` / `isStrongNameMatch` / `selectNameCandidates` |
+| `src/lib/text/similarity.ts` | Jaro-Winkler para sugerencias fuzzy de clientes |
+| `src/lib/ai/voucher-context.ts` | Estado multi-turn en `conversations.voucher_context` + `voucher_awaiting_match` |
+| `src/lib/facbal/client.ts` | `matchVoucherByName`, `findClientMatchesFuzzy`, `createVoucherReview`, `registrarPago` |
 | `src/app/(dashboard)/voucher-debug/page.tsx` | Dashboard de debug con timeline por fase |
 
 ### Variables de entorno
@@ -157,6 +158,27 @@ pipeline activo.
 | `041_voucher_debug_info.sql` | `voucher_extractions.debug_info` | Timeline de fases para debug UI |
 | `042_voucher_match_status_multi_invoice.sql` | CHECK + `multi_invoice` | Distinguir multi_invoice de ambiguous en DB |
 | `043_voucher_atomic_pending.sql` | RPCs `voucher_append_pending` / `voucher_remove_pending` | Fix de race condition en pendientes simultáneos |
+| `055_voucher_awaiting_match.sql` | `conversations.voucher_awaiting_match` | Follow-up "¿monto o nombre?" del voucher por texto |
+
+### Voucher por texto (sin imagen)
+
+`processVoucherText` maneja los pagos reportados por texto. Dos caminos:
+
+- **Con monto** (`"me pagaron 422000 en efectivo"`): `engine.ts` acepta
+  `monto + método` sin nombre (`hasVoucherAnchor`); el monto es el ancla
+  (Fase 1). Si hay una sola factura, confirma el cliente; si hay varias, A/B/C.
+- **Sin monto** (`"Martu pagó en efectivo"`): busca por nombre
+  (`selectNameCandidates`: score o prefijo/tokens). Nombre fuerte + efectivo
+  paga directo; nombre débil o transferencia confirma. Sin match exacto,
+  `findClientMatchesFuzzy` (Jaro-Winkler) sugiere clientes, los cruza con sus
+  facturas pendientes y confirma; si no queda nada, guarda
+  `voucher_awaiting_match` y pide el monto o el nombre completo.
+
+**Confirmación:** los matches débiles/sin nombre/transfer/fuzzy guardan un
+pending (`text/efectivo` o `text/transferencia`) y envían Confirmar/Cancelar;
+nunca se paga a ciegas. **Follow-up:** `voucher_awaiting_match` (TTL 5 min,
+columna separada) acepta un monto puro o un nombre; un intent fuerte o
+"cancelar" lo limpia. Spec completa en [`vouchers.md`](./vouchers.md#voucher-por-texto-sin-imagen).
 
 ---
 
@@ -296,6 +318,7 @@ src/lib/catalog/
 | `052_bot_write_log.sql` | `bot_write_log` | Ledger de escrituras (undo 24 h) |
 | `053_bot_failure_traces.sql` | `bot_failure_traces` | Fallos para el loop semanal |
 | `054_bot_pending_confirms.sql` | `bot_pending_confirms` | Confirmaciones pendientes |
+| `055_voucher_awaiting_match.sql` | `conversations.voucher_awaiting_match` | Follow-up "monto o nombre" del voucher por texto |
 
 ### Contexto del agente
 

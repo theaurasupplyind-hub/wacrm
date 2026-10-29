@@ -1,4 +1,5 @@
 import { normalizeText as normalizeTextShared } from '@/lib/text/normalize'
+import { jaroWinkler } from '@/lib/text/similarity'
 import type { PrecioReferencia, PricingRule, RuleCondition } from '@/lib/precios/types'
 
 export interface FacturaPendiente {
@@ -626,6 +627,44 @@ export async function findClientMatches(
 
   return scored
     .filter(m => m.score > minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+}
+
+/**
+ * Sugerencia de clientes por nombre parecido (Jaro-Winkler).
+ *
+ * Fallback del pipeline de vouchers cuando el nombre exacto no aparece (ej.
+ * "Martu" vs "Martina"). Devuelve clientes, no facturas: el caller debe
+ * cruzar cada uno con sus facturas pendientes y confirmar antes de pagar.
+ * No se usa para auto-matchear.
+ */
+export async function findClientMatchesFuzzy(
+  nombre: string,
+  opts: { limit?: number; minScore?: number } = {},
+): Promise<ClientMatch[]> {
+  const limit = opts.limit ?? 8
+  const minScore = opts.minScore ?? 0.8
+  const nombreTrim = (nombre || '').trim()
+  if (!nombreTrim) return []
+
+  const url = `${apiUrl()}/clients`
+  const res = await fetch(url, {
+    headers: { ...apiKeyHeader() },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(
+      `FacBal API error ${res.status} al buscar clientes parecidos${detail ? `: ${detail}` : ''}`,
+    )
+  }
+  const data = await res.json() as FacbalClient[]
+  if (!Array.isArray(data)) return []
+
+  return data
+    .map((client) => ({ client, score: jaroWinkler(nombreTrim, client.nombre) }))
+    .filter((m) => m.score >= minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
 }

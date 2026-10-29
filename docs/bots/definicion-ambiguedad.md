@@ -55,6 +55,10 @@ un documento o un pago mal imputado cuesta más. Ver `architecture.md` §6.
   no se reescribe.
 - `isExpenseAmbiguous` (monto dudoso, categoría nueva, sin match) cubre parte
   de S3–S5 para gastos → generalizado en el gate (`effect-gate.ts`).
+- Vouchers por texto: el nombre usa `NAME_MATCH_THRESHOLD = 0.5` (score del
+  backend) y `isNameMatch` local; un match débil, sin nombre o transferencia se
+  confirma (S5/S6). El fuzzy de clientes (Jaro-Winkler) solo sugiere y nunca
+  auto-guarda. Ver `vouchers.md` → "Voucher por texto".
 - S3 se alimenta del pre-match único del agente (`deriveMatchInfo` sobre
   `entityScores` del fuzzy, Fase 4); S6 rige en el gate desde Fase 2.
 - Los umbrales numéricos viven en `confidence.ts` (fuente única).

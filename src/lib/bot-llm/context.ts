@@ -1,6 +1,6 @@
 import type { ExpenseContextState } from '@/lib/expenses/types'
 import type { AttendanceContextState } from '@/lib/attendance/context'
-import type { VoucherContextState } from '@/lib/ai/voucher-context'
+import type { VoucherContextState, AwaitingClientMatch } from '@/lib/ai/voucher-context'
 import type { OrderContext } from '@/lib/pedidos/types'
 import { isOrderContextActive, getStaleQuote } from '@/lib/pedidos/context'
 import type { ClarifyContextState } from './clarify-context'
@@ -9,6 +9,7 @@ export interface BotContextInput {
   expenseCtx?: ExpenseContextState | null
   attendanceCtx?: AttendanceContextState | null
   voucherCtx?: VoucherContextState | null
+  voucherAwaitingMatch?: AwaitingClientMatch | null
   orderCtx?: OrderContext | null
   clarifyCtx?: ClarifyContextState | null
 }
@@ -76,6 +77,18 @@ export function buildBotContextText(input: BotContextInput): string {
   if (vc?.pending && vc.pending.length > 0) {
     lines.push(
       `Voucher: hay ${vc.pending.length} comprobante(s) pendiente(s) de confirmar. El usuario puede responder con una letra (A, B...), "sí", o un nombre.`,
+    )
+  }
+  if (input.voucherAwaitingMatch) {
+    const metodo = input.voucherAwaitingMatch.metodoPago === 'Efectivo' ? 'efectivo' : 'transferencia'
+    const nombre = input.voucherAwaitingMatch.attemptedName
+      ? ` para "${input.voucherAwaitingMatch.attemptedName}"`
+      : ''
+    const espera = input.voucherAwaitingMatch.monto == null
+      ? 'el monto del pago o el nombre completo del cliente'
+      : 'el nombre exacto del cliente'
+    lines.push(
+      `Voucher: no encontramos facturas${nombre} (pago en ${metodo}). Se espera ${espera}. Si el mensaje es un monto o un nombre, devolvé intent "voucher" con monto/proveedor.`,
     )
   }
 

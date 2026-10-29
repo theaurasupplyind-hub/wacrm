@@ -12,7 +12,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { clearVoucherContext } from '@/lib/ai/voucher-context'
+import { clearVoucherContext, clearAwaitingMatch } from '@/lib/ai/voucher-context'
 import { clearExpenseContext } from '@/lib/expenses/context'
 import { clearAttendanceContext } from '@/lib/attendance/context'
 import { clearClarifyContext } from '@/lib/bot-llm/clarify-context'
@@ -77,6 +77,7 @@ export async function handleContextCommand(args: {
 
   await Promise.all([
     clearVoucherContext(db, conversationId),
+    clearAwaitingMatch(db, conversationId),
     clearExpenseContext(db, conversationId),
     clearAttendanceContext(db, conversationId),
     clearClarifyContext(db, conversationId),

@@ -23,7 +23,7 @@ import {
   loadAttendanceContext,
   clearAttendanceContext,
 } from '@/lib/attendance'
-import { loadVoucherContext, pushPendingText, clearVoucherContext } from '@/lib/ai/voucher-context'
+import { loadVoucherContext, pushPendingText, clearVoucherContext, loadAwaitingMatch, clearAwaitingMatch } from '@/lib/ai/voucher-context'
 import { engineSendText, engineSendInteractiveButtons } from '@/lib/flows/meta-send'
 import { PENDING_CONTEXT_TTL_MS } from '@/lib/bot/router'
 import { planTurn, reconcilePlans } from '@/lib/bot/engine'
@@ -1012,6 +1012,9 @@ async function processMessage(
   // Cargar estado multi-turn de voucher (si hay candidatas pendientes por confirmar)
   const voucherCtx = await loadVoucherContext(supabaseAdmin(), conversation.id)
   const hasPendingVoucher = voucherCtx.pending.length > 0
+  // Follow-up "no encontré facturas para X": el próximo mensaje puede ser el
+  // monto o el nombre completo (columna voucher_awaiting_match).
+  const voucherAwaitingMatch = await loadAwaitingMatch(supabaseAdmin(), conversation.id)
 
   // Cargar estado de pedido (order_context) para el flujo de presupuestos.
   const orderCtx = await loadOrderContext(supabaseAdmin(), conversation.id)
@@ -1429,6 +1432,7 @@ async function processMessage(
     expenseCtx,
     attendanceCtx,
     voucherCtx,
+    voucherAwaitingMatch,
     orderCtx,
     clarifyCtx: clarifyLoad?.state ?? null,
   })
@@ -1517,6 +1521,7 @@ async function processMessage(
     messageType: message.type,
     extraction,
     clarify: clarifyLoad,
+    voucherAwaitingMatch,
     hasPendingExpense,
     hasPendingAttendance,
     hasPendingVoucher,
@@ -1698,6 +1703,9 @@ async function processMessage(
           case 'clarify': await clearClarifyContext(supabaseAdmin(), conversation.id); break
           case 'order': await clearOrderContext(supabaseAdmin(), conversation.id); break
         }
+        break
+      case 'clear_voucher_awaiting':
+        await clearAwaitingMatch(supabaseAdmin(), conversation.id)
         break
       case 'save_clarify':
         await saveClarifyContext(supabaseAdmin(), conversation.id, action.state)

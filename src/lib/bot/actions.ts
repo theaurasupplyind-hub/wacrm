@@ -27,6 +27,8 @@ export type TurnAction =
    *  dejar al usuario atrapado). Se usa sólo en `clarify_ask`. */
   | { kind: 'reply_buttons'; body: string; options: TurnButton[]; clearOnFailure?: boolean }
   | { kind: 'clear_context'; domain: ContextDomain }
+  /** Limpia el follow-up "no encontré facturas para X" (nombre/monto). */
+  | { kind: 'clear_voucher_awaiting' }
   | { kind: 'save_clarify'; state: ClarifyContextState }
   | {
       kind: 'run_expense'

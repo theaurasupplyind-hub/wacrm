@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sanitizeClientName, pickStickyExact, captionMatchesClient, preferByCaption } from './voucher-matching'
+import { sanitizeClientName, pickStickyExact, captionMatchesClient, preferByCaption, isNameMatch, isStrongNameMatch, selectNameCandidates } from './voucher-matching'
 
 describe('sanitizeClientName (Fix 4)', () => {
   it('descarta Gracias! y palabras de comprobante', () => {
@@ -83,5 +83,44 @@ describe('preferByCaption (nunca veta: no deja el pool vacío)', () => {
     expect(preferByCaption(items, null, nameOf)).toEqual(items)
     expect(preferByCaption(items, '', nameOf)).toEqual(items)
     expect(preferByCaption([], 'Jesus', nameOf)).toEqual([])
+  })
+})
+
+describe('isNameMatch / isStrongNameMatch / selectNameCandidates', () => {
+  const cand = (over: Partial<{ invoice_id: number; cliente_nombre: string; score: number; saldo_pendiente: number }> = {}) => ({
+    invoice_id: 1,
+    numero_factura: 'F-1',
+    cliente_nombre: 'Ale Casagrande',
+    cliente_telefono: '',
+    saldo_pendiente: 200000,
+    total: 200000,
+    fecha: '2026-10-22',
+    score: 0.35,
+    ...over,
+  })
+
+  it('score alto es match fuerte', () => {
+    expect(isStrongNameMatch(cand({ score: 0.7 }))).toBe(true)
+    expect(isNameMatch(null, cand({ score: 0.7 }))).toBe(true)
+  })
+
+  it('score bajo + coincidencia local es match débil (no fuerte)', () => {
+    expect(isStrongNameMatch(cand({ score: 0.35 }))).toBe(false)
+    expect(isNameMatch('Ale', cand({ score: 0.35 }))).toBe(true)
+  })
+
+  it('score bajo sin coincidencia local no es match', () => {
+    expect(isNameMatch('Pepito', cand({ score: 0.35 }))).toBe(false)
+    expect(isNameMatch(null, cand({ score: 0.35 }))).toBe(false)
+  })
+
+  it('selectNameCandidates filtra saldo y ordena por score', () => {
+    const out = selectNameCandidates('Ale', [
+      cand({ invoice_id: 1, score: 0.35 }),
+      cand({ invoice_id: 2, cliente_nombre: 'Alejandra', score: 0.4 }),
+      cand({ invoice_id: 3, cliente_nombre: 'Ale Sin Saldo', saldo_pendiente: 0, score: 0.9 }),
+      cand({ invoice_id: 4, cliente_nombre: 'Pepito', score: 0.1 }),
+    ])
+    expect(out.map((c) => c.invoice_id)).toEqual([2, 1])
   })
 })

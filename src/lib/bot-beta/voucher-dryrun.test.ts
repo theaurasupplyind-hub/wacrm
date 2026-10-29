@@ -98,4 +98,25 @@ describe('runVoucherDryRun · texto: el nombre manda', () => {
     expect(r.matchedClienteNombre).toBe('Test')
     expect(r.matchedInvoiceNumero).toBe('F-1')
   })
+
+  it('nombre débil ("Ale") + monto exacto → matched por monto y matchedNameScore bajo', async () => {
+    const ALE = cand({
+      invoice_id: 5,
+      numero_factura: 'F-11006',
+      cliente_nombre: 'Ale Casagrande',
+      saldo_pendiente: 200000,
+      total: 200000,
+      score: 0.35,
+    })
+    mockMatch.mockImplementation(async (args: { nombre_cliente: string | null; tolerancia: number }) => {
+      if (args.nombre_cliente) return { invoice_candidates: [ALE], destination_candidates: [] }
+      if (args.tolerancia <= 50) return { invoice_candidates: [{ ...ALE, score: 1 }], destination_candidates: [] }
+      return { invoice_candidates: [], destination_candidates: [] }
+    })
+    const r = await runVoucherDryRun({ ...base, monto: 200000, nombre_cliente: 'Ale', nombre_origen: 'Ale' })
+    expect(r.matchStatus).toBe('matched')
+    expect(r.matchedClienteNombre).toBe('Ale Casagrande')
+    expect(r.matchedInvoiceNumero).toBe('F-11006')
+    expect(r.matchedNameScore).toBe(0.35)
+  })
 })

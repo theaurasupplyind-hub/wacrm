@@ -361,3 +361,113 @@ describe('reconcilePlans', () => {
     expect(r.plan.dispatchedTo).toBe('expense')
   })
 })
+
+describe('planTurn · follow-up voucher awaiting match', () => {
+  const awaiting = {
+    metodoPago: 'Efectivo' as const,
+    monto: null,
+    fecha: null,
+    destName: null,
+    attemptedName: 'Martu',
+    createdAt: Date.now(),
+  }
+
+  it('nombre completo → run_voucher_text con ese nombre', () => {
+    const p = planTurn(
+      state({
+        inboundText: 'Martina',
+        extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+        voucherAwaitingMatch: awaiting,
+      }),
+    )
+    expect(p.dispatchReason).toBe('voucher_awaiting_match')
+    expect(kinds(p.actions)).toEqual(['clear_voucher_awaiting', 'run_voucher_text'])
+    const a = p.actions[1]
+    if (a.kind === 'run_voucher_text') {
+      expect(a.clientName).toBe('Martina')
+      expect(a.monto).toBeNull()
+      expect(a.metodoPago).toBe('Efectivo')
+    }
+  })
+
+  it('monto puro → run_voucher_text con monto y el nombre intentado', () => {
+    const p = planTurn(
+      state({
+        inboundText: '422000',
+        extraction: extraction({ intent: 'otro', confianza: 'baja', monto: 422000 }),
+        voucherAwaitingMatch: awaiting,
+      }),
+    )
+    expect(kinds(p.actions)).toEqual(['clear_voucher_awaiting', 'run_voucher_text'])
+    const a = p.actions[1]
+    if (a.kind === 'run_voucher_text') {
+      expect(a.clientName).toBe('Martu')
+      expect(a.monto).toBe(422000)
+    }
+  })
+
+  it('cancelar → limpia y responde, sin voucher', () => {
+    const p = planTurn(
+      state({
+        inboundText: 'cancelar',
+        extraction: extraction({ intent: 'otro', confianza: 'baja' }),
+        voucherAwaitingMatch: awaiting,
+      }),
+    )
+    expect(kinds(p.actions)).toEqual(['clear_voucher_awaiting', 'reply_text'])
+    expect(p.dispatchedTo).toBe('voucher')
+  })
+
+  it('gasto nuevo → limpia el awaiting y va a expense', () => {
+    const p = planTurn(
+      state({
+        inboundText: 'gasté 5000 en luz',
+        extraction: extraction({ intent: 'gasto', confianza: 'alta', monto: 5000 }),
+        voucherAwaitingMatch: awaiting,
+      }),
+    )
+    expect(kinds(p.actions)).toContain('clear_voucher_awaiting')
+    expect(kinds(p.actions)).toContain('run_expense')
+    expect(kinds(p.actions)).not.toContain('run_voucher_text')
+  })
+})
+
+describe('planTurn · voucher con monto y sin nombre', () => {
+  it('"me pagaron 422000 en efectivo" → run_voucher_text con clientName vacío', () => {
+    const p = planTurn(
+      state({
+        inboundText: 'me pagaron 422000 en efectivo',
+        extraction: extraction({
+          intent: 'voucher',
+          confianza: 'alta',
+          monto: 422000,
+          metodo_pago: 'efectivo',
+          proveedor: null,
+        }),
+      }),
+    )
+    expect(kinds(p.actions)).toEqual(['run_voucher_text'])
+    const a = p.actions[0]
+    if (a.kind === 'run_voucher_text') {
+      expect(a.clientName).toBe('')
+      expect(a.monto).toBe(422000)
+    }
+  })
+
+  it('voucher sin nombre ni monto → pide los datos (no cae al "No te entendí")', () => {
+    const p = planTurn(
+      state({
+        inboundText: 'me pagaron en efectivo',
+        extraction: extraction({
+          intent: 'voucher',
+          confianza: 'alta',
+          metodo_pago: 'efectivo',
+          proveedor: null,
+        }),
+      }),
+    )
+    expect(kinds(p.actions)).toEqual(['reply_text'])
+    const a = p.actions[0]
+    if (a.kind === 'reply_text') expect(a.text).toContain('Pasame el monto')
+  })
+})

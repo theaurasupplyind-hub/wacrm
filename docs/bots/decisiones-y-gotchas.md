@@ -295,3 +295,43 @@ los gates de clasificación **no** llevan listas de producto hardcodeadas.
 **Fallback sin vocabulario:** el parser regex sigue siendo la red de seguridad
 cuando FacBal falla (`vocab = null`), con las listas históricas de código. No
 agregar productos nuevos ahí: se agregan al panel de precios/reglas.
+
+
+## 13. Incidente 2026-10-29: nombre corto ("Ale"), monto y follow-up perdido
+
+Conversación real `05fe8f78-ecc9-490e-aee8-e9613e9ec60b`:
+
+1. "Ale pago en efectivo" -> el extractor entendió voucher/cobro/efectivo/Ale,
+   pero `classifyPaymentIntent` lo marcó ambiguo (forma pelada) y preguntó A/B.
+2. Tap "Me pagó (cobro)" -> `processVoucherSinMonto` buscó "Ale". FacBal
+   devolvió F-11006 "Ale Casagrande" $200.000 con **score 0.35**; el filtro
+   `score >= 0.5` tiró la única factura -> "No encontramos facturas para Ale".
+3. "Ale Casagrande" -> no había estado pendiente (el mensaje pedía el nombre,
+   pero nadie lo escuchaba) -> assistant sin contexto -> "No te entendí".
+
+**Decisiones (vigentes):**
+
+- **El monto es el ancla más fuerte.** Si el mensaje trae monto + método, el
+  pipeline busca por monto exacto aunque no haya nombre ("me pagaron 422000 en
+  efectivo"). Si hay una sola factura, confirma el cliente; si hay varias, A/B/C.
+- **Nombre fuerte vs débil.** `score >= 0.5` = fuerte (paga en efectivo).
+  `score < 0.5` pero prefijo/tokens ("Ale" -> "Ale Casagrande") = débil:
+  muestra cliente/factura y pide **Confirmar/Cancelar**. Nunca paga a ciegas.
+  Helpers: `isStrongNameMatch` / `isNameMatch` / `selectNameCandidates` en
+  `voucher-matching.ts`.
+- **La compuerta A/B sigue vigente.** "Ale pago en efectivo" (forma pelada)
+  sigue preguntando A/B; no se relajó. Después del tap, el nombre débil se
+  confirma. Para eliminarla habría que cambiar
+  `classifyPaymentIntent`/`detectAmbiguity` y sus tests (decisión de producto).
+- **Fuzzy solo sugiere.** "Martu" puntúa más alto para Marta (0.92) que para
+  Martina (0.874); el backend devuelve 0 para "Martu"/"Marti"/"Mart". Se
+  calcula Jaro-Winkler local sobre los clientes, se cruza con facturas
+  pendientes y se confirma. Si no queda nada, se pide el monto.
+- **Follow-up persistido.** `conversations.voucher_awaiting_match` (columna
+  separada, TTL 5 min) guarda método/fecha/destino/nombre intentado. El próximo
+  mensaje puede ser un monto puro o un nombre; un intent fuerte o "cancelar" lo
+  limpia. No se usa `voucher_context` para no pisar `pending`.
+- **Alias (Martu -> Martina) queda para fase 2.** El monto + fuzzy + confirmación
+  cubre el caso sin tabla de alias. Si se repite, agregar `client_aliases`.
+
+Origen: incidente 2026-10-29 (logs `router_logs` / `voucher_extractions`).

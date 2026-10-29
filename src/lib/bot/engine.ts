@@ -1,11 +1,15 @@
 import type { BotIntent, UnifiedExtraction } from '@/lib/bot-llm/types'
 import type { ClarifyContextState } from '@/lib/bot-llm/clarify-context'
+import type { AwaitingClientMatch } from '@/lib/ai/voucher-context'
 import type { MatchVoucherCandidate } from '@/lib/facbal/client'
 import { decideDispatch } from '@/lib/bot/router'
 import { buildJevPending } from '@/lib/bot-llm/classify-jev'
 import { detectAmbiguity, matchClarifyOption } from '@/lib/bot-llm/ambiguity'
 import { resolveClarifyExtraction } from '@/lib/bot-llm/clarify-context'
-import { isVoucherClarificationReply } from '@/lib/ai/voucher-pipeline'
+import { isVoucherClarificationReply, extractClientNameFromReply } from '@/lib/ai/voucher-pipeline'
+import { isAwaitingMatchFresh } from '@/lib/ai/voucher-context'
+import { sanitizeClientName } from '@/lib/ai/voucher-matching'
+import { parseMontoSafe } from '@/lib/bot-llm/sanitize'
 import type { BotVocabulary } from '@/lib/catalog/vocabulary'
 import type { TurnAction } from './actions'
 import { applyPolicy, actionDomain, isWriteAction, DEFAULT_POLICY, type PlannerDomain, type PolicyContext } from './policy'
@@ -36,6 +40,8 @@ export interface TurnState {
   messageType: string
   extraction: UnifiedExtraction | null
   clarify: { state: ClarifyContextState; expired: boolean } | null
+  /** Follow-up "no encontré facturas para X": el próximo mensaje puede ser el monto o el nombre. */
+  voucherAwaitingMatch?: AwaitingClientMatch | null
   hasPendingExpense: boolean
   hasPendingAttendance: boolean
   hasPendingVoucher: boolean
@@ -94,11 +100,54 @@ const REASK_SUFFIX = 'Respondé con la letra (A, B...) o escribí "cancelar".'
 const GIVE_UP_MSG =
   'Sigo sin entenderte. Probá con algo concreto, por ejemplo: "gasté 5000 en luz", "llegó Juan 8:30" o "Marlon pagó 200000".'
 const VOUCHER_NO_CLIENT_MSG =
-  'No pude registrar el pago. Pasame el nombre del cliente y el monto, por ejemplo: "Marlon pagó 65000 en efectivo".'
+  'No pude registrar el pago. Pasame el monto (y el nombre si lo tenés) y si fue en efectivo o transferencia. Ej: "Martu pagó 422000 en efectivo".'
 const FALLBACK_TEXT_MSG =
   'No te entendí 🤔 ¿me repetís? Puedo registrar gastos, pagos/comprobantes o asistencias, y consultar saldos de clientes.'
 const FALLBACK_MEDIA_MSG =
   'No pude leer eso 🤔 Mandame el detalle por texto (ej: "gasté 5000 en luz") o una foto del comprobante.'
+
+// ── Follow-up de voucher ("no encontré facturas para X") ──
+const AWAITING_MATCH_CANCEL_RE =
+  /^(cancelar|cancelo|no|mejor no|olvidalo|olvídalo|dejalo|dejalo asi|nada)$/i
+const AWAITING_MATCH_STOPWORDS = new Set([
+  'hola', 'buenas', 'buenos dias', 'buenas tardes', 'buenas noches',
+  'gracias', 'ok', 'dale', 'listo', 'si', 'no', 'nada', 'cancelar', 'cancelo',
+])
+const AWAITING_MATCH_AMOUNT_RE = /^[\s$]*\d[\d.,]*(?:\s*(mil|k|m))?[\s$]*$/i
+const AWAITING_MATCH_EXPENSE_VERB_RE =
+  /\b(gast|compr|pagu[eé]|abon[eé]|transfer[ií]|deposit[eé])\b/i
+const AWAITING_MATCH_PAYMENT_VERB_RE =
+  /\b(pag[oó]|paga|pagaron|abon[oó]|transfiri[oó]|efectivo|tarjeta|mercado)\b/i
+
+/**
+ * El follow-up puede ser un monto puro ("422000", "$422.000", "422 mil") o
+ * una frase corta sin verbos de gasto/pago ("son 422000"). Nunca tomar
+ * "gasté 5000" como monto de un cobro.
+ */
+function extractAwaitingAmountReply(
+  text: string,
+  extraction: UnifiedExtraction | null,
+): number | null {
+  const t = text.trim()
+  if (!t) return null
+  if (AWAITING_MATCH_EXPENSE_VERB_RE.test(t) || AWAITING_MATCH_PAYMENT_VERB_RE.test(t)) return null
+  if (AWAITING_MATCH_AMOUNT_RE.test(t)) return parseMontoSafe(t)
+  const intentOk = !extraction || extraction.intent === 'otro' || extraction.intent === 'voucher'
+  return intentOk ? extraction?.monto ?? null : null
+}
+
+/** El follow-up también puede ser el nombre completo del cliente. */
+function extractAwaitingNameReply(
+  text: string,
+  extraction: UnifiedExtraction | null,
+): string | null {
+  const t = text.trim()
+  if (!t || /[?¿]/.test(t) || /\d/.test(t)) return null
+  if (AWAITING_MATCH_PAYMENT_VERB_RE.test(t)) return null
+  const norm = t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  if (AWAITING_MATCH_STOPWORDS.has(norm)) return null
+  return sanitizeClientName(extraction?.proveedor) ?? extractClientNameFromReply(t)
+}
 
 export interface PlanTurnOptions {
   policy?: PolicyContext
@@ -140,8 +189,71 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
 
   const strongNewIntent = isStrongNewIntent(extraction)
 
+  // ── VOUCHER: follow-up de "no encontré facturas para X" ──
+  // El mensaje anterior pidió el monto o el nombre completo. Se consume acá
+  // (antes del clarify/router) para que un nombre suelto no caiga al assistant.
+  let awaitingHandled = false
+  const awaiting = state.voucherAwaitingMatch ?? null
+  if (
+    botAllowed &&
+    !flowConsumed &&
+    !clarifyLoad &&
+    !interactiveReplyId &&
+    inboundText.trim() &&
+    isAwaitingMatchFresh(awaiting) &&
+    !hasPendingVoucher &&
+    !hasPendingExpense &&
+    !hasPendingAttendance &&
+    !hasPendingOrder
+  ) {
+    const text = inboundText.trim()
+    if (AWAITING_MATCH_CANCEL_RE.test(text)) {
+      actions.push({ kind: 'clear_voucher_awaiting' })
+      actions.push({
+        kind: 'reply_text',
+        text: 'Listo, no registré ningún pago. Si querés retomar, mandame de nuevo el mensaje.',
+      })
+      responded = true
+      awaitingHandled = true
+    } else {
+      const amount = extractAwaitingAmountReply(text, extraction)
+      const name = amount == null ? extractAwaitingNameReply(text, extraction) : null
+      const strongNonVoucher = isStrongNewIntent(extraction) && extraction?.intent !== 'voucher'
+
+      if (amount != null) {
+        actions.push({ kind: 'clear_voucher_awaiting' })
+        actions.push({
+          kind: 'run_voucher_text',
+          clientName: awaiting!.attemptedName ?? '',
+          destName: awaiting!.destName,
+          metodoPago: awaiting!.metodoPago,
+          monto: amount,
+          fecha: awaiting!.fecha,
+        })
+        responded = true
+        awaitingHandled = true
+      } else if (name && !strongNonVoucher) {
+        actions.push({ kind: 'clear_voucher_awaiting' })
+        actions.push({
+          kind: 'run_voucher_text',
+          clientName: name,
+          destName: awaiting!.destName,
+          metodoPago: awaiting!.metodoPago,
+          monto: awaiting!.monto,
+          fecha: awaiting!.fecha,
+        })
+        responded = true
+        awaitingHandled = true
+      } else {
+        // Cambió de tema o mandó algo que no es nombre/monto: no dejar el
+        // estado colgado; el flujo normal decide.
+        actions.push({ kind: 'clear_voucher_awaiting' })
+      }
+    }
+  }
+
   // ── CLARIFY (preguntar ante ambigüedad y resolver) ──
-  if (botAllowed && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
+  if (!awaitingHandled && botAllowed && !flowConsumed && (inboundText.trim() || interactiveReplyId)) {
     if (clarifyLoad?.expired) {
       actions.push({ kind: 'clear_context', domain: 'clarify' })
       actions.push({ kind: 'reply_text', text: EXPIRED_MSG })
@@ -215,12 +327,14 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
   // ── ROUTER ──
   const routerDecision = !botAllowed
     ? { dispatchedTo: 'none' as const, dispatchReason: 'none' as const }
-    : clarifyHandled
-      ? {
-          dispatchedTo: 'clarify' as const,
-          dispatchReason: clarifyReason as 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
-        }
-      : decideDispatch({
+    : awaitingHandled
+      ? { dispatchedTo: 'voucher' as const, dispatchReason: 'voucher_awaiting_match' as const }
+      : clarifyHandled
+        ? {
+            dispatchedTo: 'clarify' as const,
+            dispatchReason: clarifyReason as 'clarify_ask' | 'clarify_reask' | 'clarify_expired' | 'clarify_cancelled',
+          }
+        : decideDispatch({
           hasPendingExpense,
           hasPendingAttendance,
           hasPendingVoucher,
@@ -287,7 +401,7 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
   // caption es contexto de ESA pieza, no un voucher de texto aparte: procesarlo
   // acá duplicaba la extracción (dos filas para el mismo message_id) y el pago
   // podía registrarse dos veces. Ver docs/bots/decisiones-y-gotchas.md §11.1.
-  if (botAllowed && !clarifyHandled && !mediaConsumedByVoucher) {
+  if (botAllowed && !clarifyHandled && !mediaConsumedByVoucher && !awaitingHandled) {
     const montoVoucherText = extraction?.monto ?? null
     const metodoVoucherText =
       extraction?.metodo_pago === 'efectivo' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('efectivo'))
@@ -295,6 +409,11 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
         : extraction?.metodo_pago === 'transferencia' || (!extraction?.metodo_pago && inboundText.toLowerCase().includes('transferencia'))
           ? ('Transferencia' as const)
           : null
+    // El nombre no es obligatorio si hay monto: el monto es el ancla más
+    // fuerte (Fase 1 del pipeline). "me pagaron 422000 en efectivo" debe
+    // poder registrar/buscar aunque no sepamos el cliente.
+    const hasVoucherAnchor =
+      !!extraction?.proveedor || (montoVoucherText != null && montoVoucherText > 0)
     const isVoucherText =
       !hasPendingVoucher &&
       !flowConsumed &&
@@ -302,17 +421,17 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
       inboundText.trim() &&
       extraction?.intent === 'voucher' &&
       (montoVoucherText == null || montoVoucherText > 0) &&
-      !!extraction.proveedor &&
+      hasVoucherAnchor &&
       metodoVoucherText != null
 
-    if (isVoucherText && extraction?.proveedor && metodoVoucherText) {
+    if (isVoucherText && metodoVoucherText) {
       actions.push({
         kind: 'run_voucher_text',
-        clientName: extraction.proveedor,
-        destName: extraction.destino ?? null,
+        clientName: extraction?.proveedor ?? '',
+        destName: extraction?.destino ?? null,
         metodoPago: metodoVoucherText,
         monto: montoVoucherText,
-        fecha: extraction.fecha ?? null,
+        fecha: extraction?.fecha ?? null,
       })
       responded = true
     } else if (hasPendingVoucher && !flowConsumed && inboundText.trim()) {
@@ -350,6 +469,22 @@ export function planTurn(state: TurnState, options: PlanTurnOptions = {}): TurnP
 
   // Clarify resuelto a voucher pero sin datos para matchear: nunca quedar mudo.
   if (clarifyResolved && !responded && extraction?.intent === 'voucher') {
+    actions.push({ kind: 'reply_text', text: VOUCHER_NO_CLIENT_MSG })
+    responded = true
+  }
+
+  // Voucher sin datos suficientes (sin nombre ni monto, o sin método): pedir
+  // el dato que falta en vez del "No te entendí" genérico.
+  if (
+    botAllowed &&
+    !responded &&
+    !clarifyHandled &&
+    !flowConsumed &&
+    !interactiveReplyId &&
+    extraction?.intent === 'voucher' &&
+    messageType === 'text' &&
+    inboundText.trim()
+  ) {
     actions.push({ kind: 'reply_text', text: VOUCHER_NO_CLIENT_MSG })
     responded = true
   }

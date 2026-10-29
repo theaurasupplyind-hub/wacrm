@@ -18,6 +18,22 @@ export interface PendingTextItem {
   timestamp: number
 }
 
+/**
+ * "No encontré facturas para Martu": se guarda el pago original (método,
+ * fecha, destino) para que el próximo mensaje pueda ser el monto o el nombre
+ * completo del cliente. TTL corto: una respuesta tardía no debe secuestrar
+ * mensajes nuevos.
+ */
+export interface AwaitingClientMatch {
+  metodoPago: 'Efectivo' | 'Transferencia'
+  monto: number | null
+  fecha: string | null
+  destName: string | null
+  /** Nombre que se intentó y no matcheó (ej. "Martu"). */
+  attemptedName: string | null
+  createdAt?: number | null
+}
+
 export interface VoucherContextState {
   pending: PendingVoucherItem[]
   pendingTexts: PendingTextItem[]
@@ -30,6 +46,18 @@ const PENDING_TEXT_TTL_MS = 60_000
  * abandonado y se descarta (evita que un pending viejo "secuestre" textos).
  */
 export const VOUCHER_PENDING_TTL_MS = 30 * 60 * 1000
+
+/** TTL del follow-up "¿me pasás el monto o el nombre completo?". */
+export const VOUCHER_AWAITING_MATCH_TTL_MS = 5 * 60 * 1000
+
+export function isAwaitingMatchFresh(
+  state: AwaitingClientMatch | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (!state || typeof state.createdAt !== 'number') return false
+  return now - state.createdAt <= VOUCHER_AWAITING_MATCH_TTL_MS
+}
+
 
 function emptyCtx(): VoucherContextState {
   return { pending: [], pendingTexts: [] }
@@ -97,9 +125,16 @@ export async function saveVoucherContext(
   state: VoucherContextState,
 ): Promise<void> {
   try {
+    // Sólo pending/pendingTexts: `voucher_awaiting_match` vive en su propia
+    // columna y no debe pisarse con un read-modify-write del contexto.
     await db
       .from('conversations')
-      .update({ voucher_context: state })
+      .update({
+        voucher_context: {
+          pending: state.pending,
+          pendingTexts: state.pendingTexts,
+        },
+      })
       .eq('id', conversationId)
   } catch (err) {
     console.error('[voucher] save context error:', err)
@@ -169,4 +204,61 @@ export async function clearVoucherContext(
   conversationId: string,
 ): Promise<void> {
   return saveVoucherContext(db, conversationId, { pending: [], pendingTexts: [] })
+}
+
+/**
+ * Carga el follow-up "¿me pasás el monto o el nombre completo?" de la columna
+ * `voucher_awaiting_match`. Si la migración 055 no corrió (o el estado venció)
+ * devuelve null sin romper el webhook.
+ */
+export async function loadAwaitingMatch(
+  db: import('@supabase/supabase-js').SupabaseClient,
+  conversationId: string,
+): Promise<AwaitingClientMatch | null> {
+  try {
+    const { data } = await db
+      .from('conversations')
+      .select('voucher_awaiting_match')
+      .eq('id', conversationId)
+      .maybeSingle()
+    const raw = data?.voucher_awaiting_match as AwaitingClientMatch | null
+    if (!isAwaitingMatchFresh(raw)) return null
+    return raw
+  } catch {
+    return null
+  }
+}
+
+export async function saveAwaitingMatch(
+  db: import('@supabase/supabase-js').SupabaseClient,
+  conversationId: string,
+  state: Omit<AwaitingClientMatch, 'createdAt'>,
+): Promise<void> {
+  try {
+    await db
+      .from('conversations')
+      .update({
+        voucher_awaiting_match: {
+          ...state,
+          createdAt: Date.now(),
+        },
+      })
+      .eq('id', conversationId)
+  } catch (err) {
+    console.error('[voucher] save awaiting match error:', err)
+  }
+}
+
+export async function clearAwaitingMatch(
+  db: import('@supabase/supabase-js').SupabaseClient,
+  conversationId: string,
+): Promise<void> {
+  try {
+    await db
+      .from('conversations')
+      .update({ voucher_awaiting_match: null })
+      .eq('id', conversationId)
+  } catch (err) {
+    console.error('[voucher] clear awaiting match error:', err)
+  }
 }

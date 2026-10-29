@@ -21,7 +21,7 @@ webhook de WhatsApp y al backend `backend_gal` (FacBal API).
 |-----------|-----------|
 | [`architecture.md`](./architecture.md) | Arquitectura del ecosistema: webhook, motor de turno, voucher, gastos, asistencia, agente y conexión con FacBal API |
 | [`assistant-agent.md`](./assistant-agent.md) | Estado del agente: contexto, herramientas, modelos y evolución segura |
-| [`vouchers.md`](./vouchers.md) | Spec de matching de comprobantes de pago + pipeline actual (fuente en español) |
+| [`vouchers.md`](./vouchers.md) | Spec de matching de comprobantes de pago + pipeline actual, incluido el **voucher por texto** (monto/nombre, fuzzy y confirmación) |
 | [`definicion-ambiguedad.md`](./definicion-ambiguedad.md) | Qué cuenta como "ambiguo" y umbrales del gate de auto-guardado |
 | [`catalogo-acciones.md`](./catalogo-acciones.md) | Inventario/roadmap de acciones que el bot podría operar por chat |
 | [`gaps-bot-gastos.md`](./gaps-bot-gastos.md) | Análisis de gaps (G1–G8) del bot de gastos |

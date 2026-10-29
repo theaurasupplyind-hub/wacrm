@@ -7,5 +7,11 @@
     "node_modules/ecc-universal/skills/security-review/SKILL.md",
     "node_modules/ecc-universal/skills/verification-loop/SKILL.md",
     "node_modules/ecc-universal/skills/strategic-compact/SKILL.md"
-  ]
+  ],
+  "mcp": {
+    "vercel": {
+      "type": "remote",
+      "url": "https://mcp.vercel.com"
+    }
+  }
 }

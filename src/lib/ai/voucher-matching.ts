@@ -104,6 +104,45 @@ export function captionMatchesClient(caption: string, cliente: string): boolean 
 }
 
 /**
+ * Match de nombre FUERTE: el backend le dio al candidato un score suficiente
+ * como para pagar sin preguntar (en efectivo).
+ */
+export function isStrongNameMatch(candidate: MatchVoucherCandidate): boolean {
+  return candidate.score >= NAME_MATCH_THRESHOLD
+}
+
+/**
+ * Match de nombre (score del backend O coincidencia local de tokens/prefijo).
+ *
+ * El backend es estricto con nombres cortos o apodos: "Ale" contra "Ale
+ * Casagrande" vuelve con score 0.35 y se perdía la única factura. La
+ * coincidencia local rescata ese caso, pero NO alcanza para pagar sola: el
+ * pipeline trata un match débil (score < 0.5) como "confirmar antes de pagar".
+ */
+export function isNameMatch(
+  name: string | null | undefined,
+  candidate: MatchVoucherCandidate,
+): boolean {
+  if (isStrongNameMatch(candidate)) return true
+  if (!name) return false
+  return captionMatchesClient(name, candidate.cliente_nombre)
+}
+
+/**
+ * Candidatos de una búsqueda por nombre, con match fuerte o local, ordenados
+ * por score. No filtra por monto: lo decide el caller.
+ */
+export function selectNameCandidates(
+  name: string,
+  candidates: MatchVoucherCandidate[],
+): MatchVoucherCandidate[] {
+  return candidates
+    .filter((c) => c.saldo_pendiente > 0 && isNameMatch(name, c))
+    .sort((a, b) => b.score - a.score)
+}
+
+
+/**
  * El caption es una preferencia, nunca un veto: si algún item matchea el
  * caption se devuelven solo esos; si ninguno matchea, se devuelve la lista
  * completa (evita dejar el pool vacío y perder montos exactos).

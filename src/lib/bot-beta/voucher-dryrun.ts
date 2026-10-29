@@ -4,7 +4,7 @@
 
 import { matchVoucherByName } from '@/lib/facbal/client'
 import type { MatchVoucherCandidate, DestinationCandidate } from '@/lib/facbal/client'
-import { findExactClientSumMatches, montoDistance, getMontoTolerancia, NAME_MATCH_THRESHOLD, sanitizeClientName, pickStickyExact } from '@/lib/ai/voucher-matching'
+import { findExactClientSumMatches, montoDistance, getMontoTolerancia, sanitizeClientName, pickStickyExact, isNameMatch } from '@/lib/ai/voucher-matching'
 
 export interface VoucherDryInput {
   monto: number | null
@@ -74,6 +74,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     }
     // Texto: si hay un nombre provisto, manda (aunque el score sea bajo).
     const hasProvidedName = !!(input.nombre_cliente || input.nombre_origen)
+    const nameForMatch = input.nombre_cliente ?? input.nombre_origen ?? null
     interface PoolEntry { type: 'single' | 'sum'; invoices: MatchVoucherCandidate[]; total: number; clientName: string }
     const candidatePool: PoolEntry[] = []
     const poolInvoiceIds = new Set<number>()
@@ -149,7 +150,7 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
         const phase3ApiResult = nameCandidates.map(c => ({ factura: c.numero_factura, cliente: c.cliente_nombre, saldo: c.saldo_pendiente, score: c.score }))
         let nameExactCount = 0
         for (const c of nameCandidates) {
-          if (c.score < NAME_MATCH_THRESHOLD) continue
+          if (!isNameMatch(nameForMatch, c)) continue
           // Solo considerar si monto coincide (tolerancia) o si no hay monto (nombre puro)
           if (input.monto && input.monto > 0) {
             const tol = getMontoTolerancia(input.monto)
@@ -168,15 +169,15 @@ export async function runVoucherDryRun(input: VoucherDryInput): Promise<VoucherD
     // Phase 4: Name resolution
     const p4steps: Record<string, unknown>[] = []
     const hasName = input.nombre_cliente?.trim() || input.nombre_origen?.trim() || input.nombre_destino?.trim()
-    const nameIsReliable = nameCandidates.length > 0 && nameCandidates.some(c => c.score >= NAME_MATCH_THRESHOLD)
+    const nameIsReliable = nameCandidates.length > 0 && nameCandidates.some(c => isNameMatch(nameForMatch, c))
     if (candidatePool.length > 1 && nameIsReliable) {
-      const highScoreIds = new Set(nameCandidates.filter(c => c.score >= NAME_MATCH_THRESHOLD).map(c => c.invoice_id))
+      const highScoreIds = new Set(nameCandidates.filter(c => isNameMatch(nameForMatch, c)).map(c => c.invoice_id))
       const filteredPool = candidatePool.filter(entry => entry.invoices.some(inv => highScoreIds.has(inv.invoice_id)))
       if (filteredPool.length === 1) { candidatePool.length = 0; candidatePool.push(...filteredPool); p4steps.push({ step: 'Narrow pool by name', result: { narrowedTo: 1 } }) }
       else p4steps.push({ step: 'Narrow pool by name', result: { narrowedTo: filteredPool.length } })
     }
     if (candidatePool.length === 0 && nameIsReliable) {
-      const filteredBest = nameCandidates.filter(c => c.score >= NAME_MATCH_THRESHOLD).filter(c => {
+      const filteredBest = nameCandidates.filter(c => isNameMatch(nameForMatch, c)).filter(c => {
         if (input.monto && input.monto > 0) return montoDistance(input.monto, c.saldo_pendiente) <= getMontoTolerancia(input.monto)
         return true
       }).sort((a, b) => b.score - a.score)[0]

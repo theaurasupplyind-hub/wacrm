@@ -53,3 +53,21 @@ describe('buildBotContextText: expiración de pedido (fix #3)', () => {
     expect(buildBotContextText({})).not.toContain('Cotización')
   })
 })
+
+describe('buildBotContextText: follow-up de voucher', () => {
+  it('menciona el nombre intentado y pide monto/nombre', () => {
+    const txt = buildBotContextText({
+      voucherAwaitingMatch: {
+        metodoPago: 'Efectivo',
+        monto: null,
+        fecha: null,
+        destName: null,
+        attemptedName: 'Martu',
+        createdAt: Date.now(),
+      },
+    })
+    expect(txt).toContain('Martu')
+    expect(txt).toContain('monto')
+    expect(txt).toContain('nombre completo')
+  })
+})

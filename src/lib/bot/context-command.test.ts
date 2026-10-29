@@ -2,13 +2,17 @@ import { describe, it, expect, vi } from 'vitest'
 
 const cleared = vi.hoisted(() => ({
   voucher: vi.fn(async () => {}),
+  awaiting: vi.fn(async () => {}),
   expense: vi.fn(async () => {}),
   attendance: vi.fn(async () => {}),
   clarify: vi.fn(async () => {}),
   order: vi.fn(async () => {}),
 }))
 
-vi.mock('@/lib/ai/voucher-context', () => ({ clearVoucherContext: cleared.voucher }))
+vi.mock('@/lib/ai/voucher-context', () => ({
+  clearVoucherContext: cleared.voucher,
+  clearAwaitingMatch: cleared.awaiting,
+}))
 vi.mock('@/lib/expenses/context', () => ({ clearExpenseContext: cleared.expense }))
 vi.mock('@/lib/attendance/context', () => ({ clearAttendanceContext: cleared.attendance }))
 vi.mock('@/lib/bot-llm/clarify-context', () => ({ clearClarifyContext: cleared.clarify }))
